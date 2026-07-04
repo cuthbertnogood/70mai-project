@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,47 @@ FILENAME_RE = re.compile(
 RECORD_TYPES = ("Normal", "Event", "Parking")
 CAMERAS = ("Front", "Back")
 TYPE_PREFIX = {"Normal": "NO", "Event": "EV", "Parking": "PA"}
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+class ProgressTracker:
+    def __init__(self, total: int, label: str) -> None:
+        self.total = max(total, 1)
+        self.label = label
+        self.done = 0
+        self.start = time.monotonic()
+        log(f"== {label}: 0/{self.total} (0%) | elapsed {format_duration(0)}")
+
+    def adjust_total(self, total: int) -> None:
+        self.total = max(total, self.done, 1)
+
+    def update(self, detail: str = "") -> None:
+        self.done += 1
+        elapsed = time.monotonic() - self.start
+        pct = 100 * self.done / self.total
+        rate = self.done / elapsed if elapsed > 0 else 0.0
+        remaining = self.total - self.done
+        eta = remaining / rate if rate > 0 else 0.0
+        suffix = f" | {detail}" if detail else ""
+        log(
+            f"== {self.label}: {self.done}/{self.total} ({pct:.0f}%) "
+            f"| elapsed {format_duration(elapsed)} "
+            f"| ETA {format_duration(eta)}{suffix}"
+        )
 
 
 @dataclass(frozen=True)
@@ -113,11 +155,22 @@ def probe_duration(path: Path, ffprobe: str) -> float:
     return float(result.stdout.strip())
 
 
-def attach_durations(clips: list[Clip], ffprobe: str, cache: dict[Path, float]) -> list[Clip]:
+def attach_durations(
+    clips: list[Clip],
+    ffprobe: str,
+    cache: dict[Path, float],
+    progress: ProgressTracker | None = None,
+    assume_seconds: float | None = None,
+) -> list[Clip]:
     enriched: list[Clip] = []
     for clip in clips:
         if clip.path not in cache:
-            cache[clip.path] = probe_duration(clip.path, ffprobe)
+            if assume_seconds is not None:
+                cache[clip.path] = assume_seconds
+            else:
+                if progress:
+                    progress.update(clip.path.name)
+                cache[clip.path] = probe_duration(clip.path, ffprobe)
         enriched.append(
             Clip(
                 path=clip.path,
@@ -168,19 +221,27 @@ def merge_clips(
     output_path: Path,
     ffmpeg: str,
     dry_run: bool,
+    merge_progress: ProgressTracker | None = None,
 ) -> str:
     if output_path.exists():
-        print(f"  skip (exists): {output_path.name}")
+        size_mb = output_path.stat().st_size / 1_000_000
+        log(f"  skip (exists, {size_mb:.0f} MB): {output_path.name}")
+        if merge_progress:
+            merge_progress.update("skipped")
         return "skipped"
 
     total_duration = sum(c.duration or 0.0 for c in chunk)
-    print(
-        f"  merge {len(chunk)} clips ({total_duration / 60:.1f} min) -> {output_path.name}"
+    log(
+        f"  merging {len(chunk)} clips ({total_duration / 60:.1f} min) "
+        f"-> {output_path.name}"
     )
     if dry_run:
+        if merge_progress:
+            merge_progress.update("planned")
         return "planned"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    merge_start = time.monotonic()
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".txt",
@@ -214,10 +275,18 @@ def merge_clips(
             check=False,
         )
         if result.returncode != 0:
-            print(f"  ERROR: {result.stderr.strip()}", file=sys.stderr)
+            log(f"  ERROR: {result.stderr.strip()}")
             if output_path.exists():
                 output_path.unlink()
+            if merge_progress:
+                merge_progress.update("failed")
             return "failed"
+        size_mb = output_path.stat().st_size / 1_000_000
+        elapsed = time.monotonic() - merge_start
+        if merge_progress:
+            merge_progress.update(f"done {size_mb:.0f} MB in {format_duration(elapsed)}")
+        else:
+            log(f"  done: {size_mb:.0f} MB in {format_duration(elapsed)}")
         return "merged"
     finally:
         list_path.unlink(missing_ok=True)
@@ -232,6 +301,9 @@ def process_group(
     ffprobe: str,
     dry_run: bool,
     duration_cache: dict[Path, float],
+    probe_progress: ProgressTracker | None,
+    merge_progress: ProgressTracker,
+    assume_seconds: float | None = None,
 ) -> tuple[int, int, int, int]:
     if not clips:
         return 0, 0, 0, 0
@@ -244,17 +316,27 @@ def process_group(
     failed = 0
     planned = 0
 
-    print(f"\n{record_type}/{camera}: {len(clips)} clips, {len(sessions)} sessions")
+    log(f"\n--- {record_type}/{camera}: {len(clips)} clips, {len(sessions)} sessions ---")
     for session_idx, session in enumerate(sessions, start=1):
-        session_with_duration = attach_durations(session, ffprobe, duration_cache)
-        chunks = split_chunks(session_with_duration, chunk_seconds)
-        print(
+        uncached = sum(1 for clip in session if clip.path not in duration_cache)
+        log(
             f"  session {session_idx}/{len(sessions)}: "
-            f"{len(session)} clips -> {len(chunks)} output file(s)"
+            f"{len(session)} clips, probing {uncached} new file(s)..."
         )
+        session_with_duration = attach_durations(
+            session,
+            ffprobe,
+            duration_cache,
+            probe_progress,
+            assume_seconds=assume_seconds,
+        )
+        chunks = split_chunks(session_with_duration, chunk_seconds)
+        log(f"  session {session_idx}/{len(sessions)} -> {len(chunks)} output file(s)")
         for chunk in chunks:
             out_path = output_dir / record_type / camera / output_name(chunk)
-            status = merge_clips(chunk, out_path, ffmpeg, dry_run)
+            status = merge_clips(
+                chunk, out_path, ffmpeg, dry_run, merge_progress
+            )
             if status == "merged":
                 merged += 1
             elif status == "skipped":
@@ -334,26 +416,24 @@ def main() -> int:
     ffmpeg = find_tool("ffmpeg")
     ffprobe = find_tool("ffprobe")
     chunk_seconds = args.chunk_minutes * 60.0
+    run_start = time.monotonic()
 
-    print(f"Source:  {args.source}")
-    print(f"Output:  {args.output}")
-    print(f"Chunk:   {args.chunk_minutes:g} min")
-    print(f"Gap:     {args.gap_seconds:g} sec")
-    print(f"Types:   {', '.join(record_types)}")
-    print(f"Cameras: {', '.join(cameras)}")
+    log(f"Source:  {args.source}")
+    log(f"Output:  {args.output}")
+    log(f"Chunk:   {args.chunk_minutes:g} min")
+    log(f"Gap:     {args.gap_seconds:g} sec")
+    log(f"Types:   {', '.join(record_types)}")
+    log(f"Cameras: {', '.join(cameras)}")
     if args.dry_run:
-        print("Mode:    dry-run")
+        log("Mode:    dry-run")
 
-    duration_cache: dict[Path, float] = {}
-    total_merged = 0
-    total_skipped = 0
-    total_failed = 0
-    total_planned = 0
-
+    groups: list[tuple[str, str, list[Clip]]] = []
+    total_clips = 0
     for record_type in record_types:
         for camera in cameras:
             folder = args.source / record_type / camera
             if not folder.is_dir():
+                log(f"Warning: missing folder {folder}")
                 continue
             clips: list[Clip] = []
             for path in sorted(folder.iterdir()):
@@ -362,30 +442,64 @@ def main() -> int:
                 clip = parse_filename(path, record_type, camera)
                 if clip:
                     clips.append(clip)
-            merged, skipped, failed, planned = process_group(
-                clips,
-                args.output,
-                args.gap_seconds,
-                chunk_seconds,
-                ffmpeg,
-                ffprobe,
-                args.dry_run,
-                duration_cache,
-            )
-            total_merged += merged
-            total_skipped += skipped
-            total_failed += failed
-            total_planned += planned
+            if clips:
+                groups.append((record_type, camera, clips))
+                total_clips += len(clips)
 
+    total_outputs = 0
+    for _, _, clips in groups:
+        for session in split_sessions(clips, args.gap_seconds):
+            session_seconds = len(session) * 60
+            total_outputs += max(1, -(-session_seconds // int(chunk_seconds)))
+
+    log(f"\nFound {total_clips} clips in {len(groups)} group(s)")
+    log(f"Estimated output files: ~{total_outputs}")
+
+    assume_seconds = 60.0 if args.dry_run else None
+    if assume_seconds is not None:
+        log("Dry-run uses assumed 60s per clip (no ffprobe) for a fast preview")
+
+    probe_progress = (
+        None if assume_seconds is not None else ProgressTracker(total_clips, "Probing clip durations")
+    )
+    merge_progress = ProgressTracker(max(total_outputs, 1), "Merging output files")
+
+    duration_cache: dict[Path, float] = {}
+    total_merged = 0
+    total_skipped = 0
+    total_failed = 0
+    total_planned = 0
+
+    for group_idx, (record_type, camera, clips) in enumerate(groups, start=1):
+        log(f"\n>>> Group {group_idx}/{len(groups)}: {record_type}/{camera}")
+        merged, skipped, failed, planned = process_group(
+            clips,
+            args.output,
+            args.gap_seconds,
+            chunk_seconds,
+            ffmpeg,
+            ffprobe,
+            args.dry_run,
+            duration_cache,
+            probe_progress,
+            merge_progress,
+            assume_seconds=assume_seconds,
+        )
+        total_merged += merged
+        total_skipped += skipped
+        total_failed += failed
+        total_planned += planned
+
+    elapsed = time.monotonic() - run_start
     if args.dry_run:
-        print(
-            f"\nDone: {total_planned} planned, {total_skipped} skipped, "
-            f"{total_failed} failed"
+        log(
+            f"\nDone in {format_duration(elapsed)}: "
+            f"{total_planned} planned, {total_skipped} skipped, {total_failed} failed"
         )
     else:
-        print(
-            f"\nDone: {total_merged} merged, {total_skipped} skipped, "
-            f"{total_failed} failed"
+        log(
+            f"\nDone in {format_duration(elapsed)}: "
+            f"{total_merged} merged, {total_skipped} skipped, {total_failed} failed"
         )
     return 1 if total_failed else 0
 
