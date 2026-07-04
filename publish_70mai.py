@@ -239,6 +239,12 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--keep", action="store_true", help="Keep local MP4 after upload")
+    parser.add_argument(
+        "--chunk",
+        type=int,
+        metavar="N",
+        help="Process only chunk index N (1-based, per record type order in plan)",
+    )
     parser.add_argument("--check-disk", type=Path, default=Path("."))
     args = parser.parse_args()
 
@@ -335,6 +341,8 @@ def main() -> None:
     for chunk in chunks:
         record_type = chunk.record_type
         total = total_by_type[record_type]
+        if args.chunk is not None and chunk.index != args.chunk:
+            continue
         log("")
         log(
             f"=== Chunk {chunk.index}/{total} [{record_type}] "

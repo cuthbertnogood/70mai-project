@@ -486,6 +486,29 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
 | `--credentials` | `~/.config/70mai/youtube_credentials.json` | OAuth client |
 | `--token` | `~/.config/70mai/youtube_token.json` | Saved refresh token |
 
+### YouTube OAuth (one-time)
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → enable **YouTube Data API v3**
+2. OAuth consent screen → add your Google account as test user
+3. Credentials → OAuth client ID → **Desktop app** → download JSON
+4. Save as `~/.config/70mai/youtube_credentials.json`
+5. First upload opens a browser; token saved to `~/.config/70mai/youtube_token.json`
+
+After compose finishes, upload a single part:
+
+```bash
+python3 -c "
+from pathlib import Path
+from youtube_upload import upload_video
+vid = upload_video(
+    Path('video/Output/.publish_tmp/part_01.mp4'),
+    title='70mai 2026-04-25 — часть 1/5',
+    privacy='unlisted',
+)
+print('https://youtu.be/' + vid)
+"
+```
+
 State: `video/Output/.publish_tmp/publish_*.state.json`. Temp parts under `.publish_tmp/`.
 
 ## Notes
