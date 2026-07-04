@@ -8,6 +8,6 @@
 		}
 	],
 	"settings": {
-		"specstory.cloudSync.enabled": "always"
+		"specstory.cloudSync.enabled": "never"
 	}
 }

@@ -201,6 +201,41 @@ def build_filter(
     return ";".join(parts)
 
 
+def append_video_encode_args(
+    cmd: list[str],
+    *,
+    hw: bool,
+    crf: int,
+    preset: str,
+    hw_quality: int,
+    fps: int,
+) -> None:
+    cmd.extend(["-r", str(fps)])
+    if hw:
+        cmd.extend(
+            [
+                "-c:v",
+                "h264_videotoolbox",
+                "-q:v",
+                str(hw_quality),
+                "-allow_sw",
+                "1",
+            ]
+        )
+    else:
+        cmd.extend(
+            [
+                "-c:v",
+                "libx264",
+                "-crf",
+                str(crf),
+                "-preset",
+                preset,
+            ]
+        )
+    cmd.extend(["-c:a", "aac", "-b:a", "128k"])
+
+
 def run_compose(
     screen: Path,
     video_dir: Path,
@@ -214,6 +249,8 @@ def run_compose(
     crf: int,
     preset: str,
     fps: int,
+    hw: bool,
+    hw_quality: int,
     dry_run: bool,
 ) -> None:
     screen_start = parse_screen_start(screen)
@@ -239,6 +276,8 @@ def run_compose(
     log(f"Duration:      {duration:g} sec")
     log(f"Front offset:  {sync_offset_front:+g} sec")
     log(f"Back offset:   {sync_offset_back:+g} sec")
+    encoder = f"h264_videotoolbox (q:v {hw_quality})" if hw else f"libx264 (crf {crf}, {preset})"
+    log(f"Encoder:       {encoder}")
     log("")
     log("Front segments:")
     for seg in front_segments:
@@ -263,23 +302,15 @@ def run_compose(
     )
     cmd.extend(["-filter_complex", filter_complex])
     cmd.extend(["-map", "[vout]", "-map", "0:a?"])
-    cmd.extend(
-        [
-            "-c:v",
-            "libx264",
-            "-crf",
-            str(crf),
-            "-preset",
-            preset,
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-r",
-            str(fps),
-            str(output),
-        ]
+    append_video_encode_args(
+        cmd,
+        hw=hw,
+        crf=crf,
+        preset=preset,
+        hw_quality=hw_quality,
+        fps=fps,
     )
+    cmd.append(str(output))
 
     log("")
     log("Command:")
@@ -343,6 +374,18 @@ def main() -> None:
     parser.add_argument("--crf", type=int, default=20, help="x264 CRF quality")
     parser.add_argument("--preset", default="medium", help="x264 preset")
     parser.add_argument("--fps", type=int, default=25, help="Output frame rate")
+    parser.add_argument(
+        "--hw",
+        action="store_true",
+        help="Use macOS hardware encoder (h264_videotoolbox) — much faster",
+    )
+    parser.add_argument(
+        "--hw-quality",
+        type=int,
+        default=65,
+        metavar="Q",
+        help="VideoToolbox quality 1–100, lower = better (default: 65, preview OK)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print plan only")
     args = parser.parse_args()
 
@@ -373,6 +416,8 @@ def main() -> None:
             crf=args.crf,
             preset=args.preset,
             fps=args.fps,
+            hw=args.hw,
+            hw_quality=args.hw_quality,
             dry_run=args.dry_run,
         )
     except subprocess.CalledProcessError as exc:
