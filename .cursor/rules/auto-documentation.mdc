@@ -1,0 +1,34 @@
+---
+description: Update README and project docs when code or CLI behavior changes
+alwaysApply: true
+---
+
+# Auto-documentation
+
+When you add or change behavior in this project, update docs in the **same task** — do not wait for the user to ask.
+
+## What to update
+
+| Change | Update |
+|--------|--------|
+| New/changed CLI flags, defaults, profiles | [`README.md`](README.md) — relevant section + flag table |
+| New script or workflow (`import_70mai.py`, `compose_70mai.py`, etc.) | [`README.md`](README.md) — usage, examples, output paths |
+| Project goals or scope | [`GOALS.md`](GOALS.md) |
+| Non-obvious sync/encoding/audio logic | Short explanation in README (thresholds, fallbacks) |
+
+## README conventions (this repo)
+
+- **Import**: SD layout, `--scan`, date/time filters, output under `video/Output/`
+- **Compose**: vertical 3-cam layout, sync by screen recording time, `--profile` / HW flags, **audio auto-analysis** (`--audio`, `--audio-offset`, thresholds)
+- Include copy-paste command examples for common tasks (dry-run, 60s test, 10 min export)
+- Keep flag tables aligned with `--help` output
+
+## When to skip
+
+- Pure refactors with no user-visible change
+- Internal-only edits (comments, formatting)
+- User explicitly says "no docs" or question-only / review-only task
+
+## Done criteria
+
+Before finishing a feature task, confirm README (and GOALS if needed) reflects what you shipped. Mention doc updates briefly in the final reply.
