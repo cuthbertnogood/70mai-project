@@ -25,6 +25,37 @@ Hidden `.s_Front` preview copies are ignored.
 
 ## Usage
 
+Scan the SD card to see which date/time ranges contain data (fast, no ffmpeg):
+
+```bash
+python3 import_70mai.py --scan
+```
+
+Example output:
+
+```
+Scanning /Volumes/Untitled
+Session gap: 120 sec (pauses longer than this start a new range)
+
+=== Overall ===
+  1906 clips | 2026-04-25 13:01:19 -> 2026-04-28 14:48:28
+  calendar days: 2026-04-25 .. 2026-04-28
+
+=== By type / camera ===
+
+Normal / Front — 520 clips, 2026-04-25 13:01:19 -> 2026-04-28 12:00:00
+  3 recording session(s):
+    1. 2026-04-25 13:01:19 -> 2026-04-25 18:30:00 (156 clips)
+    2. 2026-04-26 08:00:00 -> 2026-04-26 22:15:00 (200 clips)
+    3. 2026-04-27 07:45:00 -> 2026-04-28 12:00:00 (164 clips)
+
+=== By date ===
+  2026-04-25  13:01:19 — 23:58:42  | 890 clips | Event/Front, Normal/Back, Normal/Front
+  2026-04-26  07:30:00 — 22:45:11  | 650 clips | Normal/Back, Normal/Front
+```
+
+Use the ranges from `--scan` to pick `--date` / `--from-time` / `--to-time` for export.
+
 Preview the merge plan without writing files:
 
 ```bash
@@ -140,6 +171,7 @@ Range:   2026-04-27 08:00:00 -> 2026-04-27 09:00:00
 | `--types LIST` | `Normal,Event,Parking` | Comma-separated record types |
 | `--cameras LIST` | `Front,Back` | Comma-separated cameras |
 | `--dry-run` | off | Preview merge plan without writing files |
+| `--scan` | off | Scan SD card and show available date/time ranges |
 | `--date DATE` | — | Export day (see above) |
 | `--from-time HH:MM` | `00:00` | Start time on `--date` |
 | `--to-time HH:MM` | `23:59:59` | End time on `--date` (exclusive) |

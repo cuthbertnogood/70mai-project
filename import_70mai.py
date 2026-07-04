@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 FILENAME_RE = re.compile(
@@ -150,13 +150,145 @@ def filter_clips(
     return [clip for clip in clips if clip_in_range(clip, range_start, range_end)]
 
 
-def scan_clips(source: Path, record_types: list[str], cameras: list[str]) -> list[Clip]:
+def format_ts(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def format_day(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d")
+
+
+def format_clock(dt: datetime) -> str:
+    return dt.strftime("%H:%M:%S")
+
+
+@dataclass(frozen=True)
+class SessionRange:
+    start: datetime
+    end: datetime
+    clip_count: int
+
+
+def session_ranges(clips: list[Clip], gap_seconds: float) -> list[SessionRange]:
+    ranges: list[SessionRange] = []
+    for session in split_sessions(clips, gap_seconds):
+        ranges.append(
+            SessionRange(
+                start=session[0].timestamp,
+                end=session[-1].timestamp,
+                clip_count=len(session),
+            )
+        )
+    return ranges
+
+
+def collect_groups(
+    source: Path,
+    record_types: list[str],
+    cameras: list[str],
+    *,
+    warn: bool = True,
+) -> list[tuple[str, str, list[Clip]]]:
+    groups: list[tuple[str, str, list[Clip]]] = []
+    for record_type in record_types:
+        for camera in cameras:
+            folder = source / record_type / camera
+            if not folder.is_dir():
+                if warn:
+                    log(f"Warning: missing folder {folder}")
+                continue
+            clips = scan_clips(source, [record_type], [camera])
+            if clips:
+                groups.append((record_type, camera, clips))
+    return groups
+
+
+def print_scan_report(
+    source: Path,
+    groups: list[tuple[str, str, list[Clip]]],
+    gap_seconds: float,
+) -> None:
+    all_clips = [clip for _, _, clips in groups for clip in clips]
+    log(f"Scanning {source}")
+    log(f"Session gap: {gap_seconds:g} sec (pauses longer than this start a new range)\n")
+
+    if not all_clips:
+        log("No clips found on the card.")
+        return
+
+    overall_start = min(c.timestamp for c in all_clips)
+    overall_end = max(c.timestamp for c in all_clips)
+    log("=== Overall ===")
+    log(
+        f"  {len(all_clips)} clips | "
+        f"{format_ts(overall_start)} -> {format_ts(overall_end)}"
+    )
+    log(
+        f"  calendar days: {format_day(overall_start)} .. {format_day(overall_end)}"
+    )
+
+    log("\n=== By type / camera ===")
+    for record_type, camera, clips in groups:
+        start = min(c.timestamp for c in clips)
+        end = max(c.timestamp for c in clips)
+        sessions = session_ranges(clips, gap_seconds)
+        log(
+            f"\n{record_type} / {camera} — "
+            f"{len(clips)} clips, {format_ts(start)} -> {format_ts(end)}"
+        )
+        if len(sessions) == 1:
+            session = sessions[0]
+            log(
+                f"  continuous: {format_ts(session.start)} -> {format_ts(session.end)} "
+                f"({session.clip_count} clips)"
+            )
+        else:
+            log(f"  {len(sessions)} recording session(s):")
+            for idx, session in enumerate(sessions, start=1):
+                log(
+                    f"    {idx}. {format_ts(session.start)} -> {format_ts(session.end)} "
+                    f"({session.clip_count} clips)"
+                )
+
+    log("\n=== By date ===")
+    by_day: dict[date, list[Clip]] = {}
+    for clip in all_clips:
+        day = clip.timestamp.date()
+        by_day.setdefault(day, []).append(clip)
+
+    for day in sorted(by_day):
+        day_clips = by_day[day]
+        day_start = min(c.timestamp for c in day_clips)
+        day_end = max(c.timestamp for c in day_clips)
+        active_groups = sorted(
+            {
+                f"{record_type}/{camera}"
+                for record_type, camera, clips in groups
+                if any(c.timestamp.date() == day for c in clips)
+            }
+        )
+        log(
+            f"  {day.isoformat()}  {format_clock(day_start)} — {format_clock(day_end)}  "
+            f"| {len(day_clips)} clips | {', '.join(active_groups)}"
+        )
+
+    log("\nUse --date / --from-time / --to-time or --from / --to to export a range.")
+
+
+def scan_clips(
+    source: Path,
+    record_types: list[str],
+    cameras: list[str],
+    *,
+    warn: bool = True,
+) -> list[Clip]:
     clips: list[Clip] = []
     for record_type in record_types:
         for camera in cameras:
             folder = source / record_type / camera
             if not folder.is_dir():
-                print(f"Warning: missing folder {folder}", file=sys.stderr)
+                if warn:
+                    print(f"Warning: missing folder {folder}", file=sys.stderr)
                 continue
             for path in sorted(folder.iterdir()):
                 if not path.is_file() or path.suffix.upper() != ".MP4":
@@ -417,7 +549,22 @@ Export range (clip start timestamp must satisfy: start <= t < end):
 
   Date formats: YYYY-MM-DD[ HH:MM[:SS]] or MM-DD-YYYY[ HH:MM[:SS]]
   Time formats: HH:MM or HH:MM:SS (for --from-time / --to-time)
+
+Scan SD card for available data ranges:
+  python3 import_70mai.py --scan
 """
+
+
+def parse_types_and_cameras(types: str, cameras: str) -> tuple[list[str], list[str]]:
+    record_types = [t.strip() for t in types.split(",") if t.strip()]
+    camera_list = [c.strip() for c in cameras.split(",") if c.strip()]
+    invalid_types = set(record_types) - set(RECORD_TYPES)
+    invalid_cameras = set(camera_list) - set(CAMERAS)
+    if invalid_types:
+        raise SystemExit(f"Unknown record types: {', '.join(sorted(invalid_types))}")
+    if invalid_cameras:
+        raise SystemExit(f"Unknown cameras: {', '.join(sorted(invalid_cameras))}")
+    return record_types, camera_list
 
 
 def main() -> int:
@@ -464,6 +611,11 @@ def main() -> int:
         "--dry-run",
         action="store_true",
         help="Show merge plan without running ffmpeg",
+    )
+    parser.add_argument(
+        "--scan",
+        action="store_true",
+        help="Scan SD card and show available date/time ranges (no ffmpeg needed)",
     )
     parser.add_argument(
         "--from",
@@ -518,16 +670,16 @@ def main() -> int:
     if range_start and range_end and range_start >= range_end:
         raise SystemExit(f"Invalid range: {range_start} >= {range_end}")
 
-    record_types = [t.strip() for t in args.types.split(",") if t.strip()]
-    cameras = [c.strip() for c in args.cameras.split(",") if c.strip()]
-    invalid_types = set(record_types) - set(RECORD_TYPES)
-    invalid_cameras = set(cameras) - set(CAMERAS)
-    if invalid_types:
-        raise SystemExit(f"Unknown record types: {', '.join(sorted(invalid_types))}")
-    if invalid_cameras:
-        raise SystemExit(f"Unknown cameras: {', '.join(sorted(invalid_cameras))}")
+    record_types, cameras = parse_types_and_cameras(args.types, args.cameras)
     if not args.source.is_dir():
         raise SystemExit(f"Source not found: {args.source}")
+
+    if args.scan:
+        if args.dry_run:
+            log("Note: --dry-run is ignored with --scan")
+        groups = collect_groups(args.source, record_types, cameras)
+        print_scan_report(args.source, groups, args.gap_seconds)
+        return 0
 
     ffmpeg = find_tool("ffmpeg")
     ffprobe = find_tool("ffprobe")
@@ -553,13 +705,7 @@ def main() -> int:
             if not folder.is_dir():
                 log(f"Warning: missing folder {folder}")
                 continue
-            clips: list[Clip] = []
-            for path in sorted(folder.iterdir()):
-                if not path.is_file() or path.suffix.upper() != ".MP4":
-                    continue
-                clip = parse_filename(path, record_type, camera)
-                if clip:
-                    clips.append(clip)
+            clips = scan_clips(args.source, [record_type], [camera], warn=False)
             clips = filter_clips(clips, range_start, range_end)
             if clips:
                 groups.append((record_type, camera, clips))
