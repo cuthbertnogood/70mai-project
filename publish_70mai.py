@@ -226,7 +226,7 @@ def main() -> None:
     parser.add_argument("--temp-dir", type=Path, default=Path("video/Output/.publish_tmp"))
     parser.add_argument("--title", default="", help="Base YouTube title")
     parser.add_argument("--playlist", default="", help="Playlist title (optional)")
-    parser.add_argument("--privacy", choices=("private", "unlisted", "public"), default="unlisted")
+    parser.add_argument("--privacy", choices=("private", "unlisted", "public"), default="private")
     parser.add_argument("--audio", choices=("front", "back"), default="front")
     parser.add_argument("--profile", default="balanced")
     parser.add_argument("--hw", action="store_true")

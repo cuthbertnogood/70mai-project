@@ -43,6 +43,7 @@
 - **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
 - **`publish_70mai.py`** — trip chunks → compose → concat → YouTube → delete
 - **`youtube_upload.py`** — OAuth + resumable upload + playlist
+- По умолчанию загрузка **private** (не public/unlisted)
 
 Target chunk: **2 ч по поездкам** (короткие поездки склеиваются; длинная ≥2 ч — solo).
 

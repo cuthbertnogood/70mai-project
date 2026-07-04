@@ -468,9 +468,9 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --estimate-on
 python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
   --compose-only --dry-run
 
-# Full publish (needs OAuth)
+# Full publish (needs OAuth; private by default)
 python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
-  --title "Поездка 70mai" --privacy unlisted
+  --title "Поездка 70mai"
 ```
 
 | Flag | Default | Description |
@@ -503,7 +503,6 @@ from youtube_upload import upload_video
 vid = upload_video(
     Path('video/Output/.publish_tmp/part_01.mp4'),
     title='70mai 2026-04-25 — часть 1/5',
-    privacy='unlisted',
 )
 print('https://youtu.be/' + vid)
 "

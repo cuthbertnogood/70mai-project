@@ -65,7 +65,7 @@ def upload_video(
     title: str,
     description: str = "",
     tags: list[str] | None = None,
-    privacy: str = "unlisted",
+    privacy: str = "private",
     category_id: str = "22",
     credentials_path: Path = DEFAULT_CREDENTIALS,
     token_path: Path = DEFAULT_TOKEN,
@@ -124,7 +124,7 @@ def ensure_playlist(
     youtube = get_youtube_service(credentials_path, token_path)
     body = {
         "snippet": {"title": title, "description": ""},
-        "status": {"privacyStatus": "unlisted"},
+        "status": {"privacyStatus": "private"},
     }
     response = youtube.playlists().insert(part="snippet,status", body=body).execute()
     return response["id"]
