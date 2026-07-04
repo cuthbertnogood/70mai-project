@@ -278,6 +278,49 @@ python3 benchmark_compose.py
 
 Results are written to `video/Output/compose_benchmark_results.md`.
 
+## Compose: sync and audio
+
+Video sync uses the Screen Recording filename as the time base; Front/Back offsets are computed from merged clip timestamps (see `--sync-offset-front` / `--sync-offset-back` for manual tweaks).
+
+### Automatic audio analysis (default)
+
+Before encoding, `compose_70mai.py` extracts ~12 seconds of audio at **t≈30 s** and compares the **music-band envelope** (300–3000 Hz) between screen system audio and the front dashcam mic:
+
+| Envelope correlation | `--audio` mode | Output sound |
+|---------------------|----------------|--------------|
+| ≥ 0.45 | `mix` | Screen + front (front at 65% volume) |
+| 0.15 – 0.45 | `front` | Front dashcam mic only |
+| < 0.15 | `screen` | Screen recording only (nav/music) |
+
+The script also estimates **`--audio-offset`** for front audio: positive value delays front (typical ~+0.5 s when iOS system audio lags video). Example log line:
+
+```
+Audio analyze: envelope_corr=0.611 waveform_corr=0.098 RMS screen=6635 front=2250
+Audio:         mix (auto, offset_front=+0.50s)
+```
+
+Waveform cross-correlation is weak between screen and dashcam (different sources: digital system audio vs cabin mic), so mode selection uses **envelope** correlation, not raw samples.
+
+Requires **numpy** and **scipy** for analysis. If missing, falls back to `screen` audio.
+
+### Audio flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--audio` | `auto` | `auto`, `screen`, `front`, or `mix` |
+| `--audio-offset SEC` | from analysis | Shift front audio vs screen (+ delays front) |
+| `--no-audio-analyze` | off | Skip analysis; use `screen` and offset `0` |
+
+```bash
+# Auto (recommended)
+python3 compose_70mai.py "video/ScreenRecording_....mp4" \
+  --profile draft -d 600
+
+# Force mix with manual offset
+python3 compose_70mai.py "video/ScreenRecording_....mp4" \
+  --audio mix --audio-offset 0.5 -d 600
+```
+
 ## Notes
 
 - Front camera: 3840x2160, Back camera: 1920x1080
