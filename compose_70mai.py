@@ -168,9 +168,22 @@ def run_ffmpeg_with_progress(cmd: list[str], *, duration_sec: float) -> None:
         bufsize=1,
     )
     assert proc.stderr is not None
-    for raw_line in proc.stderr:
-        stderr_chunks.append(raw_line)
-        for segment in raw_line.split("\r"):
+    buf = ""
+    while True:
+        chunk = proc.stderr.read(4096)
+        if not chunk:
+            break
+        stderr_chunks.append(chunk)
+        buf += chunk
+        while True:
+            idx_r = buf.find("\r")
+            idx_n = buf.find("\n")
+            if idx_r == -1 and idx_n == -1:
+                break
+            if idx_r != -1 and (idx_n == -1 or idx_r <= idx_n):
+                segment, buf = buf[:idx_r], buf[idx_r + 1 :]
+            else:
+                segment, buf = buf[:idx_n], buf[idx_n + 1 :]
             segment = segment.strip()
             if segment and "frame=" in segment:
                 progress.update_from_line(segment)
