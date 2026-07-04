@@ -22,6 +22,7 @@ FILENAME_RE = re.compile(
 RECORD_TYPES = ("Normal", "Event", "Parking")
 CAMERAS = ("Front", "Back")
 TYPE_PREFIX = {"Normal": "NO", "Event": "EV", "Parking": "PA"}
+MIN_GPS_TIMESTAMP = 1577836800  # 2020-01-01 — ignore zero/invalid points
 
 
 def format_duration(seconds: float) -> str:
@@ -209,6 +210,8 @@ def scan_gps_files(source: Path) -> list[GpsFileSummary]:
                 try:
                     ts = int(parts[0])
                 except ValueError:
+                    continue
+                if ts < MIN_GPS_TIMESTAMP:
                     continue
                 timestamp = datetime.fromtimestamp(ts)
                 count += 1
