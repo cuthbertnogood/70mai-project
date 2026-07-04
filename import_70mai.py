@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -23,6 +24,8 @@ RECORD_TYPES = ("Normal", "Event", "Parking")
 CAMERAS = ("Front", "Back")
 TYPE_PREFIX = {"Normal": "NO", "Event": "EV", "Parking": "PA"}
 MIN_GPS_TIMESTAMP = 1577836800  # 2020-01-01 — ignore zero/invalid points
+BAR_WIDTH = 36
+PROBE_WORKERS = 8
 
 
 def format_duration(seconds: float) -> str:
@@ -40,30 +43,133 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def format_bar(ratio: float, width: int = BAR_WIDTH) -> str:
+    ratio = max(0.0, min(1.0, ratio))
+    filled = int(width * ratio)
+    return "█" * filled + "░" * (width - filled)
+
+
+def is_tty() -> bool:
+    return sys.stderr.isatty()
+
+
 class ProgressTracker:
     def __init__(self, total: int, label: str) -> None:
         self.total = max(total, 1)
         self.label = label
         self.done = 0
         self.start = time.monotonic()
-        log(f"== {label}: 0/{self.total} (0%) | elapsed {format_duration(0)}")
+        self._last_logged_pct = -1
+        self._render(force_log=True)
 
     def adjust_total(self, total: int) -> None:
         self.total = max(total, self.done, 1)
 
     def update(self, detail: str = "") -> None:
         self.done += 1
+        self._render(detail=detail)
+
+    def _render(self, detail: str = "", force_log: bool = False) -> None:
         elapsed = time.monotonic() - self.start
         pct = 100 * self.done / self.total
         rate = self.done / elapsed if elapsed > 0 else 0.0
         remaining = self.total - self.done
         eta = remaining / rate if rate > 0 else 0.0
-        suffix = f" | {detail}" if detail else ""
-        log(
-            f"== {self.label}: {self.done}/{self.total} ({pct:.0f}%) "
-            f"| elapsed {format_duration(elapsed)} "
-            f"| ETA {format_duration(eta)}{suffix}"
+        bar = format_bar(self.done / self.total)
+        line = (
+            f"{self.label}: [{bar}] {self.done}/{self.total} ({pct:.1f}%) "
+            f"| {format_duration(elapsed)} elapsed | ETA {format_duration(eta)}"
         )
+        if detail:
+            short = detail if len(detail) <= 48 else "..." + detail[-45:]
+            line += f" | {short}"
+
+        if is_tty() and not force_log:
+            sys.stderr.write("\r\033[K" + line)
+            sys.stderr.flush()
+            return
+
+        pct_bucket = int(pct)
+        if (
+            force_log
+            or self.done == self.total
+            or pct_bucket > self._last_logged_pct
+            or self.done == 1
+        ):
+            log(line)
+            self._last_logged_pct = pct_bucket
+
+    def finish(self) -> None:
+        if is_tty():
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+
+
+class PipelineProgress:
+    """Overall progress across probing and merging."""
+
+    def __init__(self, probe_total: int, merge_total: int) -> None:
+        self.probe_total = max(probe_total, 0)
+        self.merge_total = max(merge_total, 1)
+        self.probe_done = 0
+        self.merge_done = 0
+        self.phase = "starting"
+        self.group_label = ""
+        self.start = time.monotonic()
+        self._last_logged_pct = -1
+        self._render(force_log=True)
+
+    @property
+    def overall_total(self) -> int:
+        return self.probe_total + self.merge_total
+
+    @property
+    def overall_done(self) -> int:
+        return self.probe_done + self.merge_done
+
+    def set_phase(self, phase: str, group_label: str = "") -> None:
+        self.phase = phase
+        if group_label:
+            self.group_label = group_label
+        self._render(force_log=True)
+
+    def probe_step(self) -> None:
+        self.probe_done += 1
+        self._render()
+
+    def merge_step(self) -> None:
+        self.merge_done += 1
+        self._render()
+
+    def _render(self, force_log: bool = False) -> None:
+        total = max(self.overall_total, 1)
+        done = self.overall_done
+        pct = 100 * done / total
+        elapsed = time.monotonic() - self.start
+        rate = done / elapsed if elapsed > 0 else 0.0
+        eta = (total - done) / rate if rate > 0 else 0.0
+        bar = format_bar(done / total)
+        group = f" | {self.group_label}" if self.group_label else ""
+        line = (
+            f"TOTAL: [{bar}] {done}/{total} ({pct:.1f}%) "
+            f"| {self.phase}{group} "
+            f"| {format_duration(elapsed)} | ETA {format_duration(eta)}"
+        )
+
+        if is_tty() and not force_log:
+            sys.stderr.write("\r\033[K" + line)
+            sys.stderr.flush()
+            return
+
+        pct_bucket = int(pct / 2) * 2  # log every ~2%
+        if force_log or done == total or pct_bucket > self._last_logged_pct or done <= 1:
+            log(line)
+            self._last_logged_pct = pct_bucket
+
+    def finish(self) -> None:
+        if is_tty():
+            sys.stderr.write("\n")
+            sys.stderr.flush()
 
 
 @dataclass(frozen=True)
@@ -505,33 +611,77 @@ def probe_duration(path: Path, ffprobe: str) -> float:
     return float(result.stdout.strip())
 
 
+def prefetch_durations(
+    paths: list[Path],
+    ffprobe: str,
+    cache: dict[Path, float],
+    progress: ProgressTracker | None = None,
+    pipeline: PipelineProgress | None = None,
+    workers: int = PROBE_WORKERS,
+) -> None:
+    pending = [path for path in paths if path not in cache]
+    if not pending:
+        return
+
+    def probe_one(path: Path) -> tuple[Path, float]:
+        return path, probe_duration(path, ffprobe)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(probe_one, path): path for path in pending}
+        for future in as_completed(futures):
+            path, duration = future.result()
+            cache[path] = duration
+            if progress:
+                progress.update(path.name)
+            if pipeline:
+                pipeline.probe_step()
+
+
 def attach_durations(
     clips: list[Clip],
     ffprobe: str,
     cache: dict[Path, float],
     progress: ProgressTracker | None = None,
+    pipeline: PipelineProgress | None = None,
     assume_seconds: float | None = None,
+    parallel_probe: bool = True,
 ) -> list[Clip]:
-    enriched: list[Clip] = []
-    for clip in clips:
-        if clip.path not in cache:
-            if assume_seconds is not None:
+    if assume_seconds is not None:
+        for clip in clips:
+            if clip.path not in cache:
                 cache[clip.path] = assume_seconds
-            else:
+                if progress:
+                    progress.update(clip.path.name)
+                if pipeline:
+                    pipeline.probe_step()
+    elif parallel_probe:
+        prefetch_durations(
+            [clip.path for clip in clips],
+            ffprobe,
+            cache,
+            progress,
+            pipeline,
+        )
+    else:
+        for clip in clips:
+            if clip.path not in cache:
                 if progress:
                     progress.update(clip.path.name)
                 cache[clip.path] = probe_duration(clip.path, ffprobe)
-        enriched.append(
-            Clip(
-                path=clip.path,
-                record_type=clip.record_type,
-                camera=clip.camera,
-                timestamp=clip.timestamp,
-                sequence=clip.sequence,
-                duration=cache[clip.path],
-            )
+                if pipeline:
+                    pipeline.probe_step()
+
+    return [
+        Clip(
+            path=clip.path,
+            record_type=clip.record_type,
+            camera=clip.camera,
+            timestamp=clip.timestamp,
+            sequence=clip.sequence,
+            duration=cache[clip.path],
         )
-    return enriched
+        for clip in clips
+    ]
 
 
 def split_chunks(session: list[Clip], chunk_seconds: float) -> list[list[Clip]]:
@@ -572,12 +722,15 @@ def merge_clips(
     ffmpeg: str,
     dry_run: bool,
     merge_progress: ProgressTracker | None = None,
+    pipeline: PipelineProgress | None = None,
 ) -> str:
     if output_path.exists():
         size_mb = output_path.stat().st_size / 1_000_000
         log(f"  skip (exists, {size_mb:.0f} MB): {output_path.name}")
         if merge_progress:
             merge_progress.update("skipped")
+        if pipeline:
+            pipeline.merge_step()
         return "skipped"
 
     total_duration = sum(c.duration or 0.0 for c in chunk)
@@ -588,6 +741,8 @@ def merge_clips(
     if dry_run:
         if merge_progress:
             merge_progress.update("planned")
+        if pipeline:
+            pipeline.merge_step()
         return "planned"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -630,6 +785,8 @@ def merge_clips(
                 output_path.unlink()
             if merge_progress:
                 merge_progress.update("failed")
+            if pipeline:
+                pipeline.merge_step()
             return "failed"
         size_mb = output_path.stat().st_size / 1_000_000
         elapsed = time.monotonic() - merge_start
@@ -637,6 +794,8 @@ def merge_clips(
             merge_progress.update(f"done {size_mb:.0f} MB in {format_duration(elapsed)}")
         else:
             log(f"  done: {size_mb:.0f} MB in {format_duration(elapsed)}")
+        if pipeline:
+            pipeline.merge_step()
         return "merged"
     finally:
         list_path.unlink(missing_ok=True)
@@ -653,6 +812,7 @@ def process_group(
     duration_cache: dict[Path, float],
     probe_progress: ProgressTracker | None,
     merge_progress: ProgressTracker,
+    pipeline: PipelineProgress | None,
     assume_seconds: float | None = None,
 ) -> tuple[int, int, int, int]:
     if not clips:
@@ -667,25 +827,51 @@ def process_group(
     planned = 0
 
     log(f"\n--- {record_type}/{camera}: {len(clips)} clips, {len(sessions)} sessions ---")
+    if pipeline:
+        pipeline.set_phase("probing", f"{record_type}/{camera}")
+
+    uncached_all = sum(1 for clip in clips if clip.path not in duration_cache)
+    if uncached_all:
+        if assume_seconds is not None:
+            log(f"  estimating {uncached_all} clip(s) at {assume_seconds:g}s each...")
+        else:
+            log(f"  probing {uncached_all} clip(s) ({PROBE_WORKERS} parallel workers)...")
+
+    attach_durations(
+        clips,
+        ffprobe,
+        duration_cache,
+        probe_progress,
+        pipeline,
+        assume_seconds=assume_seconds,
+    )
+
+    if pipeline:
+        pipeline.set_phase("merging", f"{record_type}/{camera}")
+
     for session_idx, session in enumerate(sessions, start=1):
-        uncached = sum(1 for clip in session if clip.path not in duration_cache)
-        log(
-            f"  session {session_idx}/{len(sessions)}: "
-            f"{len(session)} clips, probing {uncached} new file(s)..."
-        )
-        session_with_duration = attach_durations(
-            session,
-            ffprobe,
-            duration_cache,
-            probe_progress,
-            assume_seconds=assume_seconds,
-        )
+        session_with_duration = [
+            Clip(
+                path=clip.path,
+                record_type=clip.record_type,
+                camera=clip.camera,
+                timestamp=clip.timestamp,
+                sequence=clip.sequence,
+                duration=duration_cache[clip.path],
+            )
+            for clip in session
+        ]
         chunks = split_chunks(session_with_duration, chunk_seconds)
         log(f"  session {session_idx}/{len(sessions)} -> {len(chunks)} output file(s)")
         for chunk in chunks:
             out_path = output_dir / record_type / camera / output_name(chunk)
             status = merge_clips(
-                chunk, out_path, ffmpeg, dry_run, merge_progress
+                chunk,
+                out_path,
+                ffmpeg,
+                dry_run,
+                merge_progress,
+                pipeline,
             )
             if status == "merged":
                 merged += 1
@@ -869,6 +1055,9 @@ def main() -> int:
     if args.dry_run:
         log("Mode:    dry-run")
 
+    log("Merge:   ffmpeg concat -c copy (lossless, no re-encode)")
+    log(f"Probe:   {PROBE_WORKERS} parallel ffprobe workers")
+
     groups: list[tuple[str, str, list[Clip]]] = []
     total_clips = 0
     for record_type in record_types:
@@ -897,9 +1086,10 @@ def main() -> int:
         log("Dry-run uses assumed 60s per clip (no ffprobe) for a fast preview")
 
     probe_progress = (
-        None if assume_seconds is not None else ProgressTracker(total_clips, "Probing clip durations")
+        None if assume_seconds is not None else ProgressTracker(total_clips, "Probe")
     )
-    merge_progress = ProgressTracker(max(total_outputs, 1), "Merging output files")
+    merge_progress = ProgressTracker(max(total_outputs, 1), "Merge")
+    pipeline = PipelineProgress(total_clips, max(total_outputs, 1))
 
     duration_cache: dict[Path, float] = {}
     total_merged = 0
@@ -920,12 +1110,18 @@ def main() -> int:
             duration_cache,
             probe_progress,
             merge_progress,
+            pipeline,
             assume_seconds=assume_seconds,
         )
         total_merged += merged
         total_skipped += skipped
         total_failed += failed
         total_planned += planned
+
+    if probe_progress:
+        probe_progress.finish()
+    merge_progress.finish()
+    pipeline.finish()
 
     elapsed = time.monotonic() - run_start
     if args.dry_run:
