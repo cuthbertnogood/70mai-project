@@ -212,14 +212,21 @@ def append_video_encode_args(
 ) -> None:
     cmd.extend(["-r", str(fps)])
     if hw:
+        bitrate_k = max(hw_quality, 1) * 100
         cmd.extend(
             [
                 "-c:v",
                 "h264_videotoolbox",
-                "-q:v",
-                str(hw_quality),
+                "-b:v",
+                f"{bitrate_k}k",
+                "-maxrate",
+                f"{bitrate_k}k",
+                "-bufsize",
+                f"{bitrate_k * 2}k",
                 "-allow_sw",
                 "1",
+                "-pix_fmt",
+                "yuv420p",
             ]
         )
     else:
@@ -276,7 +283,11 @@ def run_compose(
     log(f"Duration:      {duration:g} sec")
     log(f"Front offset:  {sync_offset_front:+g} sec")
     log(f"Back offset:   {sync_offset_back:+g} sec")
-    encoder = f"h264_videotoolbox (q:v {hw_quality})" if hw else f"libx264 (crf {crf}, {preset})"
+    encoder = (
+        f"h264_videotoolbox ({hw_quality * 100}k)"
+        if hw
+        else f"libx264 (crf {crf}, {preset})"
+    )
     log(f"Encoder:       {encoder}")
     log("")
     log("Front segments:")
@@ -384,7 +395,7 @@ def main() -> None:
         type=int,
         default=65,
         metavar="Q",
-        help="VideoToolbox quality 1–100, lower = better (default: 65, preview OK)",
+        help="VideoToolbox target quality 1–100 → bitrate Q×100k (default: 65 ≈ 6.5 Mbps)",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print plan only")
     args = parser.parse_args()
