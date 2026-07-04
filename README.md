@@ -47,22 +47,106 @@ Process only one type or camera:
 python3 import_70mai.py --types Normal --cameras Front
 ```
 
-Export a date/time range (clip start must fall within the range; end is exclusive):
+## Export Parameters
+
+You can limit which clips are imported from the SD card by date and time. A clip is included when its **start timestamp** (parsed from the filename) falls within the range: `start <= timestamp < end` (end is exclusive).
+
+### Option 1: date + time window (recommended)
+
+Set a calendar day and optional hour/minute bounds:
+
+| Flag | Description |
+|------|-------------|
+| `--date DATE` | Day to export. Required when using `--from-time` / `--to-time`. |
+| `--from-time HH:MM` | Range start on that day. Default: `00:00` if omitted. |
+| `--to-time HH:MM` | Range end on that day (exclusive). Default: `23:59:59` if omitted. |
 
 ```bash
+# Export Normal recording from 08:00 to 09:00 on 27 Apr 2026
 python3 import_70mai.py \
   --date 04-27-2026 \
   --from-time 08:00 \
   --to-time 09:00
+
+# Whole day (00:00 – 23:59:59)
+python3 import_70mai.py --date 2026-04-27
+
+# From 14:30 until end of day
+python3 import_70mai.py --date 2026-04-27 --from-time 14:30
 ```
 
-Or with full datetimes:
+`--from-time` / `--to-time` also accept seconds: `08:00:30`.
+
+### Option 2: full datetime range
+
+Use `--from` and `--to` for ranges that span multiple days or need explicit datetimes:
+
+| Flag | Description |
+|------|-------------|
+| `--from DATETIME` | Range start (inclusive). |
+| `--to DATETIME` | Range end (exclusive). |
 
 ```bash
 python3 import_70mai.py \
   --from "2026-04-27 08:00" \
   --to "2026-04-27 09:00"
+
+# Multi-day export
+python3 import_70mai.py \
+  --from "2026-04-27 08:00" \
+  --to "2026-04-28 18:00"
 ```
+
+### Accepted date/time formats
+
+| Format | Example |
+|--------|---------|
+| `YYYY-MM-DD` | `2026-04-27` |
+| `YYYY-MM-DD HH:MM` | `2026-04-27 08:00` |
+| `YYYY-MM-DD HH:MM:SS` | `2026-04-27 08:00:30` |
+| `MM-DD-YYYY` | `04-27-2026` |
+| `MM-DD-YYYY HH:MM` | `04-27-2026 08:00` |
+| `MM-DD-YYYY HH:MM:SS` | `04-27-2026 08:00:30` |
+| `HH:MM` / `HH:MM:SS` | for `--from-time` / `--to-time` only |
+
+### Combine with other filters
+
+Export parameters work together with `--types`, `--cameras`, `--chunk-minutes`, and `--dry-run`:
+
+```bash
+python3 import_70mai.py \
+  --date 04-27-2026 \
+  --from-time 08:00 \
+  --to-time 12:00 \
+  --types Normal \
+  --cameras Front \
+  --dry-run
+```
+
+When a range is active, the script prints it at startup:
+
+```
+Range:   2026-04-27 08:00:00 -> 2026-04-27 09:00:00
+```
+
+### All CLI options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source PATH` | `/Volumes/Untitled` | Mounted SD card path |
+| `--output PATH` | `./video` | Output directory for merged files |
+| `--chunk-minutes N` | `10` | Target length of each merged file (minutes) |
+| `--gap-seconds N` | `120` | New session if gap between clips exceeds this |
+| `--types LIST` | `Normal,Event,Parking` | Comma-separated record types |
+| `--cameras LIST` | `Front,Back` | Comma-separated cameras |
+| `--dry-run` | off | Preview merge plan without writing files |
+| `--date DATE` | — | Export day (see above) |
+| `--from-time HH:MM` | `00:00` | Start time on `--date` |
+| `--to-time HH:MM` | `23:59:59` | End time on `--date` (exclusive) |
+| `--from DATETIME` | — | Range start (inclusive) |
+| `--to DATETIME` | — | Range end (exclusive) |
+
+Run `python3 import_70mai.py --help` for the built-in reference.
 
 ## Output
 

@@ -405,9 +405,26 @@ def find_tool(name: str) -> str:
     return path
 
 
+EXPORT_RANGE = """
+Export range (clip start timestamp must satisfy: start <= t < end):
+
+  Date + time window:
+    --date 04-27-2026 --from-time 08:00 --to-time 09:00
+    --date 2026-04-27                        # whole day
+
+  Full datetime:
+    --from "2026-04-27 08:00" --to "2026-04-27 09:00"
+
+  Date formats: YYYY-MM-DD[ HH:MM[:SS]] or MM-DD-YYYY[ HH:MM[:SS]]
+  Time formats: HH:MM or HH:MM:SS (for --from-time / --to-time)
+"""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Import and merge 70mai SD card clips into longer videos."
+        description="Import and merge 70mai SD card clips into longer videos.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=EXPORT_RANGE,
     )
     parser.add_argument(
         "--source",
