@@ -16,13 +16,30 @@ from datetime import date, datetime
 from pathlib import Path
 
 FILENAME_RE = re.compile(
-    r"^(NO|EV|PA)(\d{8})-(\d{6})-(\d+)([FB])\.MP4$",
+    r"^(NO|EV|PA|LA)(\d{8})-(\d{6})-(\d+)([FB])\.MP4$",
+    re.IGNORECASE,
+)
+PHOTO_RE = re.compile(
+    r"^PH(\d{8})-(\d{6})-(\d+)([FB])\.JPG$",
     re.IGNORECASE,
 )
 
 RECORD_TYPES = ("Normal", "Event", "Parking")
+ALL_SCAN_TYPES = ("Normal", "Event", "Parking", "Lapse")
 CAMERAS = ("Front", "Back")
-TYPE_PREFIX = {"Normal": "NO", "Event": "EV", "Parking": "PA"}
+TYPE_PREFIX = {
+    "Normal": "NO",
+    "Event": "EV",
+    "Parking": "PA",
+    "Lapse": "LA",
+}
+RECORD_TYPE_INFO: dict[str, tuple[str, str, str]] = {
+    "Normal": ("NO", "MP4", "Continuous loop recording (~1 min clips)"),
+    "Event": ("EV", "MP4", "Impact / collision / manual save events"),
+    "Parking": ("PA", "MP4", "Parking mode recordings"),
+    "Lapse": ("LA", "MP4", "Timelapse recordings"),
+    "Photo": ("PH", "JPG", "Snapshot photos"),
+}
 MIN_GPS_TIMESTAMP = 1577836800  # 2020-01-01 — ignore zero/invalid points
 BAR_WIDTH = 36
 PROBE_WORKERS = 8
@@ -286,6 +303,190 @@ class GpsFileSummary:
     points_by_day: tuple[tuple[date, int], ...]
 
 
+@dataclass(frozen=True)
+class FolderInventory:
+    record_type: str
+    camera: str
+    file_count: int
+    total_bytes: int
+    start: datetime | None
+    end: datetime | None
+    extension: str
+
+
+@dataclass(frozen=True)
+class PhotoFile:
+    path: Path
+    camera: str
+    timestamp: datetime
+
+
+def parse_photo(path: Path, camera: str) -> PhotoFile | None:
+    match = PHOTO_RE.match(path.name)
+    if not match:
+        return None
+    date_part, time_part, _seq, cam_suffix = match.groups()
+    expected_suffix = "F" if camera == "Front" else "B"
+    if cam_suffix.upper() != expected_suffix:
+        return None
+    timestamp = datetime.strptime(date_part + time_part, "%Y%m%d%H%M%S")
+    return PhotoFile(path=path, camera=camera, timestamp=timestamp)
+
+
+def timestamp_from_media_name(name: str) -> datetime | None:
+    match = re.match(
+        r"^[A-Z]{2}(\d{8})-(\d{6})-\d+[FB]\.(MP4|JPG)$",
+        name,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def scan_folder_inventory(
+    source: Path,
+    record_type: str,
+    camera: str,
+    *,
+    extensions: tuple[str, ...] = (".MP4",),
+) -> FolderInventory | None:
+    folder = source / record_type / camera
+    if not folder.is_dir():
+        return None
+    ext_set = {ext.upper() for ext in extensions}
+    file_count = 0
+    total_bytes = 0
+    start: datetime | None = None
+    end: datetime | None = None
+    for path in folder.iterdir():
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        if path.suffix.upper() not in ext_set:
+            continue
+        file_count += 1
+        total_bytes += path.stat().st_size
+        timestamp = timestamp_from_media_name(path.name)
+        if timestamp:
+            start = timestamp if start is None else min(start, timestamp)
+            end = timestamp if end is None else max(end, timestamp)
+    extension = extensions[0].lstrip(".").upper()
+    return FolderInventory(
+        record_type=record_type,
+        camera=camera,
+        file_count=file_count,
+        total_bytes=total_bytes,
+        start=start,
+        end=end,
+        extension=extension,
+    )
+
+
+def scan_all_inventory(source: Path) -> list[FolderInventory]:
+    items: list[FolderInventory] = []
+    for record_type in ALL_SCAN_TYPES:
+        for camera in CAMERAS:
+            item = scan_folder_inventory(source, record_type, camera)
+            if item:
+                items.append(item)
+    for camera in CAMERAS:
+        item = scan_folder_inventory(
+            source, "Photo", camera, extensions=(".JPG", ".JPEG")
+        )
+        if item:
+            items.append(item)
+    return items
+
+
+def scan_photos(source: Path, cameras: list[str]) -> list[PhotoFile]:
+    photos: list[PhotoFile] = []
+    for camera in cameras:
+        folder = source / "Photo" / camera
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.iterdir()):
+            if not path.is_file() or path.suffix.upper() not in {".JPG", ".JPEG"}:
+                continue
+            photo = parse_photo(path, camera)
+            if photo:
+                photos.append(photo)
+    return photos
+
+
+def print_record_types_reference() -> None:
+    log("\n=== Record types (70mai A810) ===")
+    for record_type, (prefix, ext, description) in RECORD_TYPE_INFO.items():
+        log(f"  {record_type:8} [{prefix}] .{ext:3}  {description}")
+
+
+def print_card_inventory(inventory: list[FolderInventory]) -> None:
+    log("\n=== Card inventory ===")
+    if not inventory:
+        log("  No media folders found.")
+        return
+
+    by_type: dict[str, list[FolderInventory]] = {}
+    for item in inventory:
+        by_type.setdefault(item.record_type, []).append(item)
+
+    grand_files = 0
+    grand_bytes = 0
+    for record_type in (*ALL_SCAN_TYPES, "Photo"):
+        items = by_type.get(record_type, [])
+        if not items:
+            continue
+        prefix, ext, description = RECORD_TYPE_INFO[record_type]
+        type_files = sum(i.file_count for i in items)
+        type_bytes = sum(i.total_bytes for i in items)
+        grand_files += type_files
+        grand_bytes += type_bytes
+        log(f"\n  {record_type} [{prefix}] — {description}")
+        if type_files == 0:
+            log("    (empty)")
+            continue
+        for item in items:
+            if item.file_count == 0:
+                log(f"    {item.camera:5}  empty")
+                continue
+            range_text = "no timestamps"
+            if item.start and item.end:
+                range_text = f"{format_ts(item.start)} -> {format_ts(item.end)}"
+            log(
+                f"    {item.camera:5}  {item.file_count:4} files, "
+                f"{format_file_size(item.total_bytes):>8}  |  {range_text}"
+            )
+
+    log(
+        f"\n  Total media: {grand_files} files, {format_file_size(grand_bytes)} "
+        f"(excluding GPS logs)"
+    )
+
+
+def print_photos_section(photos: list[PhotoFile]) -> None:
+    log("\n=== Photos ===")
+    if not photos:
+        log("  No photos found.")
+        return
+    for camera in CAMERAS:
+        camera_photos = [p for p in photos if p.camera == camera]
+        if not camera_photos:
+            continue
+        ordered = sorted(camera_photos, key=lambda p: p.timestamp)
+        log(
+            f"\n  Photo / {camera} — {len(ordered)} photo(s), "
+            f"{format_ts(ordered[0].timestamp)} -> {format_ts(ordered[-1].timestamp)}"
+        )
+        for photo in ordered:
+            size_kb = photo.path.stat().st_size / 1_000
+            log(
+                f"    {format_ts(photo.timestamp)}  "
+                f"{photo.path.name}  ({size_kb:.0f} KB)"
+            )
+
+
 def format_file_size(num_bytes: int) -> str:
     if num_bytes >= 1_000_000_000:
         return f"{num_bytes / 1_000_000_000:.1f} GB"
@@ -454,12 +655,14 @@ def print_scan_report(
     groups: list[tuple[str, str, list[Clip]]],
     gap_seconds: float,
     gps_files: list[GpsFileSummary],
+    inventory: list[FolderInventory],
+    photos: list[PhotoFile],
 ) -> None:
     all_clips = [clip for _, _, clips in groups for clip in clips]
     recording_groups = [
         (record_type, camera, clips)
         for record_type, camera, clips in groups
-        if record_type != "Event"
+        if record_type not in ("Event",)
     ]
     event_groups = [
         (record_type, camera, clips)
@@ -468,13 +671,16 @@ def print_scan_report(
     ]
 
     log(f"Scanning {source}")
-    log(f"Session gap: {gap_seconds:g} sec (pauses longer than this start a new range)\n")
+    log(f"Session gap: {gap_seconds:g} sec (pauses longer than this start a new range)")
 
-    if not all_clips and not gps_files:
-        log("No clips or GPS data found on the card.")
+    print_record_types_reference()
+    print_card_inventory(inventory)
+
+    if not all_clips and not gps_files and not photos:
+        log("\nNo clips, photos, or GPS data found on the card.")
         return
 
-    log("=== Overall ===")
+    log("\n=== Overall ===")
     if all_clips:
         overall_start = min(c.timestamp for c in all_clips)
         overall_end = max(c.timestamp for c in all_clips)
@@ -492,11 +698,21 @@ def print_scan_report(
         gps_start = min(item.start for item in gps_files)
         gps_end = max(item.end for item in gps_files)
         gps_points = sum(item.point_count for item in gps_files)
+        gps_bytes = sum(item.size_bytes for item in gps_files)
         log(
-            f"  GPS:   {gps_points} points in {len(gps_files)} file(s) | "
+            f"  GPS:   {gps_points} points in {len(gps_files)} file(s), "
+            f"{format_file_size(gps_bytes)} | "
             f"{format_ts(gps_start)} -> {format_ts(gps_end)}"
         )
         log(f"  GPS days: {format_day(gps_start)} .. {format_day(gps_end)}")
+
+    if photos:
+        photo_start = min(p.timestamp for p in photos)
+        photo_end = max(p.timestamp for p in photos)
+        log(
+            f"  photos: {len(photos)} file(s) | "
+            f"{format_ts(photo_start)} -> {format_ts(photo_end)}"
+        )
 
     if recording_groups:
         log("\n=== By type / camera ===")
@@ -523,6 +739,7 @@ def print_scan_report(
                     )
 
     print_events_section(event_groups)
+    print_photos_section(photos)
     print_gps_section(gps_files)
 
     if all_clips:
@@ -548,7 +765,10 @@ def print_scan_report(
                 f"| {len(day_clips)} clips | {', '.join(active_groups)}"
             )
 
-    log("\nUse --date / --from-time / --to-time or --from / --to to export a range.")
+    log(
+        "\nUse --date / --from-time / --to-time or --from / --to to export a range."
+    )
+    log("Use --export-events to copy each event clip as a separate file.")
 
 
 def scan_clips(
@@ -884,6 +1104,81 @@ def process_group(
     return merged, skipped, failed, planned
 
 
+def event_output_name(clip: Clip) -> str:
+    ts = clip.timestamp.strftime("%Y%m%d-%H%M%S")
+    return f"EV_{ts}_{clip.camera_suffix}.mp4"
+
+
+def export_event_clip(
+    clip: Clip,
+    output_path: Path,
+    dry_run: bool,
+    progress: ProgressTracker | None = None,
+) -> str:
+    if output_path.exists():
+        size_mb = output_path.stat().st_size / 1_000_000
+        log(f"  skip (exists, {size_mb:.1f} MB): {output_path.name}")
+        if progress:
+            progress.update("skipped")
+        return "skipped"
+
+    size_mb = clip.path.stat().st_size / 1_000_000
+    log(f"  export {clip.path.name} ({size_mb:.1f} MB) -> {output_path.name}")
+    if dry_run:
+        if progress:
+            progress.update("planned")
+        return "planned"
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(clip.path, output_path)
+    except OSError as exc:
+        log(f"  ERROR: {exc}")
+        if progress:
+            progress.update("failed")
+        return "failed"
+
+    if progress:
+        progress.update("done")
+    return "exported"
+
+
+def export_events(
+    event_groups: list[tuple[str, str, list[Clip]]],
+    output_dir: Path,
+    dry_run: bool,
+) -> tuple[int, int, int, int]:
+    all_events = [
+        clip
+        for _record_type, _camera, clips in event_groups
+        for clip in sorted(clips, key=lambda c: (c.timestamp, c.sequence))
+    ]
+    if not all_events:
+        log("No event clips to export.")
+        return 0, 0, 0, 0
+
+    progress = ProgressTracker(len(all_events), "Export events")
+    exported = 0
+    skipped = 0
+    failed = 0
+    planned = 0
+
+    for clip in all_events:
+        out_path = output_dir / "Event" / clip.camera / event_output_name(clip)
+        status = export_event_clip(clip, out_path, dry_run, progress)
+        if status == "exported":
+            exported += 1
+        elif status == "skipped":
+            skipped += 1
+        elif status == "planned":
+            planned += 1
+        else:
+            failed += 1
+
+    progress.finish()
+    return exported, skipped, failed, planned
+
+
 def find_tool(name: str) -> str:
     path = shutil.which(name)
     if not path:
@@ -908,6 +1203,10 @@ Export range (clip start timestamp must satisfy: start <= t < end):
 
 Scan SD card for available data ranges:
   python3 import_70mai.py --scan
+
+Export each event as a separate clip (no merge):
+  python3 import_70mai.py --export-events
+  python3 import_70mai.py --export-events --date 2026-04-27 --cameras Front
 """
 
 
@@ -971,7 +1270,12 @@ def main() -> int:
     parser.add_argument(
         "--scan",
         action="store_true",
-        help="Scan SD card and show available date/time ranges (no ffmpeg needed)",
+        help="Scan SD card: inventory, ranges, events, photos, GPS (no ffmpeg)",
+    )
+    parser.add_argument(
+        "--export-events",
+        action="store_true",
+        help="Export each Event clip as a separate file (copy, no merge)",
     )
     parser.add_argument(
         "--from",
@@ -1033,11 +1337,51 @@ def main() -> int:
     if args.scan:
         if args.dry_run:
             log("Note: --dry-run is ignored with --scan")
-        scan_types = list(dict.fromkeys([*record_types, "Event"]))
-        groups = collect_groups(args.source, scan_types, cameras)
+        if args.export_events:
+            log("Note: --export-events is ignored with --scan")
+        scan_types = list(ALL_SCAN_TYPES)
+        groups = collect_groups(args.source, scan_types, cameras, warn=False)
+        inventory = scan_all_inventory(args.source)
+        photos = scan_photos(args.source, list(CAMERAS))
         gps_files = scan_gps_files(args.source)
-        print_scan_report(args.source, groups, args.gap_seconds, gps_files)
+        print_scan_report(
+            args.source, groups, args.gap_seconds, gps_files, inventory, photos
+        )
         return 0
+
+    if args.export_events:
+        if args.dry_run:
+            log("Mode:    dry-run")
+        log(f"Source:  {args.source}")
+        log(f"Output:  {args.output}")
+        log(f"Cameras: {', '.join(cameras)}")
+        if range_start or range_end:
+            log(f"Range:   {range_start or '...'} -> {range_end or '...'}")
+        log("Export:  one file per event (lossless copy)")
+
+        event_groups: list[tuple[str, str, list[Clip]]] = []
+        for camera in cameras:
+            clips = scan_clips(args.source, ["Event"], [camera], warn=False)
+            clips = filter_clips(clips, range_start, range_end)
+            if clips:
+                event_groups.append(("Event", camera, clips))
+
+        run_start = time.monotonic()
+        exported, skipped, failed, planned = export_events(
+            event_groups, args.output, args.dry_run
+        )
+        elapsed = time.monotonic() - run_start
+        if args.dry_run:
+            log(
+                f"\nDone in {format_duration(elapsed)}: "
+                f"{planned} planned, {skipped} skipped, {failed} failed"
+            )
+        else:
+            log(
+                f"\nDone in {format_duration(elapsed)}: "
+                f"{exported} exported, {skipped} skipped, {failed} failed"
+            )
+        return 1 if failed else 0
 
     ffmpeg = find_tool("ffmpeg")
     ffprobe = find_tool("ffprobe")

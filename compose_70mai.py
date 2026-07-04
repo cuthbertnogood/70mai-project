@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -24,6 +25,9 @@ MERGED_RE = re.compile(
 
 DEFAULT_PROFILE = "balanced"
 DEFAULT_DURATION = 600.0  # 10 minutes
+BAR_WIDTH = 36
+FFMPEG_TIME_RE = re.compile(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})")
+FFMPEG_SPEED_RE = re.compile(r"speed=\s*([\d.]+)x")
 
 PROFILES: dict[str, dict[str, int | bool]] = {
     "balanced": {
@@ -64,6 +68,120 @@ class MergedClip:
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def format_bar(ratio: float, width: int = BAR_WIDTH) -> str:
+    ratio = max(0.0, min(1.0, ratio))
+    filled = int(width * ratio)
+    return "█" * filled + "░" * (width - filled)
+
+
+def is_tty() -> bool:
+    return sys.stderr.isatty()
+
+
+def parse_ffmpeg_time(line: str) -> float | None:
+    match = FFMPEG_TIME_RE.search(line)
+    if not match:
+        return None
+    hours, minutes, seconds = int(match.group(1)), int(match.group(2)), float(match.group(3))
+    return hours * 3600 + minutes * 60 + seconds
+
+
+class EncodeProgress:
+    """Live progress bar while ffmpeg encodes."""
+
+    def __init__(self, duration_sec: float) -> None:
+        self.duration_sec = max(duration_sec, 0.1)
+        self.start = time.monotonic()
+        self.current_sec = 0.0
+        self.speed = 0.0
+        self._last_logged_pct = -1
+        self._render(force_log=True)
+
+    def update_from_line(self, line: str) -> None:
+        current = parse_ffmpeg_time(line)
+        if current is not None:
+            self.current_sec = current
+        speed_match = FFMPEG_SPEED_RE.search(line)
+        if speed_match:
+            self.speed = float(speed_match.group(1))
+        if current is not None or speed_match:
+            self._render()
+
+    def _render(self, force_log: bool = False) -> None:
+        ratio = min(1.0, self.current_sec / self.duration_sec)
+        elapsed = time.monotonic() - self.start
+        pct = 100 * ratio
+        eta = 0.0
+        if self.speed > 0:
+            remaining = max(0.0, self.duration_sec - self.current_sec)
+            eta = remaining / self.speed
+        elif ratio > 0:
+            eta = elapsed * (1.0 - ratio) / ratio
+        bar = format_bar(ratio)
+        speed_txt = f"{self.speed:.2f}x" if self.speed > 0 else "—"
+        line = (
+            f"Encode: [{bar}] {format_duration(self.current_sec)}/"
+            f"{format_duration(self.duration_sec)} ({pct:.1f}%) "
+            f"| {format_duration(elapsed)} elapsed | ETA {format_duration(eta)} "
+            f"| speed {speed_txt}"
+        )
+
+        if is_tty() and not force_log:
+            sys.stderr.write("\r\033[K" + line)
+            sys.stderr.flush()
+            return
+
+        pct_bucket = int(pct)
+        if force_log or pct_bucket > self._last_logged_pct or ratio >= 1.0:
+            log(line)
+            self._last_logged_pct = pct_bucket
+
+    def finish(self) -> None:
+        self.current_sec = self.duration_sec
+        self._render(force_log=True)
+        if is_tty():
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+
+
+def run_ffmpeg_with_progress(cmd: list[str], *, duration_sec: float) -> None:
+    progress = EncodeProgress(duration_sec)
+    stderr_chunks: list[str] = []
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stderr is not None
+    for raw_line in proc.stderr:
+        stderr_chunks.append(raw_line)
+        for segment in raw_line.split("\r"):
+            segment = segment.strip()
+            if segment and "frame=" in segment:
+                progress.update_from_line(segment)
+    proc.wait()
+    progress.finish()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(
+            proc.returncode,
+            cmd,
+            stderr="".join(stderr_chunks),
+        )
 
 
 def parse_screen_start(path: Path) -> datetime:
@@ -780,9 +898,7 @@ def run_compose(
 
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            if proc.stderr:
-                print(proc.stderr, end="", file=sys.stderr, flush=True)
+            run_ffmpeg_with_progress(cmd, duration_sec=duration)
             if label != describe_pipeline(hw=hw, hw_decode=hw_decode, use_vt_scale=use_vt_scale):
                 log(f"\nNote: fell back to {label}")
             log(f"\nDone: {output}")

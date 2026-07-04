@@ -13,65 +13,94 @@ The script reads from a mounted 70mai card:
 
 ```
 /Volumes/Untitled/
-├── Normal/Front/*.MP4
+├── Normal/Front/*.MP4    [NO] continuous recording
 ├── Normal/Back/*.MP4
-├── Event/Front/*.MP4
+├── Event/Front/*.MP4     [EV] impact / collision events
 ├── Event/Back/*.MP4
-├── Parking/Front/*.MP4
-└── Parking/Back/*.MP4
+├── Parking/Front/*.MP4   [PA] parking mode
+├── Parking/Back/*.MP4
+├── Lapse/Front/*.MP4     [LA] timelapse (may be empty)
+├── Lapse/Back/*.MP4
+├── Photo/Front/*.JPG     [PH] snapshot photos
+├── Photo/Back/*.JPG
+└── GPSData*.txt          GPS track logs
 ```
+
+| Type | Prefix | Format | Description |
+|------|--------|--------|-------------|
+| Normal | NO | MP4 | Continuous loop recording (~1 min clips) |
+| Event | EV | MP4 | Impact / collision / manual save events |
+| Parking | PA | MP4 | Parking mode recordings |
+| Lapse | LA | MP4 | Timelapse recordings |
+| Photo | PH | JPG | Snapshot photos |
 
 Hidden `.s_Front` preview copies are ignored.
 
 ## Usage
 
-Scan the SD card to see which date/time ranges contain data (fast, no ffmpeg). Always includes **events** and **GPS tracks**, even when `--types` is narrowed:
+Scan the SD card for a **full inventory** (all types, sizes, date ranges, events, photos, GPS). No ffmpeg needed:
 
 ```bash
 python3 import_70mai.py --scan
 ```
 
+The scan always checks **all record types** (Normal, Event, Parking, Lapse, Photo) plus GPS — regardless of `--types`.
+
 Example output:
 
 ```
-Scanning /Volumes/Untitled
-Session gap: 120 sec (pauses longer than this start a new range)
+=== Record types (70mai A810) ===
+  Normal   [NO] .MP4  Continuous loop recording (~1 min clips)
+  Event    [EV] .MP4  Impact / collision / manual save events
+  ...
+
+=== Card inventory ===
+  Normal [NO] — Continuous loop recording (~1 min clips)
+    Front   463 files, 116.9 GB  |  2026-04-25 13:01:19 -> 2026-04-27 08:56:55
+    Back    463 files,  29.1 GB  |  ...
+  Event [EV] — ...
+  Parking [PA] — ...
+  Lapse [LA] — (empty)
+  Photo [PH] — ...
+  Total media: 1908 files, 223.7 GB
 
 === Overall ===
-  video: 1906 clips | 2026-04-25 13:01:19 -> 2026-04-28 14:48:28
-  video days: 2026-04-25 .. 2026-04-28
-  GPS:   818315 points in 2 file(s) | 2025-03-18 03:40:07 -> 2026-04-27 00:53:56
-  GPS days: 2025-03-18 .. 2026-04-27
-
-=== By type / camera ===
-
-Normal / Front — 520 clips, 2026-04-25 13:01:19 -> 2026-04-28 12:00:00
-  3 recording session(s):
-    1. 2026-04-25 13:01:19 -> 2026-04-25 18:30:00 (156 clips)
-    ...
+  video: 1906 clips | 2024-12-28 -> 2026-04-27
+  GPS:   806962 points in 2 file(s), 71.3 MB | 2025-03-18 -> 2026-04-27
+  photos: 2 file(s) | 2024-10-15 07:53:45 -> ...
 
 === Events ===
+  (each event listed by date and time)
 
-Event / Front — 237 event(s), 2026-02-21 07:15:47 -> 2026-04-27 08:47:48
-  2026-04-27  (3 event(s))
-    08:47:48  EV20260427-084748-032775F.MP4
-    ...
-
+=== Photos ===
 === GPS tracks ===
-  2 file(s) | 818315 points | 2025-03-18 03:40:07 -> 2026-04-27 00:53:56
-  calendar days: 2025-03-18 .. 2026-04-27
-
-  GPSData000002.txt — 63.0 MB, 722970 points
-    range: 2025-03-18 03:40:07 -> 2026-04-12 13:12:09
-  GPSData000003.txt — 8.3 MB, 95010 points
-    range: 2026-04-12 13:16:24 -> 2026-04-27 00:53:56
-
 === By date (video) ===
-  2026-04-25  13:01:19 — 23:58:42  | 890 clips | Event/Front, Normal/Back, Normal/Front
-  2026-04-26  07:30:00 — 22:45:11  | 650 clips | Normal/Back, Normal/Front
 ```
 
 Use the ranges from `--scan` to pick `--date` / `--from-time` / `--to-time` for export.
+
+### Export events (one file per event)
+
+Events are short clips — export each as a separate file without merging:
+
+```bash
+# All events, both cameras
+python3 import_70mai.py --export-events
+
+# Preview first
+python3 import_70mai.py --export-events --dry-run
+
+# Filter by date / camera
+python3 import_70mai.py --export-events \
+  --date 2026-04-27 \
+  --from-time 08:00 \
+  --to-time 09:00 \
+  --cameras Front
+```
+
+Output: `video/Output/Event/Front/EV_20260427-084748_F.mp4` (lossless copy from SD card).
+
+Respects the same `--date`, `--from`/`--to`, and `--cameras` filters as normal export. Does not require ffmpeg.
 
 Preview the merge plan without writing files:
 
@@ -188,7 +217,8 @@ Range:   2026-04-27 08:00:00 -> 2026-04-27 09:00:00
 | `--types LIST` | `Normal,Event,Parking` | Comma-separated record types |
 | `--cameras LIST` | `Front,Back` | Comma-separated cameras |
 | `--dry-run` | off | Preview merge plan without writing files |
-| `--scan` | off | Scan SD card: video ranges, events list, GPS tracks |
+| `--scan` | off | Full card scan: inventory, ranges, events, photos, GPS |
+| `--export-events` | off | Export each Event clip as a separate file (copy) |
 | `--date DATE` | — | Export day (see above) |
 | `--from-time HH:MM` | `00:00` | Start time on `--date` |
 | `--to-time HH:MM` | `23:59:59` | End time on `--date` (exclusive) |
@@ -250,6 +280,14 @@ python3 import_70mai.py 2>&1 | tee import.log
 ## Compose acceleration
 
 [`compose_70mai.py`](compose_70mai.py) builds a vertical 3-camera video (screen + Front + Back) and re-encodes it. That step is CPU-heavy without hardware help.
+
+During encoding, a live **progress bar** is shown (in-place on TTY):
+
+```
+Encode: [████████░░░░░░░░░░░░░░░░░░░░░░░░] 12m 05s/35m 10s (34.2%) | 22m 18s elapsed | ETA 42m 50s | speed 0.53x
+```
+
+When output is piped to a log file (`tee`), progress is printed as periodic text lines instead.
 
 ### Profiles
 
