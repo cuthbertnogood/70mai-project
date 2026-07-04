@@ -7,6 +7,8 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
+import wave
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +21,33 @@ MERGED_RE = re.compile(
     r"^NO_(\d{8})-(\d{6})_(\d{6})_([FB])\.mp4$",
     re.IGNORECASE,
 )
+
+PROFILES: dict[str, dict[str, int | bool]] = {
+    "balanced": {
+        "hw": True,
+        "hw_quality": 65,
+        "width": 1206,
+        "fps": 25,
+        "hw_decode": True,
+        "use_vt_scale": True,
+    },
+    "draft": {
+        "hw": True,
+        "hw_quality": 50,
+        "width": 960,
+        "fps": 20,
+        "hw_decode": True,
+        "use_vt_scale": True,
+    },
+    "quality": {
+        "hw": True,
+        "hw_quality": 75,
+        "width": 1206,
+        "fps": 25,
+        "hw_decode": True,
+        "use_vt_scale": True,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -122,6 +151,22 @@ class Segment:
     duration: float
 
 
+@dataclass(frozen=True)
+class AudioAnalysis:
+    mode: str  # screen, front, mix
+    offset_front: float  # seconds; positive delays front audio
+    envelope_corr: float
+    waveform_corr: float
+    music_rms_screen: float
+    music_rms_front: float
+
+
+ENVELOPE_MIX_THRESHOLD = 0.45
+ENVELOPE_FRONT_THRESHOLD = 0.15
+AUDIO_ANALYZE_SEC = 12.0
+AUDIO_SAMPLE_RATE = 16000
+
+
 def plan_segments(
     clips: list[MergedClip],
     wall_start: datetime,
@@ -145,17 +190,299 @@ def plan_segments(
     return segments
 
 
+def extract_audio_wav(
+    path: Path,
+    ss: float,
+    duration: float,
+    out: Path,
+    *,
+    sample_rate: int = AUDIO_SAMPLE_RATE,
+) -> bool:
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{ss:.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            str(path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            str(sample_rate),
+            str(out),
+        ],
+        capture_output=True,
+    )
+    return result.returncode == 0 and out.is_file() and out.stat().st_size > 1000
+
+
+def load_wav_mono(path: Path) -> tuple[list[float], int]:
+    with wave.open(str(path)) as handle:
+        sample_rate = handle.getframerate()
+        raw = handle.readframes(handle.getnframes())
+    import numpy as np
+
+    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+    return samples, sample_rate
+
+
+def _bandpass(samples, sample_rate: int, lo: float, hi: float):
+    import numpy as np
+    from scipy.signal import butter, sosfiltfilt
+
+    sos = butter(4, [lo, hi], btype="band", fs=sample_rate, output="sos")
+    return sosfiltfilt(sos, samples)
+
+
+def _xcorr_lag(a, b, sample_rate: int, *, max_seconds: float = 3.0) -> tuple[float, float]:
+    import numpy as np
+    from scipy.signal import correlate, correlation_lags
+
+    a = a - a.mean()
+    b = b - b.mean()
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a < 1e-6 or norm_b < 1e-6:
+        return 0.0, 0.0
+    a = a / norm_a
+    b = b / norm_b
+    max_lag = int(max_seconds * sample_rate)
+    corr = correlate(a, b, mode="full", method="fft")
+    lags = correlation_lags(len(a), len(b), mode="full")
+    mask = (lags >= -max_lag) & (lags <= max_lag)
+    best_lag = int(lags[mask][np.argmax(corr[mask])])
+    peak = float(np.max(corr[mask]))
+    return best_lag / sample_rate, peak
+
+
+def _envelope_corr(a, b, sample_rate: int, *, max_seconds: float = 3.0) -> tuple[float, float]:
+    import numpy as np
+
+    step = max(sample_rate // 10, 1)
+    env_a = np.abs(a)
+    env_b = np.abs(b)
+    env_a = env_a[: len(env_a) // step * step].reshape(-1, step).mean(axis=1)
+    env_b = env_b[: len(env_b) // step * step].reshape(-1, step).mean(axis=1)
+    env_rate = sample_rate / step
+    return _xcorr_lag(env_a, env_b, int(env_rate), max_seconds=max_seconds)
+
+
+def choose_audio_mode(envelope_corr: float) -> str:
+    if envelope_corr >= ENVELOPE_MIX_THRESHOLD:
+        return "mix"
+    if envelope_corr >= ENVELOPE_FRONT_THRESHOLD:
+        return "front"
+    return "screen"
+
+
+def analyze_audio_sync(
+    screen: Path,
+    front_segments: list[Segment],
+    *,
+    from_offset: float,
+    compose_duration: float,
+    sample_offset: float | None = None,
+    sample_duration: float = AUDIO_ANALYZE_SEC,
+) -> AudioAnalysis:
+    """Compare screen system audio with front cabin mic; pick mode and offset."""
+    fallback = AudioAnalysis(
+        mode="screen",
+        offset_front=0.0,
+        envelope_corr=0.0,
+        waveform_corr=0.0,
+        music_rms_screen=0.0,
+        music_rms_front=0.0,
+    )
+    if not front_segments:
+        return fallback
+
+    analyze_at = sample_offset
+    if analyze_at is None:
+        analyze_at = min(30.0, max(5.0, compose_duration - sample_duration - 2.0))
+    if analyze_at + sample_duration > compose_duration:
+        sample_duration = max(4.0, compose_duration - analyze_at - 0.5)
+    if sample_duration < 4.0:
+        return fallback
+
+    front_seg = front_segments[0]
+    front_ss = front_seg.ss + analyze_at
+    if front_ss + sample_duration > front_seg.ss + front_seg.duration + 0.5:
+        return fallback
+
+    screen_ss = from_offset + analyze_at
+
+    try:
+        import numpy as np
+    except ImportError:
+        log("Audio analyze: numpy not installed, using screen audio only")
+        return fallback
+
+    try:
+        from scipy.signal import butter  # noqa: F401
+    except ImportError:
+        log("Audio analyze: scipy not installed, using screen audio only")
+        return fallback
+
+    with tempfile.TemporaryDirectory(prefix="compose_audio_") as tmp:
+        tmp_path = Path(tmp)
+        screen_wav = tmp_path / "screen.wav"
+        front_wav = tmp_path / "front.wav"
+        if not extract_audio_wav(screen, screen_ss, sample_duration, screen_wav):
+            log("Audio analyze: could not extract screen audio, using screen mode")
+            return fallback
+        if not extract_audio_wav(front_seg.path, front_ss, sample_duration, front_wav):
+            log("Audio analyze: could not extract front audio, using screen mode")
+            return fallback
+
+        screen_samples, sample_rate = load_wav_mono(screen_wav)
+        front_samples, _ = load_wav_mono(front_wav)
+
+        music_screen = _bandpass(screen_samples, sample_rate, 300, 3000)
+        music_front = _bandpass(front_samples, sample_rate, 300, 3000)
+        rms_screen = float(np.sqrt(np.mean(music_screen**2)))
+        rms_front = float(np.sqrt(np.mean(music_front**2)))
+
+        waveform_lag, waveform_corr = _xcorr_lag(
+            screen_samples, front_samples, sample_rate
+        )
+        envelope_lag, envelope_corr = _envelope_corr(
+            music_screen, music_front, sample_rate
+        )
+
+    mode = choose_audio_mode(envelope_corr)
+    # Positive lag: front is ahead of screen → delay front to align.
+    offset_front = round(max(-3.0, min(3.0, envelope_lag)), 2)
+    if mode == "screen":
+        offset_front = 0.0
+
+    return AudioAnalysis(
+        mode=mode,
+        offset_front=offset_front,
+        envelope_corr=envelope_corr,
+        waveform_corr=waveform_corr,
+        music_rms_screen=rms_screen,
+        music_rms_front=rms_front,
+    )
+
+
+def resolve_audio_settings(
+    *,
+    audio: str,
+    audio_offset: float | None,
+    no_audio_analyze: bool,
+    screen: Path,
+    front_segments: list[Segment],
+    from_offset: float,
+    duration: float,
+) -> tuple[str, float, AudioAnalysis | None]:
+    if audio != "auto" and no_audio_analyze and audio_offset is not None:
+        return audio, audio_offset, None
+
+    analysis: AudioAnalysis | None = None
+    if not no_audio_analyze:
+        log("Audio analyze: extracting samples and comparing music-band envelope...")
+        analysis = analyze_audio_sync(
+            screen,
+            front_segments,
+            from_offset=from_offset,
+            compose_duration=duration,
+        )
+        log(
+            f"Audio analyze: envelope_corr={analysis.envelope_corr:.3f} "
+            f"waveform_corr={analysis.waveform_corr:.3f} "
+            f"RMS screen={analysis.music_rms_screen:.0f} front={analysis.music_rms_front:.0f}"
+        )
+
+    if audio == "auto":
+        mode = analysis.mode if analysis else "screen"
+    else:
+        mode = audio
+
+    if audio_offset is not None:
+        offset = audio_offset
+    elif analysis and mode in ("front", "mix"):
+        offset = analysis.offset_front
+    else:
+        offset = 0.0
+
+    if analysis:
+        if audio == "auto":
+            log(f"Audio:         {mode} (auto, offset_front={offset:+.2f}s)")
+        else:
+            log(f"Audio:         {mode} (manual, offset_front={offset:+.2f}s)")
+    else:
+        log(f"Audio:         {mode} (offset_front={offset:+.2f}s)")
+
+    return mode, offset, analysis
+
+
+def build_audio_filter(
+    front_base: int,
+    front_count: int,
+    mode: str,
+    offset_front: float,
+) -> tuple[str, str | None]:
+    if mode == "screen":
+        return "", None
+
+    parts: list[str] = []
+    if front_count == 1:
+        parts.append(
+            f"[{front_base}:a]aresample=44100,"
+            f"aformat=sample_fmts=fltp:channel_layouts=stereo[fa0]"
+        )
+    else:
+        labels = "".join(f"[{front_base + i}:a]" for i in range(front_count))
+        parts.append(f"{labels}concat=n={front_count}:v=0:a=1[fac]")
+        parts.append(
+            "[fac]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[fa0]"
+        )
+
+    chain = "[fa0]"
+    if offset_front > 0.01:
+        delay_ms = int(round(offset_front * 1000))
+        parts.append(f"{chain}adelay={delay_ms}|{delay_ms}[fa1]")
+        chain = "[fa1]"
+    elif offset_front < -0.01:
+        parts.append(
+            f"{chain}atrim=start={abs(offset_front):.3f},asetpts=PTS-STARTPTS[fa1]"
+        )
+        chain = "[fa1]"
+
+    if mode == "front":
+        parts.append(f"{chain}asetpts=PTS-STARTPTS[aout]")
+    else:
+        parts.append(
+            f"[0:a]{chain}amix=inputs=2:duration=first:dropout_transition=0:"
+            f"weights=1 0.65[aout]"
+        )
+
+    return ";".join(parts), "[aout]"
+
+
 def build_filter(
     width: int,
     screen_inputs: int,
     front_inputs: int,
     back_inputs: int,
+    *,
+    use_vt_scale: bool = False,
 ) -> str:
     parts: list[str] = []
     idx = 0
 
     def scale_chain(label_in: str, label_out: str) -> None:
-        parts.append(f"[{label_in}:v]scale={width}:-2,setsar=1[{label_out}]")
+        if use_vt_scale:
+            parts.append(
+                f"[{label_in}:v]scale_vt=w={width},"
+                f"hwdownload,format=nv12,setsar=1[{label_out}]"
+            )
+        else:
+            parts.append(f"[{label_in}:v]scale={width}:-2,setsar=1[{label_out}]")
 
     if screen_inputs == 1:
         scale_chain("0", "v0")
@@ -201,6 +528,17 @@ def build_filter(
     return ";".join(parts)
 
 
+def append_hwaccel_args(cmd: list[str]) -> None:
+    cmd.extend(
+        [
+            "-hwaccel",
+            "videotoolbox",
+            "-hwaccel_output_format",
+            "videotoolbox_vld",
+        ]
+    )
+
+
 def append_video_encode_args(
     cmd: list[str],
     *,
@@ -243,6 +581,84 @@ def append_video_encode_args(
     cmd.extend(["-c:a", "aac", "-b:a", "128k"])
 
 
+def build_compose_cmd(
+    screen: Path,
+    front_segments: list[Segment],
+    back_segments: list[Segment],
+    output: Path,
+    *,
+    from_offset: float,
+    duration: float,
+    width: int,
+    crf: int,
+    preset: str,
+    fps: int,
+    hw: bool,
+    hw_quality: int,
+    hw_decode: bool,
+    use_vt_scale: bool,
+    audio_mode: str = "screen",
+    audio_offset_front: float = 0.0,
+) -> list[str]:
+    cmd: list[str] = ["ffmpeg", "-y"]
+
+    if hw_decode:
+        append_hwaccel_args(cmd)
+    cmd.extend(["-ss", str(from_offset), "-t", str(duration), "-i", str(screen)])
+
+    for seg in front_segments:
+        if hw_decode:
+            append_hwaccel_args(cmd)
+        cmd.extend(["-ss", f"{seg.ss:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(seg.path)])
+    for seg in back_segments:
+        if hw_decode:
+            append_hwaccel_args(cmd)
+        cmd.extend(["-ss", f"{seg.ss:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(seg.path)])
+
+    filter_complex = build_filter(
+        width,
+        screen_inputs=1,
+        front_inputs=len(front_segments),
+        back_inputs=len(back_segments),
+        use_vt_scale=use_vt_scale,
+    )
+    front_base = 1
+    audio_filter, audio_map = build_audio_filter(
+        front_base,
+        len(front_segments),
+        audio_mode,
+        audio_offset_front,
+    )
+    if audio_filter:
+        filter_complex = f"{filter_complex};{audio_filter}"
+    cmd.extend(["-filter_complex", filter_complex])
+    cmd.extend(["-map", "[vout]"])
+    if audio_map:
+        cmd.extend(["-map", audio_map])
+    else:
+        cmd.extend(["-map", "0:a?"])
+    append_video_encode_args(
+        cmd,
+        hw=hw,
+        crf=crf,
+        preset=preset,
+        hw_quality=hw_quality,
+        fps=fps,
+    )
+    cmd.append(str(output))
+    return cmd
+
+
+def describe_pipeline(*, hw: bool, hw_decode: bool, use_vt_scale: bool) -> str:
+    if not hw:
+        return "software (libx264)"
+    if hw_decode and use_vt_scale:
+        return "full VT (hw decode + scale_vt + hw encode)"
+    if hw_decode:
+        return "hw decode + CPU scale + hw encode"
+    return "hw encode only (CPU decode/scale)"
+
+
 def run_compose(
     screen: Path,
     video_dir: Path,
@@ -258,6 +674,11 @@ def run_compose(
     fps: int,
     hw: bool,
     hw_quality: int,
+    hw_decode: bool,
+    use_vt_scale: bool,
+    audio: str,
+    audio_offset: float | None,
+    no_audio_analyze: bool,
     dry_run: bool,
 ) -> None:
     screen_start = parse_screen_start(screen)
@@ -289,6 +710,7 @@ def run_compose(
         else f"libx264 (crf {crf}, {preset})"
     )
     log(f"Encoder:       {encoder}")
+    log(f"Pipeline:      {describe_pipeline(hw=hw, hw_decode=hw_decode, use_vt_scale=use_vt_scale)}")
     log("")
     log("Front segments:")
     for seg in front_segments:
@@ -297,42 +719,94 @@ def run_compose(
     for seg in back_segments:
         log(f"  ss={seg.ss:.1f} t={seg.duration:.1f}  {seg.path.name}")
 
-    cmd: list[str] = ["ffmpeg", "-y"]
-    cmd.extend(["-ss", str(from_offset), "-t", str(duration), "-i", str(screen)])
-
-    for seg in front_segments:
-        cmd.extend(["-ss", f"{seg.ss:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(seg.path)])
-    for seg in back_segments:
-        cmd.extend(["-ss", f"{seg.ss:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(seg.path)])
-
-    filter_complex = build_filter(
-        width,
-        screen_inputs=1,
-        front_inputs=len(front_segments),
-        back_inputs=len(back_segments),
+    audio_mode, audio_offset_front, _analysis = resolve_audio_settings(
+        audio=audio,
+        audio_offset=audio_offset,
+        no_audio_analyze=no_audio_analyze,
+        screen=screen,
+        front_segments=front_segments,
+        from_offset=from_offset,
+        duration=duration,
     )
-    cmd.extend(["-filter_complex", filter_complex])
-    cmd.extend(["-map", "[vout]", "-map", "0:a?"])
-    append_video_encode_args(
-        cmd,
-        hw=hw,
+    log("")
+
+    common = dict(
+        from_offset=from_offset,
+        duration=duration,
+        width=width,
         crf=crf,
         preset=preset,
-        hw_quality=hw_quality,
         fps=fps,
+        hw=hw,
+        hw_quality=hw_quality,
     )
-    cmd.append(str(output))
 
-    log("")
-    log("Command:")
-    log(" ".join(f'"{a}"' if " " in a else a for a in cmd))
+    if hw and hw_decode:
+        attempts: list[tuple[bool, bool, str]] = [
+            (True, True, "full VT (hw decode + scale_vt)"),
+            (True, False, "hw decode + CPU scale"),
+            (False, False, "hw encode only"),
+        ]
+    elif hw:
+        attempts = [(False, False, "hw encode only")]
+    else:
+        attempts = [(False, False, "software encode")]
 
-    if dry_run:
+    last_error: subprocess.CalledProcessError | None = None
+
+    for attempt_hw_decode, attempt_vt_scale, label in attempts:
+        cmd = build_compose_cmd(
+            screen,
+            front_segments,
+            back_segments,
+            output,
+            hw_decode=attempt_hw_decode,
+            use_vt_scale=attempt_vt_scale,
+            audio_mode=audio_mode,
+            audio_offset_front=audio_offset_front,
+            **common,
+        )
+
+        log("")
+        log(f"Attempt: {label}")
+        log("Command:")
+        log(" ".join(f'"{a}"' if " " in a else a for a in cmd))
+
+        if dry_run:
+            return
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            if proc.stderr:
+                print(proc.stderr, end="", file=sys.stderr, flush=True)
+            if label != describe_pipeline(hw=hw, hw_decode=hw_decode, use_vt_scale=use_vt_scale):
+                log(f"\nNote: fell back to {label}")
+            log(f"\nDone: {output}")
+            return
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if output.is_file():
+                output.unlink()
+            if attempt_hw_decode or attempt_vt_scale:
+                log(f"\n{label} failed (exit {exc.returncode}), trying fallback...")
+            else:
+                raise
+
+    if last_error is not None:
+        raise last_error
+
+
+def apply_profile(args: argparse.Namespace) -> None:
+    if not args.profile:
         return
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(cmd, check=True)
-    log(f"\nDone: {output}")
+    profile = PROFILES[args.profile]
+    args.hw = bool(profile["hw"])
+    args.hw_quality = int(profile["hw_quality"])
+    args.width = int(profile["width"])
+    args.fps = int(profile["fps"])
+    args.hw_decode = bool(profile["hw_decode"])
+    args.use_vt_scale = bool(profile["use_vt_scale"])
 
 
 def main() -> None:
@@ -397,8 +871,53 @@ def main() -> None:
         metavar="Q",
         help="VideoToolbox target quality 1–100 → bitrate Q×100k (default: 65 ≈ 6.5 Mbps)",
     )
+    parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILES),
+        help="Encoding profile: balanced (default HW), draft (fast preview), quality",
+    )
+    parser.add_argument(
+        "--hw-decode",
+        action="store_true",
+        help="Hardware-decode inputs with VideoToolbox (-hwaccel videotoolbox)",
+    )
+    parser.add_argument(
+        "--no-vt-scale",
+        action="store_true",
+        help="Use CPU scale filter instead of scale_vt (when hw decode is enabled)",
+    )
+    parser.add_argument(
+        "--audio",
+        choices=("auto", "screen", "front", "mix"),
+        default="auto",
+        help="Audio source: auto (analyze and pick), screen, front, or mix (default: auto)",
+    )
+    parser.add_argument(
+        "--audio-offset",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="Shift front audio vs screen (+ delays front). Default: from audio analyze",
+    )
+    parser.add_argument(
+        "--no-audio-analyze",
+        action="store_true",
+        help="Skip audio analysis; use --audio screen and --audio-offset 0",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print plan only")
     args = parser.parse_args()
+
+    args.use_vt_scale = False
+    apply_profile(args)
+
+    if args.profile is None:
+        if args.hw and args.hw_decode:
+            args.use_vt_scale = not args.no_vt_scale
+        else:
+            args.hw_decode = False
+            args.use_vt_scale = False
+    elif args.no_vt_scale:
+        args.use_vt_scale = False
 
     if not args.screen.is_file():
         parser.error(f"Screen recording not found: {args.screen}")
@@ -429,6 +948,11 @@ def main() -> None:
             fps=args.fps,
             hw=args.hw,
             hw_quality=args.hw_quality,
+            hw_decode=args.hw_decode,
+            use_vt_scale=args.use_vt_scale,
+            audio=args.audio,
+            audio_offset=args.audio_offset,
+            no_audio_analyze=args.no_audio_analyze,
             dry_run=args.dry_run,
         )
     except subprocess.CalledProcessError as exc:

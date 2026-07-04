@@ -234,6 +234,50 @@ Each line is flushed immediately, so you can follow progress in the terminal or 
 python3 import_70mai.py 2>&1 | tee import.log
 ```
 
+## Compose acceleration
+
+[`compose_70mai.py`](compose_70mai.py) builds a vertical 3-camera video (screen + Front + Back) and re-encodes it. That step is CPU-heavy without hardware help.
+
+### Profiles
+
+Use `--profile` instead of tuning flags manually:
+
+| Profile | Use case | HW encode | Bitrate | Width | FPS | HW decode | GPU scale |
+|---------|----------|-----------|---------|-------|-----|-----------|-----------|
+| `balanced` | Default archive export | yes | 6.5 Mbps | 1206 | 25 | yes | yes (`scale_vt`) |
+| `draft` | Sync check / preview | yes | 5.0 Mbps | 960 | 20 | yes | yes |
+| `quality` | Higher bitrate archive | yes | 7.5 Mbps | 1206 | 25 | yes | yes |
+
+```bash
+# Recommended for 10-minute composites
+python3 compose_70mai.py "video/ScreenRecording_....mp4" \
+  --profile balanced \
+  -d 600
+```
+
+### Manual flags
+
+| Flag | Description |
+|------|-------------|
+| `--hw` | VideoToolbox H.264 encode only (CPU decode/scale — backward compatible) |
+| `--hw-decode` | Add `-hwaccel videotoolbox` before each input |
+| `--no-vt-scale` | Use CPU `scale=` instead of `scale_vt` |
+| `--hw-quality N` | Target bitrate `N×100` kbps (default 65 → 6.5 Mbps) |
+
+With `--hw` alone (no `--profile`), hardware decode and `scale_vt` stay off for backward compatibility. Pass `--hw-decode` to enable decode acceleration; GPU scaling is used when decode is on unless `--no-vt-scale` is set.
+
+If the full VideoToolbox pipeline fails on your Mac, the script falls back automatically: full VT → hw decode + CPU scale → hw encode only.
+
+### Benchmark
+
+Run a 60-second comparison (software vs hw-encode vs balanced):
+
+```bash
+python3 benchmark_compose.py
+```
+
+Results are written to `video/Output/compose_benchmark_results.md`.
+
 ## Notes
 
 - Front camera: 3840x2160, Back camera: 1920x1080
