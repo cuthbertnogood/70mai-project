@@ -319,609 +319,413 @@ Dry-run uses assumed 60s per clip (no ffprobe) for a fast preview
 == Probing clip durations: 206/1906 (11%) | elapsed 46s | ETA 6m 23s | NO20260426-162850-040964F.MP4
 == Probing clip durations: 207/1906 (11%) | elapsed 46s | ETA 6m 23s | NO20260426-162950-040965F.MP4
 == Probing clip durations: 208/1906 (11%) | elapsed 47s | ETA 6m 24s | NO20260426-163050-040966F.MP4
-ession 36/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260306-075903_075903_F.mp4
-== Merging output files: 140/920 (15%) | elapsed 0s | ETA 0s | planned
-  session 37/187: 1 clips, probing 1 new file(s)...
-  session 37/187 -> 1 output file(s)
-  merging 1 clips (1.0 min)   session 157/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260419-124611_124611_F.mp4
-  session 158/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260419-125307_125307_F.mp4
-  session 159/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260419-125554_125644_F.mp4
-  session 160/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260419-133426_133426_F.mp4
-  session 161/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260419-191838_191838_F.mp4
-  session 162/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260419-193028_193028_F.mp4
-  session 163/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260419-194215_194307_F.mp4
-  session 164/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260424-082050_082050_F.mp4
-  session 165/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260424-084305_084305_F.mp4
-  session 166/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260424-212254_212328_F.mp4
-  session 167/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260424-212824_212824_F.mp4
-  session 168/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260424-215241_215241_F.mp4
-  session 169/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260424-220940_220940_F.mp4
-  session 170/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260424-222923_222923_F.mp4
-  session 171/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260424-223805_223805_F.mp4
-  session 172/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260424-231051_231051_F.mp4
-  session 173/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260425-104735_104735_F.mp4
-  session 174/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260425-114950_114950_F.mp4
-  session 175/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260425-120752_120752_F.mp4
-  session 176/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260425-132122_132122_F.mp4
-  session 177/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260425-144004_144004_F.mp4
-  session 178/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260425-145955_145955_F.mp4
-  session 179/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260426-155419_155419_F.mp4
-  session 180/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260426-155819_155819_F.mp4
-  session 181/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260426-160122_160122_F.mp4
-  session 182/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260426-170616_170616_F.mp4
-  session 183/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260426-174223_174223_F.mp4
-  session 184/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260426-175814_175814_F.mp4
-  session 185/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260427-065635_065818_F.mp4
-  session 186/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260427-072633_072633_F.mp4
-  session 187/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260427-084748_084748_F.mp4
-
-Event/Back: 237 clips, 187 sessions
-  session 1/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260221-071547_071547_B.mp4
-  session 2/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260221-071917_071917_B.mp4
-  session 3/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260221-073253_073253_B.mp4
-  session 4/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260221-075957_075957_B.mp4
-  session 5/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260221-091430_091430_B.mp4
-  session 6/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260221-091725_091725_B.mp4
-  session 7/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260221-092931_092931_B.mp4
-  session 8/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260221-094539_094539_B.mp4
-  session 9/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260222-072908_072908_B.mp4
-  session 10/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260222-073225_073355_B.mp4
-  session 11/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260222-081752_081948_B.mp4
-  session 12/187: 3 clips -> 1 output file(s)
-  merge 3 clips (1.5 min) -> EV_20260224-002823_003009_B.mp4
-  session 13/187: 3 clips -> 1 output file(s)
-  merge 3 clips (1.5 min) -> EV_20260224-003249_003432_B.mp4
-  session 14/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260224-004914_005002_B.mp4
-  session 15/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260224-204420_204420_B.mp4
-  session 16/187: 3 clips -> 1 output file(s)
-  merge 3 clips (1.5 min) -> EV_20260225-072445_072629_B.mp4
-  session 17/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260225-090054_090054_B.mp4
-  session 18/187: 9 clips -> 1 output file(s)
-  merge 9 clips (4.5 min) -> EV_20260226-082909_083530_B.mp4
-  session 19/187: 8 clips -> 1 output file(s)
-  merge 8 clips (4.0 min) -> EV_20260226-084701_085313_B.mp4
-  session 20/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260227-064926_064926_B.mp4
-  session 21/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260227-070408_070408_B.mp4
-  session 22/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260228-073717_073717_B.mp4
-  session 23/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260228-074052_074052_B.mp4
-  session 24/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260228-080918_080918_B.mp4
-  session 25/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260228-144828_144828_B.mp4
-  session 26/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260302-081255_081255_B.mp4
-  session 27/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260302-081720_081720_B.mp4
-  session 28/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260302-085700_085700_B.mp4
-  session 29/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260302-213945_213945_B.mp4
-  session 30/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260302-214149_214149_B.mp4
-  session 31/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260303-091904_091904_B.mp4
-  session 32/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260305-070502_070502_B.mp4
-  session 33/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260305-075546_075546_B.mp4
-  session 34/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260305-081122_081122_B.mp4
-  session 35/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260306-073746_073826_B.mp4
-  session 36/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260306-075903_075903_B.mp4
-  session 37/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260306-080958_080958_B.mp4
-  session 38/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260306-082618_082618_B.mp4
-  session 39/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260307-173705_173705_B.mp4
-  session 40/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260308-102207_102207_B.mp4
-  session 41/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260308-120022_120022_B.mp4
-  session 42/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260308-211500_211549_B.mp4
-  session 43/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260308-211753_211753_B.mp4
-  session 44/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260308-212336_212336_B.mp4
-  session 45/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260308-213106_213153_B.mp4
-  session 46/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260308-214429_214429_B.mp4
-  session 47/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260308-220650_220650_B.mp4
-  session 48/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260308-220852_220852_B.mp4
-  session 49/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260310-083857_083857_B.mp4
-  session 50/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260310-084913_084913_B.mp4
-  session 51/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260312-083608_083647_B.mp4
-  session 52/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260313-084047_084047_B.mp4
-  session 53/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260313-085012_085128_B.mp4
-  session 54/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260314-144524_144524_B.mp4
-  session 55/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260314-150111_150111_B.mp4
-  session 56/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260314-151627_151627_B.mp4
-  session 57/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260314-153108_153203_B.mp4
-  session 58/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260314-160341_160341_B.mp4
-  session 59/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260314-161451_161451_B.mp4
-  session 60/187: 3 clips -> 1 output file(s)
-  merge 3 clips (1.5 min) -> EV_20260315-090941_091257_B.mp4
-  session 61/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260315-091533_091638_B.mp4
-  session 62/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260315-102202_102202_B.mp4
-  session 63/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260316-082318_082318_B.mp4
-  session 64/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260317-070403_070556_B.mp4
-  session 65/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260318-072433_072433_B.mp4
-  session 66/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260318-080415_080415_B.mp4
-  session 67/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260318-081449_081449_B.mp4
-  session 68/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260318-083633_083633_B.mp4
-  session 69/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260319-083823_083823_B.mp4
-  session 70/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260319-084030_084030_B.mp4
-  session 71/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260320-072903_072903_B.mp4
-  session 72/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260320-075937_075937_B.mp4
-  session 73/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260320-081228_081228_B.mp4
-  session 74/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260321-111106_111106_B.mp4
-  session 75/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260321-111410_111410_B.mp4
-  session 76/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260321-112859_112859_B.mp4
-  session 77/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260321-182605_182605_B.mp4
-  session 78/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260321-191924_191924_B.mp4
-  session 79/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260324-073058_073058_B.mp4
-  session 80/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260324-080249_080249_B.mp4
-  session 81/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260326-081402_081533_B.mp4
-  session 82/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260327-071752_071752_B.mp4
-  session 83/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260327-192817_192817_B.mp4
-  session 84/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260329-072732_072810_B.mp4
-  session 85/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260329-073546_073546_B.mp4
-  session 86/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260330-072308_072308_B.mp4
-  session 87/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260330-080713_080806_B.mp4
-  session 88/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260330-201106_201106_B.mp4
-  session 89/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260331-092401_092401_B.mp4
-  session 90/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260401-141121_141214_B.mp4
-  session 91/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260401-143618_143618_B.mp4
-  session 92/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260401-150529_150529_B.mp4
-  session 93/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260401-151158_151158_B.mp4
-  session 94/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260401-180043_180043_B.mp4
-  session 95/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260401-181331_181331_B.mp4
-  session 96/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260401-190145_190145_B.mp4
-  session 97/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260401-193304_193304_B.mp4
-  session 98/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260402-073549_073549_B.mp4
-  session 99/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260402-082111_082111_B.mp4
-  session 100/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260403-201853_201853_B.mp4
-  session 101/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260403-203145_203145_B.mp4
-  session 102/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260403-203709_203709_B.mp4
-  session 103/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260404-071835_071920_B.mp4
-  session 104/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260404-072340_072340_B.mp4
-  session 105/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260404-073211_073211_B.mp4
-  session 106/187: 2 clips -> 1 output file(s)
-  merge 2 clips (1.0 min) -> EV_20260404-075420_075512_B.mp4
-  session 107/187: 4 clips -> 1 output file(s)
-  merge 4 clips (2.0 min) -> EV_20260405-074213_074613_B.mp4
-  session 108/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260405-074816_074816_B.mp4
-  session 109/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260406-085652_085652_B.mp4
-  session 110/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260406-090807_090807_B.mp4
-  session 111/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260407-075848_075848_B.mp4
-  session 112/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260407-191312_191312_B.mp4
-  session 113/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260407-194054_194054_B.mp4
-  session 114/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260407-195707_195707_B.mp4
-  session 115/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260407-200002_200002_B.mp4
-  session 116/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260407-200953_200953_B.mp4
-  session 117/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260408-071629_071629_B.mp4
-  session 118/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260408-072121_072121_B.mp4
-  session 119/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260408-073422_073422_B.mp4
-  session 120/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260408-082950_082950_B.mp4
-  session 121/187: 1 clips -> 1 output file(s)
-  merge 1 clips (0.5 min) -> EV_20260408-083731_083731_B.mp4
-g output files: 214/920 (23%) | elapsed 0s | ETA 0s | planned
-  session 111/187: 1 clips, probing 1 new file(s)...
-  session 111/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260407-075848_075848_F.mp4
-== Merging output files: 215/920 (23%) | elapsed 0s | ETA 0s | planned
-  session 112/187: 1 clips, probing 1 new file(s)...
-  session 112/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260407-191312_191312_F.mp4
-== Merging output files: 216/920 (23%) | elapsed 0s | ETA 0s | planned
-  session 113/187: 1 clips, probing 1 new file(s)...
-  session 113/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260407-194054_194054_F.mp4
-== Merging output files: 217/920 (24%) | elapsed 0s | ETA 0s | planned
-  session 114/187: 1 clips, probing 1 new file(s)...
-  session 114/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260407-195707_195707_F.mp4
-== Merging output files: 218/920 (24%) | elapsed 0s | ETA 0s | planned
-  session 115/187: 1 clips, probing 1 new file(s)...
-  session 115/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260407-200002_200002_F.mp4
-== Merging output files: 219/920 (24%) | elapsed 0s | ETA 0s | planned
-  session 116/187: 1 clips, probing 1 new file(s)...
-  session 116/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260407-200953_200953_F.mp4
-== Merging output files: 220/920 (24%) | elapsed 0s | ETA 0s | planned
-  session 117/187: 1 clips, probing 1 new file(s)...
-  session 117/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260408-071629_071629_F.mp4
-== Merging output files: 221/920 (24%) | elapsed 0s | ETA 0s | planned
-  session 118/187: 1 clips, probing 1 new file(s)...
-  session 118/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260408-072121_072121_F.mp4
-== Merging output files: 222/920 (24%) | elapsed 0s | ETA 0s | planned
-  session 119/187: 1 clips, probing 1 new file(s)...
-  session 119/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260408-073422_073422_F.mp4
-== Merging output files: 223/920 (24%) | elapsed 0s | ETA 0s | planned
-  session 120/187: 1 clips, probing 1 new file(s)...
-  session 120/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260408-082950_082950_F.mp4
-== Merging output files: 224/920 (24%) | elapsed 0s | ETA 0s | planned
-  session 121/187: 1 clips, probing 1 new file(s)...
-  session 121/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260408-083731_083731_F.mp4
-== Merging output files: 225/920 (24%) | elapsed 0s | ETA 0s | planned
-  session 122/187: 2 clips, probing 2 new file(s)...
-  session 122/187 -> 1 output file(s)
-  merging 2 clips (2.0 min) -> EV_20260410-090430_090522_F.mp4
-== Merging output files: 226/920 (25%) | elapsed 0s | ETA 0s | planned
-  session 123/187: 1 clips, probing 1 new file(s)...
-  session 123/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260410-200051_200051_F.mp4
-== Merging output files: 227/920 (25%) | elapsed 0s | ETA 0s | planned
-  session 124/187: 1 clips, probing 1 new file(s)...
-  session 124/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260411-074132_074132_F.mp4
-== Merging output files: 228/920 (25%) | elapsed 0s | ETA 0s | planned
-  session 125/187: 1 clips, probing 1 new file(s)...
-  session 125/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260411-074422_074422_F.mp4
-== Merging output files: 229/920 (25%) | elapsed 0s | ETA 0s | planned
-  session 126/187: 1 clips, probing 1 new file(s)...
-  session 126/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260411-214702_214702_F.mp4
-== Merging output files: 230/920 (25%) | elapsed 0s | ETA 0s | planned
-  session 127/187: 1 clips, probing 1 new file(s)...
-  session 127/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260411-220458_220458_F.mp4
-== Merging output files: 231/920 (25%) | elapsed 0s | ETA 0s | planned
-  session 128/187: 1 clips, probing 1 new file(s)...
-  session 128/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260412-193939_193939_F.mp4
-== Merging output files: 232/920 (25%) | elapsed 0s | ETA 0s | planned
-  session 129/187: 1 clips, probing 1 new file(s)...
-  session 129/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260412-194334_194334_F.mp4
-== Merging output files: 233/920 (25%) | elapsed 0s | ETA 0s | planned
-  session 130/187: 1 clips, probing 1 new file(s)...
-  session 130/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260412-205029_205029_F.mp4
-== Merging output files: 234/920 (25%) | elapsed 0s | ETA 0s | planned
-  session 131/187: 1 clips, probing 1 new file(s)...
-  session 131/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260413-085605_085605_F.mp4
-== Merging output files: 235/920 (26%) | elapsed 0s | ETA 0s | planned
-  session 132/187: 1 clips, probing 1 new file(s)...
-  session 132/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260413-091855_091855_F.mp4
-== Merging output files: 236/920 (26%) | elapsed 0s | ETA 0s | planned
-  session 133/187: 1 clips, probing 1 new file(s)...
-  session 133/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260414-090421_090421_F.mp4
-== Merging output files: 237/920 (26%) | elapsed 0s | ETA 0s | planned
-  session 134/187: 1 clips, probing 1 new file(s)...
-  session 134/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260414-205049_205049_F.mp4
-== Merging output files: 238/920 (26%) | elapsed 0s | ETA 0s | planned
-  session 135/187: 1 clips, probing 1 new file(s)...
-  session 135/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260415-090556_090556_F.mp4
-== Merging output files: 239/920 (26%) | elapsed 0s | ETA 0s | planned
-  session 136/187: 1 clips, probing 1 new file(s)...
-  session 136/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260416-085907_085907_F.mp4
-== Merging output files: 240/920 (26%) | elapsed 0s | ETA 0s | planned
-  session 137/187: 1 clips, probing 1 new file(s)...
-  session 137/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260416-091555_091555_F.mp4
-== Merging output files: 241/920 (26%) | elapsed 0s | ETA 0s | planned
-  session 138/187: 1 clips, probing 1 new file(s)...
-  session 138/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260416-204355_204355_F.mp4
-== Merging output files: 242/920 (26%) | elapsed 0s | ETA 0s | planned
-  session 139/187: 1 clips, probing 1 new file(s)...
-  session 139/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260417-215956_215956_F.mp4
-== Merging output files: 243/920 (26%) | elapsed 0s | ETA 0s | planned
-  session 140/187: 1 clips, probing 1 new file(s)...
-  session 140/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260417-224659_224659_F.mp4
-== Merging output files: 244/920 (27%) | elapsed 0s | ETA 0s | planned
-  session 141/187: 2 clips, probing 2 new file(s)...
-  session 141/187 -> 1 output file(s)
-  merging 2 clips (2.0 min) -> EV_20260418-045201_045238_F.mp4
-== Merging output files: 245/920 (27%) | elapsed 0s | ETA 0s | planned
-  session 142/187: 1 clips, probing 1 new file(s)...
-  session 142/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260418-050830_050830_F.mp4
-== Merging output files: 246/920 (27%) | elapsed 0s | ETA 0s | planned
-  session 143/187: 2 clips, probing 2 new file(s)...
-  session 143/187 -> 1 output file(s)
-  merging 2 clips (2.0 min) -> EV_20260418-051243_051412_F.mp4
-== Merging output files: 247/920 (27%) | elapsed 0s | ETA 0s | planned
-  session 144/187: 1 clips, probing 1 new file(s)...
-  session 144/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260418-052659_052659_F.mp4
-== Merging output files: 248/920 (27%) | elapsed 0s | ETA 0s | planned
-  session 145/187: 1 clips, probing 1 new file(s)...
-  session 145/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260418-071246_071246_F.mp4
-== Merging output files: 249/920 (27%) | elapsed 0s | ETA 0s | planned
-  session 146/187: 1 clips, probing 1 new file(s)...
-  session 146/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260418-071705_071705_F.mp4
-== Merging output files: 250/920 (27%) | elapsed 0s | ETA 0s | planned
-  session 147/187: 1 clips, probing 1 new file(s)...
-  session 147/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260418-112818_112818_F.mp4
-== Merging output files: 251/920 (27%) | elapsed 0s | ETA 0s | planned
-  session 148/187: 1 clips, probing 1 new file(s)...
-  session 148/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-101920_101920_F.mp4
-== Merging output files: 252/920 (27%) | elapsed 0s | ETA 0s | planned
-  session 149/187: 1 clips, probing 1 new file(s)...
-  session 149/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-102830_102830_F.mp4
-== Merging output files: 253/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 150/187: 1 clips, probing 1 new file(s)...
-  session 150/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-113624_113624_F.mp4
-== Merging output files: 254/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 151/187: 1 clips, probing 1 new file(s)...
-  session 151/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-114002_114002_F.mp4
-== Merging output files: 255/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 152/187: 1 clips, probing 1 new file(s)...
-  session 152/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-120258_120258_F.mp4
-== Merging output files: 256/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 153/187: 1 clips, probing 1 new file(s)...
-  session 153/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-120635_120635_F.mp4
-== Merging output files: 257/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 154/187: 1 clips, probing 1 new file(s)...
-  session 154/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-121749_121749_F.mp4
-== Merging output files: 258/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 155/187: 1 clips, probing 1 new file(s)...
-  session 155/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-121953_121953_F.mp4
-== Merging output files: 259/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 156/187: 1 clips, probing 1 new file(s)...
-  session 156/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-122433_122433_F.mp4
-== Merging output files: 260/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 157/187: 1 clips, probing 1 new file(s)...
-  session 157/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-124611_124611_F.mp4
-== Merging output files: 261/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 158/187: 1 clips, probing 1 new file(s)...
-  session 158/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-125307_125307_F.mp4
-== Merging output files: 262/920 (28%) | elapsed 0s | ETA 0s | planned
-  session 159/187: 2 clips, probing 2 new file(s)...
-  session 159/187 -> 1 output file(s)
-  merging 2 clips (2.0 min) -> EV_20260419-125554_125644_F.mp4
-== Merging output files: 263/920 (29%) | elapsed 0s | ETA 0s | planned
-  session 160/187: 1 clips, probing 1 new file(s)...
-  session 160/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-133426_133426_F.mp4
-== Merging output files: 264/920 (29%) | elapsed 0s | ETA 0s | planned
-  session 161/187: 1 clips, probing 1 new file(s)...
-  session 161/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-191838_191838_F.mp4
-== Merging output files: 265/920 (29%) | elapsed 0s | ETA 0s | planned
-  session 162/187: 1 clips, probing 1 new file(s)...
-  session 162/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260419-193028_193028_F.mp4
-== Merging output files: 266/920 (29%) | elapsed 0s | ETA 0s | planned
-  session 163/187: 2 clips, probing 2 new file(s)...
-  session 163/187 -> 1 output file(s)
-  merging 2 clips (2.0 min) -> EV_20260419-194215_194307_F.mp4
-== Merging output files: 267/920 (29%) | elapsed 0s | ETA 0s | planned
-  session 164/187: 1 clips, probing 1 new file(s)...
-  session 164/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260424-082050_082050_F.mp4
-== Merging output files: 268/920 (29%) | elapsed 0s | ETA 0s | planned
-  session 165/187: 1 clips, probing 1 new file(s)...
-  session 165/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260424-084305_084305_F.mp4
-== Merging output files: 269/920 (29%) | elapsed 0s | ETA 0s | planned
-  session 166/187: 2 clips, probing 2 new file(s)...
-  session 166/187 -> 1 output file(s)
-  merging 2 clips (2.0 min) -> EV_20260424-212254_212328_F.mp4
-== Merging output files: 270/920 (29%) | elapsed 0s | ETA 0s | planned
-  session 167/187: 1 clips, probing 1 new file(s)...
-  session 167/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260424-212824_212824_F.mp4
-== Merging output files: 271/920 (29%) | elapsed 0s | ETA 0s | planned
-  session 168/187: 1 clips, probing 1 new file(s)...
-  session 168/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260424-215241_215241_F.mp4
-== Merging output files: 272/920 (30%) | elapsed 0s | ETA 0s | planned
-  session 169/187: 1 clips, probing 1 new file(s)...
-  session 169/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260424-220940_220940_F.mp4
-== Merging output files: 273/920 (30%) | elapsed 0s | ETA 0s | planned
-  session 170/187: 1 clips, probing 1 new file(s)...
-  session 170/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260424-222923_222923_F.mp4
-== Merging output files: 274/920 (30%) | elapsed 0s | ETA 0s | planned
-  session 171/187: 1 clips, probing 1 new file(s)...
-  session 171/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260424-223805_223805_F.mp4
-== Merging output files: 275/920 (30%) | elapsed 0s | ETA 0s | planned
-  session 172/187: 1 clips, probing 1 new file(s)...
-  session 172/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260424-231051_231051_F.mp4
-== Merging output files: 276/920 (30%) | elapsed 0s | ETA 0s | planned
-  session 173/187: 1 clips, probing 1 new file(s)...
-  session 173/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260425-104735_104735_F.mp4
-== Merging output files: 277/920 (30%) | elapsed 0s | ETA 0s | planned
-  session 174/187: 1 clips, probing 1 new file(s)...
-  session 174/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260425-114950_114950_F.mp4
-== Merging output files: 278/920 (30%) | elapsed 0s | ETA 0s | planned
-  session 175/187: 1 clips, probing 1 new file(s)...
-  session 175/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260425-120752_120752_F.mp4
-== Merging output files: 279/920 (30%) | elapsed 0s | ETA 0s | planned
-  session 176/187: 1 clips, probing 1 new file(s)...
-  session 176/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260425-132122_132122_F.mp4
-== Merging output files: 280/920 (30%) | elapsed 0s | ETA 0s | planned
-  session 177/187: 1 clips, probing 1 new file(s)...
-  session 177/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260425-144004_144004_F.mp4
-== Merging output files: 281/920 (31%) | elapsed 0s | ETA 0s | planned
-  session 178/187: 1 clips, probing 1 new file(s)...
-  session 178/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260425-145955_145955_F.mp4
-== Merging output files: 282/920 (31%) | elapsed 0s | ETA 0s | planned
-  session 179/187: 1 clips, probing 1 new file(s)...
-  session 179/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260426-155419_155419_F.mp4
-== Merging output files: 283/920 (31%) | elapsed 0s | ETA 0s | planned
-  session 180/187: 1 clips, probing 1 new file(s)...
-  session 180/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260426-155819_155819_F.mp4
-== Merging output files: 284/920 (31%) | elapsed 0s | ETA 0s | planned
-  session 181/187: 1 clips, probing 1 new file(s)...
-  session 181/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260426-160122_160122_F.mp4
-== Merging output files: 285/920 (31%) | elapsed 0s | ETA 0s | planned
-  session 182/187: 1 clips, probing 1 new file(s)...
-  session 182/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260426-170616_170616_F.mp4
-== Merging output files: 286/920 (31%) | elapsed 0s | ETA 0s | planned
-  session 183/187: 1 clips, probing 1 new file(s)...
-  session 183/187 -> 1 output file(s)
-  merging 1 clips (1.0 min) -> EV_20260426-174223_174223_F.mp4
+== Probing clip durations: 209/1906 (11%) | elapsed 53s | ETA 7m 18s | NO20260426-163150-040967F.MP4
+== Probing clip durations: 210/1906 (11%) | elapsed 1m 00s | ETA 8m 12s | NO20260426-163250-040968F.MP4
+== Probing clip durations: 211/1906 (11%) | elapsed 1m 01s | ETA 8m 13s | NO20260426-163350-040969F.MP4
+== Probing clip durations: 212/1906 (11%) | elapsed 1m 01s | ETA 8m 13s | NO20260426-163450-040970F.MP4
+== Probing clip durations: 213/1906 (11%) | elapsed 1m 01s | ETA 8m 12s | NO20260426-163550-040971F.MP4
+== Probing clip durations: 214/1906 (11%) | elapsed 1m 02s | ETA 8m 11s | NO20260426-163650-040972F.MP4
+== Probing clip durations: 215/1906 (11%) | elapsed 1m 02s | ETA 8m 11s | NO20260426-163750-040973F.MP4
+== Probing clip durations: 216/1906 (11%) | elapsed 1m 02s | ETA 8m 11s | NO20260426-163850-040974F.MP4
+== Probing clip durations: 217/1906 (11%) | elapsed 1m 02s | ETA 8m 10s | NO20260426-163950-040975F.MP4
+== Probing clip durations: 218/1906 (11%) | elapsed 1m 03s | ETA 8m 10s | NO20260426-164050-040976F.MP4
+== Probing clip durations: 219/1906 (11%) | elapsed 1m 03s | ETA 8m 09s | NO20260426-164150-040977F.MP4
+== Probing clip durations: 220/1906 (12%) | elapsed 1m 03s | ETA 8m 08s | NO20260426-164250-040978F.MP4
+== Probing clip durations: 221/1906 (12%) | elapsed 1m 03s | ETA 8m 07s | NO20260426-164350-040979F.MP4
+== Probing clip durations: 222/1906 (12%) | elapsed 1m 04s | ETA 8m 05s | NO20260426-164450-040980F.MP4
+== Probing clip durations: 223/1906 (12%) | elapsed 1m 04s | ETA 8m 05s | NO20260426-164550-040981F.MP4
+== Probing clip durations: 224/1906 (12%) | elapsed 1m 04s | ETA 8m 04s | NO20260426-164650-040982F.MP4
+== Probing clip durations: 225/1906 (12%) | elapsed 1m 04s | ETA 8m 04s | NO20260426-164750-040983F.MP4
+== Probing clip durations: 226/1906 (12%) | elapsed 1m 05s | ETA 8m 04s | NO20260426-164850-040984F.MP4
+== Probing clip durations: 227/1906 (12%) | elapsed 1m 05s | ETA 8m 03s | NO20260426-164950-040985F.MP4
+== Probing clip durations: 228/1906 (12%) | elapsed 1m 05s | ETA 8m 02s | NO20260426-165050-040986F.MP4
+== Probing clip durations: 229/1906 (12%) | elapsed 1m 05s | ETA 8m 01s | NO20260426-165150-040987F.MP4
+== Probing clip durations: 230/1906 (12%) | elapsed 1m 06s | ETA 8m 00s | NO20260426-165250-040988F.MP4
+== Probing clip durations: 231/1906 (12%) | elapsed 1m 06s | ETA 7m 59s | NO20260426-165350-040989F.MP4
+== Probing clip durations: 232/1906 (12%) | elapsed 1m 06s | ETA 7m 59s | NO20260426-165450-040990F.MP4
+== Probing clip durations: 233/1906 (12%) | elapsed 1m 06s | ETA 7m 59s | NO20260426-165550-040991F.MP4
+== Probing clip durations: 234/1906 (12%) | elapsed 1m 07s | ETA 7m 59s | NO20260426-165650-040992F.MP4
+== Probing clip durations: 235/1906 (12%) | elapsed 1m 07s | ETA 7m 58s | NO20260426-165750-040993F.MP4
+== Probing clip durations: 236/1906 (12%) | elapsed 1m 07s | ETA 7m 57s | NO20260426-165850-040994F.MP4
+== Probing clip durations: 237/1906 (12%) | elapsed 1m 07s | ETA 7m 57s | NO20260426-165950-040995F.MP4
+== Probing clip durations: 238/1906 (12%) | elapsed 1m 08s | ETA 7m 57s | NO20260426-170050-040996F.MP4
+== Probing clip durations: 239/1906 (13%) | elapsed 1m 08s | ETA 7m 57s | NO20260426-170150-040997F.MP4
+== Probing clip durations: 240/1906 (13%) | elapsed 1m 08s | ETA 7m 57s | NO20260426-170250-040998F.MP4
+== Probing clip durations: 241/1906 (13%) | elapsed 1m 08s | ETA 7m 56s | NO20260426-170350-040999F.MP4
+== Probing clip durations: 242/1906 (13%) | elapsed 1m 09s | ETA 7m 55s | NO20260426-170450-041000F.MP4
+== Probing clip durations: 243/1906 (13%) | elapsed 1m 09s | ETA 7m 53s | NO20260426-170550-041001F.MP4
+== Probing clip durations: 244/1906 (13%) | elapsed 1m 09s | ETA 7m 52s | NO20260426-170643-041003F.MP4
+== Probing clip durations: 245/1906 (13%) | elapsed 1m 09s | ETA 7m 51s | NO20260426-170743-041004F.MP4
+== Probing clip durations: 246/1906 (13%) | elapsed 1m 09s | ETA 7m 50s | NO20260426-170843-041005F.MP4
+== Probing clip durations: 247/1906 (13%) | elapsed 1m 09s | ETA 7m 49s | NO20260426-170943-041006F.MP4
+== Probing clip durations: 248/1906 (13%) | elapsed 1m 09s | ETA 7m 47s | NO20260426-171043-041007F.MP4
+== Probing clip durations: 249/1906 (13%) | elapsed 1m 10s | ETA 7m 47s | NO20260426-171143-041008F.MP4
+== Probing clip durations: 250/1906 (13%) | elapsed 1m 10s | ETA 7m 46s | NO20260426-171243-041009F.MP4
+== Probing clip durations: 251/1906 (13%) | elapsed 1m 10s | ETA 7m 45s | NO20260426-171343-041010F.MP4
+== Probing clip durations: 252/1906 (13%) | elapsed 1m 10s | ETA 7m 44s | NO20260426-171443-041011F.MP4
+== Probing clip durations: 253/1906 (13%) | elapsed 1m 10s | ETA 7m 43s | NO20260426-171543-041012F.MP4
+== Probing clip durations: 254/1906 (13%) | elapsed 1m 11s | ETA 7m 42s | NO20260426-171643-041013F.MP4
+== Probing clip durations: 255/1906 (13%) | elapsed 1m 11s | ETA 7m 41s | NO20260426-171743-041014F.MP4
+== Probing clip durations: 256/1906 (13%) | elapsed 1m 11s | ETA 7m 41s | NO20260426-171843-041015F.MP4
+== Probing clip durations: 257/1906 (13%) | elapsed 1m 12s | ETA 7m 42s | NO20260426-171943-041016F.MP4
+== Probing clip durations: 258/1906 (14%) | elapsed 1m 12s | ETA 7m 41s | NO20260426-172043-041017F.MP4
+== Probing clip durations: 259/1906 (14%) | elapsed 1m 12s | ETA 7m 40s | NO20260426-172143-041018F.MP4
+== Probing clip durations: 260/1906 (14%) | elapsed 1m 12s | ETA 7m 39s | NO20260426-172243-041019F.MP4
+== Probing clip durations: 261/1906 (14%) | elapsed 1m 12s | ETA 7m 39s | NO20260426-172343-041020F.MP4
+== Probing clip durations: 262/1906 (14%) | elapsed 1m 13s | ETA 7m 38s | NO20260426-172443-041021F.MP4
+== Probing clip durations: 263/1906 (14%) | elapsed 1m 13s | ETA 7m 37s | NO20260426-172543-041022F.MP4
+== Probing clip durations: 264/1906 (14%) | elapsed 1m 13s | ETA 7m 36s | NO20260426-172643-041023F.MP4
+== Probing clip durations: 265/1906 (14%) | elapsed 1m 13s | ETA 7m 36s | NO20260426-172743-041024F.MP4
+== Probing clip durations: 266/1906 (14%) | elapsed 1m 13s | ETA 7m 35s | NO20260426-172843-041025F.MP4
+== Probing clip durations: 267/1906 (14%) | elapsed 1m 14s | ETA 7m 35s | NO20260426-172943-041026F.MP4
+== Probing clip durations: 268/1906 (14%) | elapsed 1m 14s | ETA 7m 34s | NO20260426-173043-041027F.MP4
+== Probing clip durations: 269/1906 (14%) | elapsed 1m 14s | ETA 7m 34s | NO20260426-173143-041028F.MP4
+== Probing clip durations: 270/1906 (14%) | elapsed 1m 14s | ETA 7m 34s | NO20260426-173243-041029F.MP4
+== Probing clip durations: 271/1906 (14%) | elapsed 1m 15s | ETA 7m 33s | NO20260426-173343-041030F.MP4
+== Probing clip durations: 272/1906 (14%) | elapsed 1m 15s | ETA 7m 32s | NO20260426-173443-041031F.MP4
+== Probing clip durations: 273/1906 (14%) | elapsed 1m 15s | ETA 7m 32s | NO20260426-173543-041032F.MP4
+== Probing clip durations: 274/1906 (14%) | elapsed 1m 16s | ETA 7m 32s | NO20260426-173643-041033F.MP4
+== Probing clip durations: 275/1906 (14%) | elapsed 1m 16s | ETA 7m 34s | NO20260426-173743-041034F.MP4
+== Probing clip durations: 276/1906 (14%) | elapsed 1m 17s | ETA 7m 39s | NO20260426-173843-041035F.MP4
+== Probing clip durations: 277/1906 (15%) | elapsed 1m 18s | ETA 7m 41s | NO20260426-173943-041036F.MP4
+== Probing clip durations: 278/1906 (15%) | elapsed 1m 19s | ETA 7m 43s | NO20260426-174043-041037F.MP4
+== Probing clip durations: 279/1906 (15%) | elapsed 1m 19s | ETA 7m 43s | NO20260426-174143-041038F.MP4
+== Probing clip durations: 280/1906 (15%) | elapsed 1m 19s | ETA 7m 43s | NO20260426-174250-041040F.MP4
+== Probing clip durations: 281/1906 (15%) | elapsed 1m 20s | ETA 7m 43s | NO20260426-174350-041041F.MP4
+== Probing clip durations: 282/1906 (15%) | elapsed 1m 20s | ETA 7m 43s | NO20260426-174450-041042F.MP4
+== Probing clip durations: 283/1906 (15%) | elapsed 1m 20s | ETA 7m 43s | NO20260426-174550-041043F.MP4
+== Probing clip durations: 284/1906 (15%) | elapsed 1m 21s | ETA 7m 44s | NO20260426-174650-041044F.MP4
+== Probing clip durations: 285/1906 (15%) | elapsed 1m 21s | ETA 7m 43s | NO20260426-174750-041045F.MP4
+== Probing clip durations: 286/1906 (15%) | elapsed 1m 21s | ETA 7m 43s | NO20260426-174850-041046F.MP4
+== Probing clip durations: 287/1906 (15%) | elapsed 1m 22s | ETA 7m 44s | NO20260426-174950-041047F.MP4
+== Probing clip durations: 288/1906 (15%) | elapsed 1m 22s | ETA 7m 44s | NO20260426-175050-041048F.MP4
+== Probing clip durations: 289/1906 (15%) | elapsed 1m 23s | ETA 7m 45s | NO20260426-175150-041049F.MP4
+== Probing clip durations: 290/1906 (15%) | elapsed 1m 23s | ETA 7m 45s | NO20260426-175250-041050F.MP4
+== Probing clip durations: 291/1906 (15%) | elapsed 1m 23s | ETA 7m 45s | NO20260426-175350-041051F.MP4
+== Probing clip durations: 292/1906 (15%) | elapsed 1m 24s | ETA 7m 46s | NO20260426-175450-041052F.MP4
+== Probing clip durations: 293/1906 (15%) | elapsed 1m 24s | ETA 7m 46s | NO20260426-175550-041053F.MP4
+== Probing clip durations: 294/1906 (15%) | elapsed 1m 25s | ETA 7m 47s | NO20260426-175650-041054F.MP4
+== Probing clip durations: 295/1906 (15%) | elapsed 1m 25s | ETA 7m 48s | NO20260426-175750-041055F.MP4
+== Probing clip durations: 296/1906 (16%) | elapsed 1m 26s | ETA 7m 49s | NO20260426-175842-041057F.MP4
+== Probing clip durations: 297/1906 (16%) | elapsed 1m 26s | ETA 7m 48s | NO20260426-175942-041058F.MP4
+== Probing clip durations: 298/1906 (16%) | elapsed 1m 26s | ETA 7m 47s | NO20260426-180042-041059F.MP4
+== Probing clip durations: 299/1906 (16%) | elapsed 1m 26s | ETA 7m 46s | NO20260426-180142-041060F.MP4
+== Probing clip durations: 300/1906 (16%) | elapsed 1m 27s | ETA 7m 46s | NO20260426-180242-041061F.MP4
+== Probing clip durations: 301/1906 (16%) | elapsed 1m 27s | ETA 7m 44s | NO20260426-180342-041062F.MP4
+== Probing clip durations: 302/1906 (16%) | elapsed 1m 27s | ETA 7m 44s | NO20260426-180442-041063F.MP4
+== Probing clip durations: 303/1906 (16%) | elapsed 1m 27s | ETA 7m 43s | NO20260426-180542-041064F.MP4
+== Probing clip durations: 304/1906 (16%) | elapsed 1m 27s | ETA 7m 43s | NO20260426-180642-041065F.MP4
+== Probing clip durations: 305/1906 (16%) | elapsed 1m 27s | ETA 7m 41s | NO20260426-180742-041066F.MP4
+== Probing clip durations: 306/1906 (16%) | elapsed 1m 28s | ETA 7m 42s | NO20260426-180842-041067F.MP4
+== Probing clip durations: 307/1906 (16%) | elapsed 1m 28s | ETA 7m 41s | NO20260426-180942-041068F.MP4
+== Probing clip durations: 308/1906 (16%) | elapsed 1m 29s | ETA 7m 42s | NO20260426-181042-041069F.MP4
+== Probing clip durations: 309/1906 (16%) | elapsed 1m 29s | ETA 7m 42s | NO20260426-181142-041070F.MP4
+== Probing clip durations: 310/1906 (16%) | elapsed 1m 29s | ETA 7m 41s | NO20260426-181242-041071F.MP4
+== Probing clip durations: 311/1906 (16%) | elapsed 1m 29s | ETA 7m 41s | NO20260426-181342-041072F.MP4
+== Probing clip durations: 312/1906 (16%) | elapsed 1m 30s | ETA 7m 41s | NO20260426-181442-041073F.MP4
+== Probing clip durations: 313/1906 (16%) | elapsed 1m 30s | ETA 7m 40s | NO20260426-181542-041074F.MP4
+== Probing clip durations: 314/1906 (16%) | elapsed 1m 30s | ETA 7m 40s | NO20260426-181642-041075F.MP4
+== Probing clip durations: 315/1906 (17%) | elapsed 1m 31s | ETA 7m 41s | NO20260426-181742-041076F.MP4
+== Probing clip durations: 316/1906 (17%) | elapsed 1m 31s | ETA 7m 41s | NO20260426-181842-041077F.MP4
+== Probing clip durations: 317/1906 (17%) | elapsed 1m 32s | ETA 7m 43s | NO20260426-181942-041078F.MP4
+== Probing clip durations: 318/1906 (17%) | elapsed 1m 33s | ETA 7m 45s | NO20260426-182042-041079F.MP4
+== Probing clip durations: 319/1906 (17%) | elapsed 1m 33s | ETA 7m 46s | NO20260426-182142-041080F.MP4
+== Probing clip durations: 320/1906 (17%) | elapsed 1m 33s | ETA 7m 45s | NO20260426-182242-041081F.MP4
+== Probing clip durations: 321/1906 (17%) | elapsed 1m 34s | ETA 7m 45s | NO20260426-182342-041082F.MP4
+== Probing clip durations: 322/1906 (17%) | elapsed 1m 34s | ETA 7m 45s | NO20260426-182442-041083F.MP4
+== Probing clip durations: 323/1906 (17%) | elapsed 1m 34s | ETA 7m 44s | NO20260426-182542-041084F.MP4
+== Probing clip durations: 324/1906 (17%) | elapsed 1m 35s | ETA 7m 44s | NO20260426-182642-041085F.MP4
+== Probing clip durations: 325/1906 (17%) | elapsed 1m 35s | ETA 7m 44s | NO20260426-182742-041086F.MP4
+  session 8/11 -> 18 output file(s)
+  merging 10 clips (10.0 min) -> NO_20260426-153356_154256_F.mp4
+== Merging output files: 19/920 (2%) | elapsed 1m 35s | ETA 1h 15m 48s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-154356_155256_F.mp4
+== Merging output files: 20/920 (2%) | elapsed 1m 35s | ETA 1h 11m 55s | planned
+  merging 11 clips (9.6 min) -> NO_20260426-155356_160350_F.mp4
+== Merging output files: 21/920 (2%) | elapsed 1m 35s | ETA 1h 08m 25s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-160450_161350_F.mp4
+== Merging output files: 22/920 (2%) | elapsed 1m 35s | ETA 1h 05m 14s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-161450_162350_F.mp4
+== Merging output files: 23/920 (2%) | elapsed 1m 35s | ETA 1h 02m 20s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-162450_163350_F.mp4
+== Merging output files: 24/920 (3%) | elapsed 1m 35s | ETA 59m 40s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-163450_164350_F.mp4
+== Merging output files: 25/920 (3%) | elapsed 1m 35s | ETA 57m 13s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-164450_165350_F.mp4
+== Merging output files: 26/920 (3%) | elapsed 1m 35s | ETA 54m 57s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-165450_170350_F.mp4
+== Merging output files: 27/920 (3%) | elapsed 1m 35s | ETA 52m 52s | planned
+  merging 10 clips (9.4 min) -> NO_20260426-170450_171343_F.mp4
+== Merging output files: 28/920 (3%) | elapsed 1m 35s | ETA 50m 55s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-171443_172343_F.mp4
+== Merging output files: 29/920 (3%) | elapsed 1m 35s | ETA 49m 06s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-172443_173343_F.mp4
+== Merging output files: 30/920 (3%) | elapsed 1m 35s | ETA 47m 25s | planned
+  merging 10 clips (9.7 min) -> NO_20260426-173443_174350_F.mp4
+== Merging output files: 31/920 (3%) | elapsed 1m 35s | ETA 45m 50s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-174450_175350_F.mp4
+== Merging output files: 32/920 (3%) | elapsed 1m 35s | ETA 44m 21s | planned
+  merging 10 clips (9.4 min) -> NO_20260426-175450_180342_F.mp4
+== Merging output files: 33/920 (4%) | elapsed 1m 35s | ETA 42m 58s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-180442_181342_F.mp4
+== Merging output files: 34/920 (4%) | elapsed 1m 35s | ETA 41m 39s | planned
+  merging 10 clips (10.0 min) -> NO_20260426-181442_182342_F.mp4
+== Merging output files: 35/920 (4%) | elapsed 1m 35s | ETA 40m 25s | planned
+  merging 4 clips (3.7 min) -> NO_20260426-182442_182742_F.mp4
+== Merging output files: 36/920 (4%) | elapsed 1m 35s | ETA 39m 15s | planned
+  session 9/11: 16 clips, probing 16 new file(s)...
+== Probing clip durations: 326/1906 (17%) | elapsed 1m 35s | ETA 7m 44s | NO20260426-184553-041087F.MP4
+== Probing clip durations: 327/1906 (17%) | elapsed 1m 50s | ETA 8m 55s | NO20260426-184653-041088F.MP4
+== Probing clip durations: 328/1906 (17%) | elapsed 1m 51s | ETA 8m 54s | NO20260426-184753-041089F.MP4
+== Probing clip durations: 329/1906 (17%) | elapsed 1m 54s | ETA 9m 07s | NO20260426-184853-041090F.MP4
+== Probing clip durations: 330/1906 (17%) | elapsed 2m 06s | ETA 10m 01s | NO20260426-184953-041091F.MP4
+== Probing clip durations: 331/1906 (17%) | elapsed 2m 06s | ETA 10m 01s | NO20260426-185053-041092F.MP4
+== Probing clip durations: 332/1906 (17%) | elapsed 2m 11s | ETA 10m 24s | NO20260426-185153-041093F.MP4
+== Probing clip durations: 333/1906 (17%) | elapsed 2m 21s | ETA 11m 06s | NO20260426-185253-041094F.MP4
+== Probing clip durations: 334/1906 (18%) | elapsed 2m 21s | ETA 11m 05s | NO20260426-185353-041095F.MP4
+== Probing clip durations: 335/1906 (18%) | elapsed 2m 24s | ETA 11m 17s | NO20260426-185453-041096F.MP4
+== Probing clip durations: 336/1906 (18%) | elapsed 2m 25s | ETA 11m 20s | NO20260426-185553-041097F.MP4
+== Probing clip durations: 337/1906 (18%) | elapsed 2m 26s | ETA 11m 21s | NO20260426-185653-041098F.MP4
+== Probing clip durations: 338/1906 (18%) | elapsed 2m 26s | ETA 11m 20s | NO20260426-185753-041099F.MP4
+== Probing clip durations: 339/1906 (18%) | elapsed 2m 26s | ETA 11m 19s | NO20260426-185853-041100F.MP4
+== Probing clip durations: 340/1906 (18%) | elapsed 2m 27s | ETA 11m 17s | NO20260426-185953-041101F.MP4
+== Probing clip durations: 341/1906 (18%) | elapsed 2m 27s | ETA 11m 17s | NO20260426-190053-041102F.MP4
+  session 9/11 -> 2 output file(s)
+  merging 10 clips (10.0 min) -> NO_20260426-184553_185453_F.mp4
+== Merging output files: 37/920 (4%) | elapsed 2m 27s | ETA 58m 47s | planned
+  merging 6 clips (5.0 min) -> NO_20260426-185553_190053_F.mp4
+== Merging output files: 38/920 (4%) | elapsed 2m 27s | ETA 57m 11s | planned
+  session 10/11: 121 clips, probing 121 new file(s)...
+== Probing clip durations: 342/1906 (18%) | elapsed 2m 27s | ETA 11m 16s | NO20260427-065332-041105F.MP4
+== Probing clip durations: 343/1906 (18%) | elapsed 2m 28s | ETA 11m 14s | NO20260427-065432-041106F.MP4
+== Probing clip durations: 344/1906 (18%) | elapsed 2m 28s | ETA 11m 13s | NO20260427-065532-041107F.MP4
+== Probing clip durations: 345/1906 (18%) | elapsed 2m 28s | ETA 11m 11s | NO20260427-065632-041108F.MP4
+== Probing clip durations: 346/1906 (18%) | elapsed 2m 28s | ETA 11m 10s | NO20260427-065702-041110F.MP4
+== Probing clip durations: 347/1906 (18%) | elapsed 2m 28s | ETA 11m 08s | NO20260427-065802-041111F.MP4
+== Probing clip durations: 348/1906 (18%) | elapsed 2m 29s | ETA 11m 07s | NO20260427-065845-041113F.MP4
+== Probing clip durations: 349/1906 (18%) | elapsed 2m 29s | ETA 11m 05s | NO20260427-065945-041114F.MP4
+== Probing clip durations: 350/1906 (18%) | elapsed 2m 29s | ETA 11m 04s | NO20260427-070045-041115F.MP4
+== Probing clip durations: 351/1906 (18%) | elapsed 2m 29s | ETA 11m 02s | NO20260427-070145-041116F.MP4
+== Probing clip durations: 352/1906 (18%) | elapsed 2m 29s | ETA 11m 01s | NO20260427-070245-041117F.MP4
+== Probing clip durations: 353/1906 (19%) | elapsed 2m 30s | ETA 11m 00s | NO20260427-070345-041118F.MP4
+== Probing clip durations: 354/1906 (19%) | elapsed 2m 30s | ETA 10m 58s | NO20260427-070450-041119F.MP4
+== Probing clip durations: 355/1906 (19%) | elapsed 2m 30s | ETA 10m 58s | NO20260427-070550-041120F.MP4
+== Probing clip durations: 356/1906 (19%) | elapsed 2m 31s | ETA 10m 57s | NO20260427-070650-041121F.MP4
+== Probing clip durations: 357/1906 (19%) | elapsed 2m 31s | ETA 10m 55s | NO20260427-070750-041122F.MP4
+== Probing clip durations: 358/1906 (19%) | elapsed 2m 31s | ETA 10m 54s | NO20260427-070850-041123F.MP4
+== Probing clip durations: 359/1906 (19%) | elapsed 2m 31s | ETA 10m 53s | NO20260427-070950-041124F.MP4
+== Probing clip durations: 360/1906 (19%) | elapsed 2m 31s | ETA 10m 51s | NO20260427-071050-041125F.MP4
+== Probing clip durations: 361/1906 (19%) | elapsed 2m 31s | ETA 10m 50s | NO20260427-071150-041126F.MP4
+== Probing clip durations: 362/1906 (19%) | elapsed 2m 32s | ETA 10m 49s | NO20260427-071250-041127F.MP4
+== Probing clip durations: 363/1906 (19%) | elapsed 2m 32s | ETA 10m 49s | NO20260427-071350-041128F.MP4
+== Probing clip durations: 364/1906 (19%) | elapsed 2m 33s | ETA 10m 48s | NO20260427-071450-041129F.MP4
+== Probing clip durations: 365/1906 (19%) | elapsed 2m 33s | ETA 10m 49s | NO20260427-071550-041130F.MP4
+== Probing clip durations: 366/1906 (19%) | elapsed 2m 34s | ETA 10m 49s | NO20260427-071650-041131F.MP4
+== Probing clip durations: 367/1906 (19%) | elapsed 2m 34s | ETA 10m 48s | NO20260427-071750-041132F.MP4
+== Probing clip durations: 368/1906 (19%) | elapsed 2m 35s | ETA 10m 48s | NO20260427-071850-041133F.MP4
+== Probing clip durations: 369/1906 (19%) | elapsed 2m 35s | ETA 10m 49s | NO20260427-071950-041134F.MP4
+== Probing clip durations: 370/1906 (19%) | elapsed 2m 36s | ETA 10m 49s | NO20260427-072050-041135F.MP4
+== Probing clip durations: 371/1906 (19%) | elapsed 2m 36s | ETA 10m 47s | NO20260427-072150-041136F.MP4
+== Probing clip durations: 372/1906 (20%) | elapsed 2m 36s | ETA 10m 47s | NO20260427-072250-041137F.MP4
+== Probing clip durations: 373/1906 (20%) | elapsed 2m 37s | ETA 10m 45s | NO20260427-072350-041138F.MP4
+== Probing clip durations: 374/1906 (20%) | elapsed 2m 37s | ETA 10m 44s | NO20260427-072450-041139F.MP4
+== Probing clip durations: 375/1906 (20%) | elapsed 2m 37s | ETA 10m 43s | NO20260427-072550-041140F.MP4
+== Probing clip durations: 376/1906 (20%) | elapsed 2m 37s | ETA 10m 41s | NO20260427-072700-041142F.MP4
+== Probing clip durations: 377/1906 (20%) | elapsed 2m 38s | ETA 10m 42s | NO20260427-072800-041143F.MP4
+== Probing clip durations: 378/1906 (20%) | elapsed 2m 39s | ETA 10m 43s | NO20260427-072900-041144F.MP4
+== Probing clip durations: 379/1906 (20%) | elapsed 2m 39s | ETA 10m 42s | NO20260427-073000-041145F.MP4
+== Probing clip durations: 380/1906 (20%) | elapsed 2m 39s | ETA 10m 41s | NO20260427-073100-041146F.MP4
+== Probing clip durations: 381/1906 (20%) | elapsed 2m 40s | ETA 10m 42s | NO20260427-073200-041147F.MP4
+== Probing clip durations: 382/1906 (20%) | elapsed 2m 41s | ETA 10m 42s | NO20260427-073300-041148F.MP4
+== Probing clip durations: 383/1906 (20%) | elapsed 2m 41s | ETA 10m 43s | NO20260427-073400-041149F.MP4
+== Probing clip durations: 384/1906 (20%) | elapsed 2m 42s | ETA 10m 42s | NO20260427-073500-041150F.MP4
+== Probing clip durations: 385/1906 (20%) | elapsed 2m 42s | ETA 10m 42s | NO20260427-073600-041151F.MP4
+== Probing clip durations: 386/1906 (20%) | elapsed 2m 43s | ETA 10m 42s | NO20260427-073700-041152F.MP4
+== Probing clip durations: 387/1906 (20%) | elapsed 2m 44s | ETA 10m 43s | NO20260427-073800-041153F.MP4
+== Probing clip durations: 388/1906 (20%) | elapsed 2m 44s | ETA 10m 42s | NO20260427-073900-041154F.MP4
+== Probing clip durations: 389/1906 (20%) | elapsed 2m 45s | ETA 10m 44s | NO20260427-074000-041155F.MP4
+== Probing clip durations: 390/1906 (20%) | elapsed 2m 45s | ETA 10m 44s | NO20260427-074100-041156F.MP4
+== Probing clip durations: 391/1906 (21%) | elapsed 2m 46s | ETA 10m 44s | NO20260427-074200-041157F.MP4
+== Probing clip durations: 392/1906 (21%) | elapsed 2m 47s | ETA 10m 45s | NO20260427-074300-041158F.MP4
+== Probing clip durations: 393/1906 (21%) | elapsed 2m 47s | ETA 10m 45s | NO20260427-074400-041159F.MP4
+== Probing clip durations: 394/1906 (21%) | elapsed 2m 47s | ETA 10m 43s | NO20260427-074500-041160F.MP4
+== Probing clip durations: 395/1906 (21%) | elapsed 2m 48s | ETA 10m 43s | NO20260427-074600-041161F.MP4
+== Probing clip durations: 396/1906 (21%) | elapsed 2m 48s | ETA 10m 42s | NO20260427-074700-041162F.MP4
+== Probing clip durations: 397/1906 (21%) | elapsed 2m 48s | ETA 10m 41s | NO20260427-074800-041163F.MP4
+== Probing clip durations: 398/1906 (21%) | elapsed 2m 48s | ETA 10m 39s | NO20260427-074900-041164F.MP4
+== Probing clip durations: 399/1906 (21%) | elapsed 2m 49s | ETA 10m 38s | NO20260427-075000-041165F.MP4
+== Probing clip durations: 400/1906 (21%) | elapsed 2m 49s | ETA 10m 38s | NO20260427-075100-041166F.MP4
+== Probing clip durations: 401/1906 (21%) | elapsed 2m 49s | ETA 10m 37s | NO20260427-075200-041167F.MP4
+== Probing clip durations: 402/1906 (21%) | elapsed 2m 50s | ETA 10m 38s | NO20260427-075300-041168F.MP4
+== Probing clip durations: 403/1906 (21%) | elapsed 2m 51s | ETA 10m 39s | NO20260427-075400-041169F.MP4
+== Probing clip durations: 404/1906 (21%) | elapsed 2m 51s | ETA 10m 38s | NO20260427-075500-041170F.MP4
+== Probing clip durations: 405/1906 (21%) | elapsed 2m 52s | ETA 10m 38s | NO20260427-075600-041171F.MP4
+== Probing clip durations: 406/1906 (21%) | elapsed 2m 53s | ETA 10m 39s | NO20260427-075700-041172F.MP4
+== Probing clip durations: 407/1906 (21%) | elapsed 2m 53s | ETA 10m 39s | NO20260427-075800-041173F.MP4
+== Probing clip durations: 408/1906 (21%) | elapsed 2m 53s | ETA 10m 38s | NO20260427-075900-041174F.MP4
+== Probing clip durations: 409/1906 (21%) | elapsed 2m 54s | ETA 10m 39s | NO20260427-080000-041175F.MP4
+== Probing clip durations: 410/1906 (22%) | elapsed 2m 55s | ETA 10m 38s | NO20260427-080100-041176F.MP4
+== Probing clip durations: 411/1906 (22%) | elapsed 2m 55s | ETA 10m 38s | NO20260427-080200-041177F.MP4
+== Probing clip durations: 412/1906 (22%) | elapsed 2m 55s | ETA 10m 37s | NO20260427-080300-041178F.MP4
+== Probing clip durations: 413/1906 (22%) | elapsed 2m 55s | ETA 10m 36s | NO20260427-080400-041179F.MP4
+== Probing clip durations: 414/1906 (22%) | elapsed 2m 56s | ETA 10m 35s | NO20260427-080500-041180F.MP4
+== Probing clip durations: 415/1906 (22%) | elapsed 2m 56s | ETA 10m 34s | NO20260427-080600-041181F.MP4
+9/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20241231-175829_175829_F.mp4
+  session 10/221: 3 clips -> 1 output file(s)
+  merge 3 clips (1.5 min) -> PA_20241231-194534_194838_F.mp4
+  session 11/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250102-132028_132028_F.mp4
+  session 12/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250102-163349_163349_F.mp4
+  session 13/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250102-222608_222608_F.mp4
+  session 14/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250103-001222_001222_F.mp4
+  session 15/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250103-014834_014834_F.mp4
+  session 16/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250103-122212_122212_F.mp4
+  session 17/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250103-133828_133828_F.mp4
+  session 18/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250103-150943_150943_F.mp4
+  session 19/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250103-174842_174842_F.mp4
+  session 20/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250104-151202_151202_F.mp4
+  session 21/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250107-155120_155120_F.mp4
+  session 22/221: 2 clips -> 1 output file(s)
+  merge 2 clips (1.0 min) -> PA_20250107-160219_160409_F.mp4
+  session 23/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250107-164657_164657_F.mp4
+  session 24/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250107-180506_180506_F.mp4
+  session 25/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250107-184228_184228_F.mp4
+  session 26/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250107-192201_192201_F.mp4
+  session 27/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250108-082450_082450_F.mp4
+  session 28/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250109-112819_112819_F.mp4
+  session 29/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250110-212545_212545_F.mp4
+  session 30/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250110-214125_214125_F.mp4
+  session 31/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250115-083203_083203_F.mp4
+  session 32/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250115-085904_085904_F.mp4
+  session 33/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250115-114857_114857_F.mp4
+  session 34/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250115-235848_235848_F.mp4
+  session 35/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250116-090505_090505_F.mp4
+  session 36/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250116-201128_201128_F.mp4
+  session 37/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250117-092413_092413_F.mp4
+  session 38/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250117-184244_184244_F.mp4
+  session 39/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250117-190401_190401_F.mp4
+  session 40/221: 3 clips -> 1 output file(s)
+  merge 3 clips (1.5 min) -> PA_20250125-083627_083907_F.mp4
+  session 41/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.1 min) -> PA_20250125-085152_085152_F.mp4
+  session 42/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250125-120920_120920_F.mp4
+  session 43/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250127-073957_073957_F.mp4
+  session 44/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250129-091901_091901_F.mp4
+  session 45/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250201-090654_090654_F.mp4
+  session 46/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.0 min) -> PA_20250201-140927_140927_F.mp4
+  session 47/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250201-181013_181013_F.mp4
+  session 48/221: 3 clips -> 1 output file(s)
+  merge 3 clips (1.5 min) -> PA_20250209-154724_154943_F.mp4
+  session 49/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250209-161029_161029_F.mp4
+  session 50/221: 2 clips -> 1 output file(s)
+  merge 2 clips (1.0 min) -> PA_20250209-180129_180213_F.mp4
+  session 51/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250209-181249_181249_F.mp4
+  session 52/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250215-163638_163638_F.mp4
+  session 53/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.3 min) -> PA_20250215-231928_231928_F.mp4
+  session 54/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250218-102854_102854_F.mp4
+  session 55/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250218-205701_205701_F.mp4
+  session 56/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250221-080404_080404_F.mp4
+  session 57/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250221-215339_215339_F.mp4
+  session 58/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.2 min) -> PA_20250222-124154_124154_F.mp4
+  session 59/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.1 min) -> PA_20250222-203700_203700_F.mp4
+  session 60/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.2 min) -> PA_20250222-235021_235021_F.mp4
+  session 61/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250227-091524_091524_F.mp4
+  session 62/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250301-085921_085921_F.mp4
+  session 63/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250303-203729_203729_F.mp4
+  session 64/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250304-083134_083134_F.mp4
+  session 65/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250306-220711_220711_F.mp4
+  session 66/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250308-155238_155238_F.mp4
+  session 67/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250308-215423_215423_F.mp4
+  session 68/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250309-160127_160127_F.mp4
+  session 69/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250311-092801_092801_F.mp4
+  session 70/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250313-204233_204233_F.mp4
+  session 71/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250314-083320_083320_F.mp4
+  session 72/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.1 min) -> PA_20250314-084919_084919_F.mp4
+  session 73/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250314-090927_090927_F.mp4
+  session 74/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250315-123052_123052_F.mp4
+  session 75/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250315-130113_130113_F.mp4
+  session 76/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250317-203331_203331_F.mp4
+  session 77/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250318-104137_104137_F.mp4
+  session 78/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250319-104913_104913_F.mp4
+  session 79/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250321-191041_191041_F.mp4
+  session 80/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250321-200237_200237_F.mp4
+  session 81/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250326-120208_120208_F.mp4
+  session 82/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250326-131737_131737_F.mp4
+  session 83/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.2 min) -> PA_20250328-082518_082518_F.mp4
+  session 84/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250328-094140_094140_F.mp4
+  session 85/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250329-073018_073018_F.mp4
+  session 86/221: 1 clips -> 1 output file(s)
+  merge 1 clips (0.5 min) -> PA_20250329-093147_093147_F.mp4ng 1 clips (1.0 min) -> EV_20260426-174223_174223_F.mp4
 == Merging output files: 287/920 (31%) | elapsed 0s | ETA 0s | planned
   session 184/187: 1 clips, probing 1 new file(s)...
   session 184/187 -> 1 output file(s)

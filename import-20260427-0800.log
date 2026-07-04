@@ -1,0 +1,58 @@
+Source:  /Volumes/Untitled
+Output:  /Users/cuthbert/work_local/70mai_project/video
+Chunk:   10 min
+Gap:     120 sec
+Types:   Normal, Event, Parking
+Cameras: Front, Back
+Range:   2026-04-27 08:00:00 -> 2026-04-27 09:00:00
+
+Found 112 clips in 4 group(s)
+Estimated output files: ~16
+== Probing clip durations: 0/112 (0%) | elapsed 0s
+== Merging output files: 0/16 (0%) | elapsed 0s
+
+>>> Group 1/4: Normal/Front
+
+--- Normal/Front: 55 clips, 2 sessions ---
+  session 1/2: 54 clips, probing 54 new file(s)...
+== Probing clip durations: 1/112 (1%) | elapsed 0s | ETA 0s | NO20260427-080000-041175F.MP4
+== Probing clip durations: 2/112 (2%) | elapsed 0s | ETA 7s | NO20260427-080100-041176F.MP4
+== Probing clip durations: 3/112 (3%) | elapsed 0s | ETA 9s | NO20260427-080200-041177F.MP4
+== Probing clip durations: 4/112 (4%) | elapsed 0s | ETA 10s | NO20260427-080300-041178F.MP4
+== Probing clip durations: 5/112 (4%) | elapsed 0s | ETA 13s | NO20260427-080400-041179F.MP4
+== Probing clip durations: 6/112 (5%) | elapsed 0s | ETA 13s | NO20260427-080500-041180F.MP4
+== Probing clip durations: 7/112 (6%) | elapsed 0s | ETA 13s | NO20260427-080600-041181F.MP4
+== Probing clip durations: 8/112 (7%) | elapsed 1s | ETA 14s | NO20260427-080700-041182F.MP4
+== Probing clip durations: 9/112 (8%) | elapsed 1s | ETA 15s | NO20260427-080800-041183F.MP4
+== Probing clip durations: 10/112 (9%) | elapsed 1s | ETA 16s | NO20260427-080900-041184F.MP4
+== Probing clip durations: 11/112 (10%) | elapsed 1s | ETA 16s | NO20260427-081000-041185F.MP4
+== Probing clip durations: 12/112 (11%) | elapsed 1s | ETA 16s | NO20260427-081100-041186F.MP4
+== Probing clip durations: 13/112 (12%) | elapsed 2s | ETA 17s | NO20260427-081200-041187F.MP4
+== Probing clip durations: 14/112 (12%) | elapsed 2s | ETA 16s | NO20260427-081300-041188F.MP4
+== Probing clip durations: 15/112 (13%) | elapsed 2s | ETA 16s | NO20260427-081400-041189F.MP4
+== Probing clip durations: 16/112 (14%) | elapsed 2s | ETA 16s | NO20260427-081500-041190F.MP4
+== Probing clip durations: 17/112 (15%) | elapsed 2s | ETA 16s | NO20260427-081600-041191F.MP4
+== Probing clip durations: 18/112 (16%) | elapsed 3s | ETA 15s | NO20260427-081700-041192F.MP4
+== Probing clip durations: 19/112 (17%) | elapsed 3s | ETA 15s | NO20260427-081800-041193F.MP4
+== Probing clip durations: 20/112 (18%) | elapsed 3s | ETA 15s | NO20260427-081900-041194F.MP4
+== Probing clip durations: 21/112 (19%) | elapsed 3s | ETA 15s | NO20260427-082000-041195F.MP4
+== Probing clip durations: 22/112 (20%) | elapsed 3s | ETA 14s | NO20260427-082100-041196F.MP4
+== Probing clip durations: 23/112 (21%) | elapsed 3s | ETA 14s | NO20260427-082200-041197F.MP4
+== Probing clip durations: 24/112 (21%) | elapsed 3s | ETA 14s | NO20260427-082300-041198F.MP4
+== Probing clip durations: 25/112 (22%) | elapsed 3s | ETA 13s | NO20260427-082400-041199F.MP4
+== Probing clip durations: 26/112 (23%) | elapsed 4s | ETA 13s | NO20260427-082500-041200F.MP4
+== Probing clip durations: 27/112 (24%) | elapsed 4s | ETA 13s | NO20260427-082600-041201F.MP4
+== Probing clip durations: 28/112 (25%) | elapsed 4s | ETA 12s | NO20260427-082700-041202F.MP4
+== Probing clip durations: 29/112 (26%) | elapsed 4s | ETA 12s | NO20260427-082800-041203F.MP4
+== Probing clip durations: 30/112 (27%) | elapsed 4s | ETA 12s | NO20260427-082900-041204F.MP4
+== Probing clip durations: 31/112 (28%) | elapsed 4s | ETA 12s | NO20260427-083000-041205F.MP4
+== Probing clip durations: 32/112 (29%) | elapsed 4s | ETA 11s | NO20260427-083100-041206F.MP4
+== Probing clip durations: 33/112 (29%) | elapsed 4s | ETA 11s | NO20260427-083200-041207F.MP4
+== Probing clip durations: 34/112 (30%) | elapsed 5s | ETA 11s | NO20260427-083300-041208F.MP4
+== Probing clip durations: 35/112 (31%) | elapsed 5s | ETA 11s | NO20260427-083400-041209F.MP4
+== Probing clip durations: 36/112 (32%) | elapsed 5s | ETA 11s | NO20260427-083500-041210F.MP4
+== Probing clip durations: 37/112 (33%) | elapsed 5s | ETA 11s | NO20260427-083600-041211F.MP4
+== Probing clip durations: 38/112 (34%) | elapsed 5s | ETA 10s | NO20260427-083700-041212F.MP4
+== Probing clip durations: 39/112 (35%) | elapsed 5s | ETA 10s | NO20260427-083800-041213F.MP4
+== Probing clip durations: 40/112 (36%) | elapsed 5s | ETA 10s | NO20260427-083900-041214F.MP4
+== Probing clip durations: 41/112 (37%) | elapsed 6s | ETA 10s | NO20260427-084000-041215F.MP4

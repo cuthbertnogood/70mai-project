@@ -47,6 +47,23 @@ Process only one type or camera:
 python3 import_70mai.py --types Normal --cameras Front
 ```
 
+Export a date/time range (clip start must fall within the range; end is exclusive):
+
+```bash
+python3 import_70mai.py \
+  --date 04-27-2026 \
+  --from-time 08:00 \
+  --to-time 09:00
+```
+
+Or with full datetimes:
+
+```bash
+python3 import_70mai.py \
+  --from "2026-04-27 08:00" \
+  --to "2026-04-27 09:00"
+```
+
 ## Output
 
 Merged files are written to:

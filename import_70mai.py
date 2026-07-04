@@ -102,6 +102,54 @@ def parse_filename(path: Path, record_type: str, camera: str) -> Clip | None:
     )
 
 
+def parse_datetime(value: str) -> datetime:
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%m-%d-%Y %H:%M:%S",
+        "%m-%d-%Y %H:%M",
+        "%m-%d-%Y",
+    ):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(
+        f"Invalid date/time: {value!r}. Use YYYY-MM-DD[ HH:MM[:SS]] or MM-DD-YYYY[ HH:MM[:SS]]"
+    )
+
+
+def parse_time(value: str) -> tuple[int, int, int]:
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            return parsed.hour, parsed.minute, parsed.second
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(f"Invalid time: {value!r}. Use HH:MM or HH:MM:SS")
+
+
+def clip_in_range(
+    clip: Clip,
+    range_start: datetime | None,
+    range_end: datetime | None,
+) -> bool:
+    if range_start and clip.timestamp < range_start:
+        return False
+    if range_end and clip.timestamp >= range_end:
+        return False
+    return True
+
+
+def filter_clips(
+    clips: list[Clip],
+    range_start: datetime | None,
+    range_end: datetime | None,
+) -> list[Clip]:
+    return [clip for clip in clips if clip_in_range(clip, range_start, range_end)]
+
+
 def scan_clips(source: Path, record_types: list[str], cameras: list[str]) -> list[Clip]:
     clips: list[Clip] = []
     for record_type in record_types:
@@ -400,7 +448,58 @@ def main() -> int:
         action="store_true",
         help="Show merge plan without running ffmpeg",
     )
+    parser.add_argument(
+        "--from",
+        dest="range_from",
+        type=parse_datetime,
+        metavar="DATETIME",
+        help="Export range start, e.g. 2026-04-27 08:00 or 04-27-2026 08:00",
+    )
+    parser.add_argument(
+        "--to",
+        dest="range_to",
+        type=parse_datetime,
+        metavar="DATETIME",
+        help="Export range end (exclusive), e.g. 2026-04-27 09:00",
+    )
+    parser.add_argument(
+        "--date",
+        type=parse_datetime,
+        metavar="DATE",
+        help="Shortcut: date only, use with --from-time and --to-time",
+    )
+    parser.add_argument(
+        "--from-time",
+        type=parse_time,
+        metavar="HH:MM",
+        help="Range start time on --date, e.g. 08:00",
+    )
+    parser.add_argument(
+        "--to-time",
+        type=parse_time,
+        metavar="HH:MM",
+        help="Range end time on --date (exclusive), e.g. 09:00",
+    )
     args = parser.parse_args()
+
+    range_start = args.range_from
+    range_end = args.range_to
+    if args.date or args.from_time or args.to_time:
+        if not args.date:
+            raise SystemExit("--date is required when using --from-time or --to-time")
+        day = args.date.date()
+        if args.from_time:
+            h, m, s = args.from_time
+            range_start = datetime(day.year, day.month, day.day, h, m, s)
+        else:
+            range_start = datetime(day.year, day.month, day.day)
+        if args.to_time:
+            h, m, s = args.to_time
+            range_end = datetime(day.year, day.month, day.day, h, m, s)
+        else:
+            range_end = datetime(day.year, day.month, day.day, 23, 59, 59)
+    if range_start and range_end and range_start >= range_end:
+        raise SystemExit(f"Invalid range: {range_start} >= {range_end}")
 
     record_types = [t.strip() for t in args.types.split(",") if t.strip()]
     cameras = [c.strip() for c in args.cameras.split(",") if c.strip()]
@@ -424,6 +523,8 @@ def main() -> int:
     log(f"Gap:     {args.gap_seconds:g} sec")
     log(f"Types:   {', '.join(record_types)}")
     log(f"Cameras: {', '.join(cameras)}")
+    if range_start or range_end:
+        log(f"Range:   {range_start or '...'} -> {range_end or '...'}")
     if args.dry_run:
         log("Mode:    dry-run")
 
@@ -442,6 +543,7 @@ def main() -> int:
                 clip = parse_filename(path, record_type, camera)
                 if clip:
                     clips.append(clip)
+            clips = filter_clips(clips, range_start, range_end)
             if clips:
                 groups.append((record_type, camera, clips))
                 total_clips += len(clips)
