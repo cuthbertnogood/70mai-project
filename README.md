@@ -261,30 +261,41 @@ Use `--profile` instead of tuning flags manually:
 
 | Profile | Use case | HW encode | Bitrate | Width | FPS |
 |---------|----------|-----------|---------|-------|-----|
-| `balanced` | Default archive export (recommended) | yes | 6.5 Mbps | 1206 | 25 |
+| `balanced` | **Default** — archive export | yes | 6.5 Mbps | 1206 | 25 |
 | `draft` | Sync check / preview | yes | 5.0 Mbps | 960 | 20 |
 | `quality` | Higher bitrate archive | yes | 7.5 Mbps | 1206 | 25 |
 
 Profiles set **hw encode + quality/resolution presets** only (same pipeline as `--hw`). They do not enable hardware decode or `scale_vt` — on tested Macs that full GPU pipeline is slower than hw-encode-only because `vstack` runs on CPU after `hwdownload`.
 
+Default CLI: `--profile balanced` and `-d 600` (10 minutes). A minimal export:
+
 ```bash
-# Recommended for 10-minute composites
-python3 compose_70mai.py "video/ScreenRecording_....mp4" \
-  --profile balanced \
-  -d 600
+python3 compose_70mai.py "video/ScreenRecording_....mp4"
+```
+
+Quick 60-second test:
+
+```bash
+python3 compose_70mai.py "video/ScreenRecording_....mp4" -d 60
+```
+
+Draft preview (lower resolution/fps):
+
+```bash
+python3 compose_70mai.py "video/ScreenRecording_....mp4" --profile draft
 ```
 
 ### Manual flags
 
 | Flag | Description |
 |------|-------------|
-| `--hw` | VideoToolbox H.264 encode (CPU decode/scale) — fastest on tested Mac |
-| `--profile balanced` | Same as `--hw` plus tuned width/fps/bitrate (recommended default) |
+| `--hw` | VideoToolbox H.264 encode (CPU decode/scale) — same pipeline as default profile |
+| `--profile NAME` | Override default `balanced` with `draft` or `quality` |
 | `--hw-decode` | Experimental: opt into hw decode + optional `scale_vt` (see below) |
 | `--no-vt-scale` | With `--hw-decode`, use CPU `scale=` instead of `scale_vt` |
 | `--hw-quality N` | Target bitrate `N×100` kbps (default 65 → 6.5 Mbps) |
 
-**Recommended:** `--profile balanced` or `--hw` for exports. Both use CPU decode/scale + VideoToolbox encode.
+**Default:** `--profile balanced -d 600` — CPU decode/scale + VideoToolbox encode (~20 min for a 10-minute composite on tested Mac).
 
 **Experimental `--hw-decode`:** tries progressively heavier GPU pipelines, fastest first: hw encode only → hw decode + CPU scale → full VT (`scale_vt`). Full VT is often *slower* on Apple Silicon because stacking still hits CPU after GPU frames are downloaded. Use only if you want to experiment; the script falls back automatically on failure.
 
@@ -341,13 +352,15 @@ Requires **numpy** and **scipy** for analysis. If missing, falls back to `screen
 | `--no-audio-analyze` | off | Skip analysis; use `screen` and offset `0` |
 
 ```bash
-# Auto (recommended)
-python3 compose_70mai.py "video/ScreenRecording_....mp4" \
-  --profile draft -d 600
+# Auto (default: balanced profile, 10 min)
+python3 compose_70mai.py "video/ScreenRecording_....mp4"
+
+# Draft preview
+python3 compose_70mai.py "video/ScreenRecording_....mp4" --profile draft
 
 # Force mix with manual offset
 python3 compose_70mai.py "video/ScreenRecording_....mp4" \
-  --audio mix --audio-offset 0.5 -d 600
+  --audio mix --audio-offset 0.5
 ```
 
 ## Notes

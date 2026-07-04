@@ -22,6 +22,9 @@ MERGED_RE = re.compile(
     re.IGNORECASE,
 )
 
+DEFAULT_PROFILE = "balanced"
+DEFAULT_DURATION = 600.0  # 10 minutes
+
 PROFILES: dict[str, dict[str, int | bool]] = {
     "balanced": {
         "hw": True,
@@ -840,8 +843,8 @@ def main() -> None:
         "-d",
         "--duration",
         type=float,
-        default=60.0,
-        help="Output duration in seconds (default: 60)",
+        default=DEFAULT_DURATION,
+        help=f"Output duration in seconds (default: {DEFAULT_DURATION:g} = 10 min)",
     )
     parser.add_argument(
         "--sync-offset-front",
@@ -874,7 +877,8 @@ def main() -> None:
     parser.add_argument(
         "--profile",
         choices=sorted(PROFILES),
-        help="Encoding profile: balanced (default HW), draft (fast preview), quality",
+        default=DEFAULT_PROFILE,
+        help=f"Encoding profile (default: {DEFAULT_PROFILE} — hw encode, 6.5 Mbps, 1206px, 25fps)",
     )
     parser.add_argument(
         "--hw-decode",
@@ -914,12 +918,6 @@ def main() -> None:
     if hw_decode_explicit:
         args.hw_decode = True
         args.use_vt_scale = not args.no_vt_scale
-    elif args.profile is None:
-        if args.hw and args.hw_decode:
-            args.use_vt_scale = not args.no_vt_scale
-        else:
-            args.hw_decode = False
-            args.use_vt_scale = False
     elif args.no_vt_scale:
         args.use_vt_scale = False
 
