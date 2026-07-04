@@ -259,6 +259,17 @@ def find_clip_at(clips: list[MergedClip], moment: datetime) -> tuple[MergedClip,
     raise ValueError(f"No merged clip covers {moment:%Y-%m-%d %H:%M:%S}")
 
 
+def resolve_moment(clips: list[MergedClip], moment: datetime) -> datetime:
+    """Return moment if inside a clip; otherwise jump to the next clip start (merge gap)."""
+    for clip in clips:
+        if clip_covers(clip, moment):
+            return moment
+    for clip in clips:
+        if clip.start > moment:
+            return clip.start
+    raise ValueError(f"No merged clip covers {moment:%Y-%m-%d %H:%M:%S}")
+
+
 def probe_duration(path: Path) -> float:
     result = subprocess.run(
         [
@@ -309,17 +320,28 @@ def plan_segments(
 ) -> list[Segment]:
     """Build one or more segments when duration crosses chunk boundaries."""
     moment = wall_start + timedelta(seconds=sync_offset)
-    remaining = duration
+    wall_end = wall_start + timedelta(seconds=duration)
     segments: list[Segment] = []
 
-    while remaining > 0.01:
+    while moment < wall_end - timedelta(seconds=0.01):
+        moment = resolve_moment(clips, moment)
+        if moment >= wall_end:
+            break
         clip, offset = find_clip_at(clips, moment)
-        duration = clip.duration if clip.duration is not None else probe_duration(clip.path)
-        available = duration - offset
-        take = min(remaining, available)
+        clip_duration = (
+            clip.duration if clip.duration is not None else probe_duration(clip.path)
+        )
+        clip_end = clip.start + timedelta(seconds=clip_duration)
+        segment_end = min(wall_end, clip_end)
+        take = (segment_end - moment).total_seconds()
+        if take <= 0.01:
+            moment = clip_end
+            continue
         segments.append(Segment(path=clip.path, ss=offset, duration=take))
-        remaining -= take
-        moment += timedelta(seconds=take)
+        moment = segment_end
+
+    if not segments:
+        raise ValueError(f"No merged clip covers {wall_start:%Y-%m-%d %H:%M:%S}")
 
     return segments
 

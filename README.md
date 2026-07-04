@@ -436,7 +436,7 @@ Full pipeline (`compose_2cam_70mai.py`, `publish_70mai.py`, YouTube upload) — 
 
 ### Compose 2-cam (Front + Back)
 
-Vertical stack without Screen Recording. Sync by wall-clock (`--from` + `--to` / `-d`).
+Vertical stack without Screen Recording. Sync by wall-clock (`--from` + `--to` / `-d`). Small gaps between merged clip boundaries (~tens of seconds) are skipped automatically; output may be slightly shorter than the wall-clock range.
 
 ```bash
 # 60-second test
