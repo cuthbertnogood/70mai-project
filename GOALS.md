@@ -40,16 +40,21 @@
 ## Шаг 3 — публикация 2-cam на YouTube
 
 - **`plan_estimate.py`** — pre-flight: поездки, куски, `publish_plan.md`
-- **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
+- **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync, опционально GPS-телеметрия (`--telemetry`)
 - **`publish_70mai.py`** — trip chunks → compose → concat → YouTube → delete
 - **`youtube_upload.py`** — OAuth + resumable upload + playlist
 - По умолчанию загрузка **private** (не public/unlisted)
 
 Target chunk: **2 ч по поездкам** (короткие поездки склеиваются; длинная ≥2 ч — solo).
 
+## GPS-телеметрия в видео
+
+- **`gps_70mai.py`** + **`telemetry_overlay.py`** — парсинг `GPSData*.txt`, миникарта (OpenStreetMap), скорость, компас, координаты, G-force (из изменения скорости)
+- Флаг **`--telemetry`** в `compose_2cam_70mai.py` и `publish_70mai.py`
+- AR-эффекты приложения 70mai (распознавание машин, стрелки полос) в сырых файлах **не хранятся** — это постобработка в приложении
+
 ## Что не входит в текущие цели (пока)
 
-- Импорт/слияние GPS-треков в видео (сканирование `GPSData*.txt` в `--scan` уже есть).
 - Веб-интерфейс.
 - Автоматический запуск по подключению карты (можно добавить отдельно).
 

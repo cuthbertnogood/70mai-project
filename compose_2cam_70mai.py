@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from compose_70mai import (
     scan_merged_clips,
 )
 from import_70mai import format_duration, parse_datetime
+from telemetry_overlay import render_telemetry_video, resolve_gps_sources
 
 
 def build_filter_2cam(
@@ -73,6 +75,14 @@ def build_filter_2cam(
     return ";".join(parts)
 
 
+def append_telemetry_overlay(filter_complex: str, telemetry_input: int) -> str:
+    return (
+        f"{filter_complex};"
+        f"[{telemetry_input}:v]format=rgba[tel];"
+        f"[vout][tel]overlay=W-w-20:20:format=auto,format=yuv420p[vfinal]"
+    )
+
+
 def build_audio_filter_2cam(front_count: int) -> tuple[str, str | None]:
     if front_count <= 0:
         return "", None
@@ -96,6 +106,7 @@ def build_compose_2cam_cmd(
     hw_decode: bool,
     use_vt_scale: bool,
     audio_source: str,
+    telemetry_path: Path | None = None,
 ) -> list[str]:
     cmd: list[str] = ["ffmpeg", "-y"]
 
@@ -108,6 +119,11 @@ def build_compose_2cam_cmd(
         if hw_decode:
             append_hwaccel_args(cmd)
         cmd.extend(["-ss", f"{seg.ss:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(seg.path)])
+
+    telemetry_input: int | None = None
+    if telemetry_path is not None:
+        telemetry_input = len(front_segments) + len(back_segments)
+        cmd.extend(["-i", str(telemetry_path)])
 
     filter_complex = build_filter_2cam(
         width,
@@ -134,8 +150,13 @@ def build_compose_2cam_cmd(
     if audio_filter:
         filter_complex = f"{filter_complex};{audio_filter}"
 
+    video_map = "[vout]"
+    if telemetry_input is not None:
+        filter_complex = append_telemetry_overlay(filter_complex, telemetry_input)
+        video_map = "[vfinal]"
+
     cmd.extend(["-filter_complex", filter_complex])
-    cmd.extend(["-map", "[vout]"])
+    cmd.extend(["-map", video_map])
     if audio_map:
         cmd.extend(["-map", audio_map])
 
@@ -168,6 +189,9 @@ def run_compose_2cam(
     hw_decode: bool,
     use_vt_scale: bool,
     audio_source: str = "front",
+    telemetry: bool = False,
+    gps_dir: Path | None = None,
+    telemetry_map_size: int = 280,
     dry_run: bool = False,
 ) -> None:
     wall_end = wall_start + timedelta(seconds=duration)
@@ -197,6 +221,7 @@ def run_compose_2cam(
     )
     log(f"Encoder:       {encoder}")
     log(f"Audio:         {audio_source}")
+    log(f"Telemetry:     {'on' if telemetry else 'off'}")
     log(f"Pipeline:      {describe_pipeline(hw=hw, hw_decode=hw_decode, use_vt_scale=use_vt_scale)}")
     log("")
     log("Front segments:")
@@ -218,6 +243,28 @@ def run_compose_2cam(
         attempts = [(False, False, "software encode")]
 
     last_error: subprocess.CalledProcessError | None = None
+    telemetry_path: Path | None = None
+    telemetry_tmp: tempfile.TemporaryDirectory[str] | None = None
+
+    if telemetry and not dry_run:
+        gps_sources = resolve_gps_sources(gps_dir, video_dir, Path("/Volumes/Untitled"))
+        if not gps_sources:
+            log("Telemetry: no GPSData*.txt found — continuing without overlay.")
+            telemetry = False
+        else:
+            telemetry_tmp = tempfile.TemporaryDirectory(prefix="70mai_telemetry_")
+            telemetry_path = Path(telemetry_tmp.name) / "overlay.mov"
+            log(f"GPS sources:   {', '.join(p.name for p in gps_sources)}")
+            if not render_telemetry_video(
+                gps_sources=gps_sources,
+                wall_start=wall_start,
+                duration_sec=duration,
+                fps=fps,
+                output=telemetry_path,
+                map_size=telemetry_map_size,
+            ):
+                telemetry = False
+                telemetry_path = None
 
     for attempt_hw_decode, attempt_vt_scale, label in attempts:
         cmd = build_compose_2cam_cmd(
@@ -233,6 +280,7 @@ def run_compose_2cam(
             hw_decode=attempt_hw_decode,
             use_vt_scale=attempt_vt_scale,
             audio_source=audio_source,
+            telemetry_path=telemetry_path if telemetry else None,
         )
 
         log("")
@@ -251,6 +299,8 @@ def run_compose_2cam(
             ):
                 log(f"\nNote: fell back to {label}")
             log(f"\nDone: {output}")
+            if telemetry_tmp is not None:
+                telemetry_tmp.cleanup()
             return
         except subprocess.CalledProcessError as exc:
             last_error = exc
@@ -260,6 +310,9 @@ def run_compose_2cam(
                 log(f"\n{label} failed (exit {exc.returncode}), trying fallback...")
             else:
                 raise
+
+    if telemetry_tmp is not None:
+        telemetry_tmp.cleanup()
 
     if last_error is not None:
         raise last_error
@@ -342,6 +395,23 @@ def main() -> None:
     parser.add_argument("--hw-decode", action="store_true")
     parser.add_argument("--no-vt-scale", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help="GPS overlay: mini-map, speed, compass, coordinates, G-force",
+    )
+    parser.add_argument(
+        "--gps-dir",
+        type=Path,
+        help="Directory with GPSData*.txt (default: auto-detect SD card / video-dir)",
+    )
+    parser.add_argument(
+        "--telemetry-map-size",
+        type=int,
+        default=280,
+        metavar="PX",
+        help="Mini-map width in pixels (default: 280)",
+    )
     args = parser.parse_args()
 
     args.use_vt_scale = False
@@ -381,6 +451,9 @@ def main() -> None:
             hw_decode=args.hw_decode,
             use_vt_scale=args.use_vt_scale,
             audio_source=args.audio,
+            telemetry=args.telemetry,
+            gps_dir=args.gps_dir,
+            telemetry_map_size=args.telemetry_map_size,
             dry_run=args.dry_run,
         )
     except subprocess.CalledProcessError as exc:

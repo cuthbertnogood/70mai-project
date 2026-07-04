@@ -443,6 +443,11 @@ Vertical stack without Screen Recording. Sync by wall-clock (`--from` + `--to` /
 python3 compose_2cam_70mai.py --from "2026-04-27 08:13:38" -d 60 \
   -o video/Output/test_2cam_60s.mp4
 
+# With GPS telemetry overlay (mini-map, speed, compass, G-force)
+python3 compose_2cam_70mai.py --from "2026-04-27 08:13:38" -d 60 \
+  --telemetry --gps-dir /Volumes/Untitled \
+  -o video/Output/test_2cam_telemetry_60s.mp4
+
 # Default profile balanced (same as compose_70mai)
 python3 compose_2cam_70mai.py --from "2026-04-25 13:01:19" --to "2026-04-25 13:46:49"
 ```
@@ -454,6 +459,9 @@ python3 compose_2cam_70mai.py --from "2026-04-25 13:01:19" --to "2026-04-25 13:4
 | `--video-dir` | `video/Output` | Merged Normal/Front + Back |
 | `--profile` | `balanced` | Encode profile |
 | `--audio` | `front` | `front` or `back` |
+| `--telemetry` | off | GPS overlay: mini-map, speed, compass, coords, G-force |
+| `--gps-dir` | auto | Directory with `GPSData*.txt` (SD card root or `.GPS/`) |
+| `--telemetry-map-size` | `280` | Mini-map width in pixels |
 
 ### Publish (trip chunks → YouTube)
 
@@ -483,6 +491,9 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
 | `--estimate-only` | off | Plan only, no ffmpeg |
 | `--resume` | off | Continue from state file |
 | `--keep` | off | Keep MP4 after upload |
+| `--telemetry` | off | GPS overlay during compose |
+| `--gps-dir` | `--source` | `GPSData*.txt` location |
+| `--telemetry-map-size` | `280` | Mini-map width (px) |
 | `--credentials` | `~/.config/70mai/youtube_credentials.json` | OAuth client |
 | `--token` | `~/.config/70mai/youtube_token.json` | Saved refresh token |
 
@@ -510,8 +521,17 @@ print('https://youtu.be/' + vid)
 
 State: `video/Output/.publish_tmp/publish_*.state.json`. Temp parts under `.publish_tmp/`.
 
+Long compose runs — background monitor (restarts if stalled 15 min or process dies):
+
+```bash
+./scripts/monitor_compose.sh          # chunk 1, check every 60s
+MONITOR_CHUNK=1 MONITOR_STALL_SEC=900 ./scripts/monitor_compose.sh
+# log: video/Output/.publish_tmp/monitor_chunk1.log
+```
+
 ## Notes
 
 - Front camera: 3840x2160, Back camera: 1920x1080
-- GPS data stays in `GPSData*.txt` on the SD card and is not merged
+- GPS overlay reads `GPSData*.txt` from SD card (`--gps-dir`); map tiles cached in `~/.cache/70mai/map_tiles`
+- 70mai app AR effects (vehicle boxes, lane chevrons) are not in raw files — only GPS/speed telemetry is available offline
 - Full import of all types and cameras needs ~360 GB free disk space

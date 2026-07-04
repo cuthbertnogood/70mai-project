@@ -153,6 +153,9 @@ def publish_chunk(
     ffmpeg: str,
     profile_args: dict,
     audio_source: str,
+    telemetry: bool = False,
+    gps_dir: Path | None = None,
+    telemetry_map_size: int = 280,
     dry_run: bool,
 ) -> Path:
     trip_parts: list[Path] = []
@@ -174,6 +177,9 @@ def publish_chunk(
             wall_start=trip.start,
             duration=trip.duration_sec,
             audio_source=audio_source,
+            telemetry=telemetry,
+            gps_dir=gps_dir,
+            telemetry_map_size=telemetry_map_size,
             dry_run=False,
             **profile_args,
         )
@@ -228,6 +234,17 @@ def main() -> None:
     parser.add_argument("--playlist", default="", help="Playlist title (optional)")
     parser.add_argument("--privacy", choices=("private", "unlisted", "public"), default="private")
     parser.add_argument("--audio", choices=("front", "back"), default="front")
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help="GPS overlay in compose (map, speed, compass, G-force)",
+    )
+    parser.add_argument(
+        "--gps-dir",
+        type=Path,
+        help="GPSData*.txt directory (default: --source)",
+    )
+    parser.add_argument("--telemetry-map-size", type=int, default=280, metavar="PX")
     parser.add_argument("--profile", default="balanced")
     parser.add_argument("--hw", action="store_true")
     parser.add_argument("--hw-decode", action="store_true")
@@ -360,6 +377,9 @@ def main() -> None:
             ffmpeg=ffmpeg or "ffmpeg",
             profile_args=profile_args,
             audio_source=args.audio,
+            telemetry=args.telemetry,
+            gps_dir=args.gps_dir or args.source,
+            telemetry_map_size=args.telemetry_map_size,
             dry_run=args.dry_run,
         )
 
