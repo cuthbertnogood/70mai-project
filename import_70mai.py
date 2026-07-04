@@ -582,7 +582,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).resolve().parent / "video",
+        default=Path(__file__).resolve().parent / "video" / "Output",
         help="Output directory for merged videos",
     )
     parser.add_argument(

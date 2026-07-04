@@ -67,7 +67,7 @@ Run the full import:
 ```bash
 python3 import_70mai.py \
   --source /Volumes/Untitled \
-  --output ./video \
+  --output ./video/Output \
   --chunk-minutes 10 \
   --gap-seconds 120
 ```
@@ -185,13 +185,16 @@ Run `python3 import_70mai.py --help` for the built-in reference.
 Merged files are written to:
 
 ```
-video/
+video/Output/
 ├── Normal/
 │   ├── Front/NO_20260425-130119_131019_F.mp4
 │   └── Back/
 ├── Event/
 └── Parking/
 ```
+
+Source files (e.g. screen recordings) stay in `video/`.
+Composite 3-camera videos from `compose_70mai.py` are saved to `video/Output/` as well.
 
 Naming format:
 
