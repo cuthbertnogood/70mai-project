@@ -25,7 +25,7 @@ Hidden `.s_Front` preview copies are ignored.
 
 ## Usage
 
-Scan the SD card to see which date/time ranges contain data (fast, no ffmpeg):
+Scan the SD card to see which date/time ranges contain data (fast, no ffmpeg). Always includes **events** and **GPS tracks**, even when `--types` is narrowed:
 
 ```bash
 python3 import_70mai.py --scan
@@ -38,18 +38,35 @@ Scanning /Volumes/Untitled
 Session gap: 120 sec (pauses longer than this start a new range)
 
 === Overall ===
-  1906 clips | 2026-04-25 13:01:19 -> 2026-04-28 14:48:28
-  calendar days: 2026-04-25 .. 2026-04-28
+  video: 1906 clips | 2026-04-25 13:01:19 -> 2026-04-28 14:48:28
+  video days: 2026-04-25 .. 2026-04-28
+  GPS:   818315 points in 2 file(s) | 2025-03-18 03:40:07 -> 2026-04-27 00:53:56
+  GPS days: 2025-03-18 .. 2026-04-27
 
 === By type / camera ===
 
 Normal / Front — 520 clips, 2026-04-25 13:01:19 -> 2026-04-28 12:00:00
   3 recording session(s):
     1. 2026-04-25 13:01:19 -> 2026-04-25 18:30:00 (156 clips)
-    2. 2026-04-26 08:00:00 -> 2026-04-26 22:15:00 (200 clips)
-    3. 2026-04-27 07:45:00 -> 2026-04-28 12:00:00 (164 clips)
+    ...
 
-=== By date ===
+=== Events ===
+
+Event / Front — 237 event(s), 2026-02-21 07:15:47 -> 2026-04-27 08:47:48
+  2026-04-27  (3 event(s))
+    08:47:48  EV20260427-084748-032775F.MP4
+    ...
+
+=== GPS tracks ===
+  2 file(s) | 818315 points | 2025-03-18 03:40:07 -> 2026-04-27 00:53:56
+  calendar days: 2025-03-18 .. 2026-04-27
+
+  GPSData000002.txt — 63.0 MB, 722970 points
+    range: 2025-03-18 03:40:07 -> 2026-04-12 13:12:09
+  GPSData000003.txt — 8.3 MB, 95010 points
+    range: 2026-04-12 13:16:24 -> 2026-04-27 00:53:56
+
+=== By date (video) ===
   2026-04-25  13:01:19 — 23:58:42  | 890 clips | Event/Front, Normal/Back, Normal/Front
   2026-04-26  07:30:00 — 22:45:11  | 650 clips | Normal/Back, Normal/Front
 ```
@@ -171,7 +188,7 @@ Range:   2026-04-27 08:00:00 -> 2026-04-27 09:00:00
 | `--types LIST` | `Normal,Event,Parking` | Comma-separated record types |
 | `--cameras LIST` | `Front,Back` | Comma-separated cameras |
 | `--dry-run` | off | Preview merge plan without writing files |
-| `--scan` | off | Scan SD card and show available date/time ranges |
+| `--scan` | off | Scan SD card: video ranges, events list, GPS tracks |
 | `--date DATE` | — | Export day (see above) |
 | `--from-time HH:MM` | `00:00` | Start time on `--date` |
 | `--to-time HH:MM` | `23:59:59` | End time on `--date` (exclusive) |

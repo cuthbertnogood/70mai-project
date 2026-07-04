@@ -169,6 +169,143 @@ class SessionRange:
     clip_count: int
 
 
+@dataclass(frozen=True)
+class GpsFileSummary:
+    path: Path
+    point_count: int
+    start: datetime
+    end: datetime
+    size_bytes: int
+    points_by_day: tuple[tuple[date, int], ...]
+
+
+def format_file_size(num_bytes: int) -> str:
+    if num_bytes >= 1_000_000_000:
+        return f"{num_bytes / 1_000_000_000:.1f} GB"
+    if num_bytes >= 1_000_000:
+        return f"{num_bytes / 1_000_000:.1f} MB"
+    if num_bytes >= 1_000:
+        return f"{num_bytes / 1_000:.1f} KB"
+    return f"{num_bytes} B"
+
+
+def scan_gps_files(source: Path) -> list[GpsFileSummary]:
+    summaries: list[GpsFileSummary] = []
+    for path in sorted(source.glob("GPSData*.txt")):
+        if not path.is_file():
+            continue
+        first: datetime | None = None
+        last: datetime | None = None
+        count = 0
+        by_day: dict[date, int] = {}
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line.startswith("$"):
+                    continue
+                parts = line.split(",")
+                if len(parts) < 2:
+                    continue
+                try:
+                    ts = int(parts[0])
+                except ValueError:
+                    continue
+                timestamp = datetime.fromtimestamp(ts)
+                count += 1
+                if first is None:
+                    first = timestamp
+                last = timestamp
+                day = timestamp.date()
+                by_day[day] = by_day.get(day, 0) + 1
+        if first is None or last is None:
+            continue
+        summaries.append(
+            GpsFileSummary(
+                path=path,
+                point_count=count,
+                start=first,
+                end=last,
+                size_bytes=path.stat().st_size,
+                points_by_day=tuple(sorted(by_day.items())),
+            )
+        )
+    return summaries
+
+
+def print_events_section(event_groups: list[tuple[str, str, list[Clip]]]) -> None:
+    log("\n=== Events ===")
+    if not event_groups:
+        log("  No event clips found.")
+        return
+
+    for _record_type, camera, clips in event_groups:
+        ordered = sorted(clips, key=lambda c: (c.timestamp, c.sequence))
+        start = ordered[0].timestamp
+        end = ordered[-1].timestamp
+        log(
+            f"\nEvent / {camera} — {len(clips)} event(s), "
+            f"{format_ts(start)} -> {format_ts(end)}"
+        )
+        by_day: dict[date, list[Clip]] = {}
+        for clip in ordered:
+            by_day.setdefault(clip.timestamp.date(), []).append(clip)
+        for day in sorted(by_day):
+            day_events = by_day[day]
+            log(f"  {day.isoformat()}  ({len(day_events)} event(s))")
+            for clip in day_events:
+                log(f"    {format_clock(clip.timestamp)}  {clip.path.name}")
+
+
+def print_gps_section(gps_files: list[GpsFileSummary]) -> None:
+    log("\n=== GPS tracks ===")
+    if not gps_files:
+        log("  No GPSData*.txt files found on the card.")
+        return
+
+    overall_start = min(item.start for item in gps_files)
+    overall_end = max(item.end for item in gps_files)
+    total_points = sum(item.point_count for item in gps_files)
+    log(
+        f"  {len(gps_files)} file(s) | {total_points} points | "
+        f"{format_ts(overall_start)} -> {format_ts(overall_end)}"
+    )
+    log(
+        f"  calendar days: {format_day(overall_start)} .. {format_day(overall_end)}"
+    )
+
+    merged_days: dict[date, int] = {}
+    for item in gps_files:
+        for day, count in item.points_by_day:
+            merged_days[day] = merged_days.get(day, 0) + count
+
+    for item in gps_files:
+        log(
+            f"\n  {item.path.name} — {format_file_size(item.size_bytes)}, "
+            f"{item.point_count} points"
+        )
+        log(f"    range: {format_ts(item.start)} -> {format_ts(item.end)}")
+        log(f"    days:  {format_day(item.start)} .. {format_day(item.end)}")
+        if len(item.points_by_day) <= 14:
+            for day, count in item.points_by_day:
+                log(f"      {day.isoformat()}  {count} points")
+        else:
+            for day, count in item.points_by_day[:7]:
+                log(f"      {day.isoformat()}  {count} points")
+            log(f"      ... ({len(item.points_by_day) - 10} more days)")
+            for day, count in item.points_by_day[-3:]:
+                log(f"      {day.isoformat()}  {count} points")
+
+    if len(merged_days) <= 21:
+        log("\n  GPS by date (all files):")
+        for day in sorted(merged_days):
+            log(f"    {day.isoformat()}  {merged_days[day]} points")
+    else:
+        log(
+            f"\n  GPS by date: {len(merged_days)} days with data "
+            f"({format_day(overall_start)} .. {format_day(overall_end)})"
+        )
+
+
 def session_ranges(clips: list[Clip], gap_seconds: float) -> list[SessionRange]:
     ranges: list[SessionRange] = []
     for session in split_sessions(clips, gap_seconds):
@@ -207,70 +344,100 @@ def print_scan_report(
     source: Path,
     groups: list[tuple[str, str, list[Clip]]],
     gap_seconds: float,
+    gps_files: list[GpsFileSummary],
 ) -> None:
     all_clips = [clip for _, _, clips in groups for clip in clips]
+    recording_groups = [
+        (record_type, camera, clips)
+        for record_type, camera, clips in groups
+        if record_type != "Event"
+    ]
+    event_groups = [
+        (record_type, camera, clips)
+        for record_type, camera, clips in groups
+        if record_type == "Event"
+    ]
+
     log(f"Scanning {source}")
     log(f"Session gap: {gap_seconds:g} sec (pauses longer than this start a new range)\n")
 
-    if not all_clips:
-        log("No clips found on the card.")
+    if not all_clips and not gps_files:
+        log("No clips or GPS data found on the card.")
         return
 
-    overall_start = min(c.timestamp for c in all_clips)
-    overall_end = max(c.timestamp for c in all_clips)
     log("=== Overall ===")
-    log(
-        f"  {len(all_clips)} clips | "
-        f"{format_ts(overall_start)} -> {format_ts(overall_end)}"
-    )
-    log(
-        f"  calendar days: {format_day(overall_start)} .. {format_day(overall_end)}"
-    )
-
-    log("\n=== By type / camera ===")
-    for record_type, camera, clips in groups:
-        start = min(c.timestamp for c in clips)
-        end = max(c.timestamp for c in clips)
-        sessions = session_ranges(clips, gap_seconds)
+    if all_clips:
+        overall_start = min(c.timestamp for c in all_clips)
+        overall_end = max(c.timestamp for c in all_clips)
         log(
-            f"\n{record_type} / {camera} — "
-            f"{len(clips)} clips, {format_ts(start)} -> {format_ts(end)}"
+            f"  video: {len(all_clips)} clips | "
+            f"{format_ts(overall_start)} -> {format_ts(overall_end)}"
         )
-        if len(sessions) == 1:
-            session = sessions[0]
+        log(
+            f"  video days: {format_day(overall_start)} .. {format_day(overall_end)}"
+        )
+    else:
+        log("  video: no clips found")
+
+    if gps_files:
+        gps_start = min(item.start for item in gps_files)
+        gps_end = max(item.end for item in gps_files)
+        gps_points = sum(item.point_count for item in gps_files)
+        log(
+            f"  GPS:   {gps_points} points in {len(gps_files)} file(s) | "
+            f"{format_ts(gps_start)} -> {format_ts(gps_end)}"
+        )
+        log(f"  GPS days: {format_day(gps_start)} .. {format_day(gps_end)}")
+
+    if recording_groups:
+        log("\n=== By type / camera ===")
+        for record_type, camera, clips in recording_groups:
+            start = min(c.timestamp for c in clips)
+            end = max(c.timestamp for c in clips)
+            sessions = session_ranges(clips, gap_seconds)
             log(
-                f"  continuous: {format_ts(session.start)} -> {format_ts(session.end)} "
-                f"({session.clip_count} clips)"
+                f"\n{record_type} / {camera} — "
+                f"{len(clips)} clips, {format_ts(start)} -> {format_ts(end)}"
             )
-        else:
-            log(f"  {len(sessions)} recording session(s):")
-            for idx, session in enumerate(sessions, start=1):
+            if len(sessions) == 1:
+                session = sessions[0]
                 log(
-                    f"    {idx}. {format_ts(session.start)} -> {format_ts(session.end)} "
+                    f"  continuous: {format_ts(session.start)} -> {format_ts(session.end)} "
                     f"({session.clip_count} clips)"
                 )
+            else:
+                log(f"  {len(sessions)} recording session(s):")
+                for idx, session in enumerate(sessions, start=1):
+                    log(
+                        f"    {idx}. {format_ts(session.start)} -> {format_ts(session.end)} "
+                        f"({session.clip_count} clips)"
+                    )
 
-    log("\n=== By date ===")
-    by_day: dict[date, list[Clip]] = {}
-    for clip in all_clips:
-        day = clip.timestamp.date()
-        by_day.setdefault(day, []).append(clip)
+    print_events_section(event_groups)
+    print_gps_section(gps_files)
 
-    for day in sorted(by_day):
-        day_clips = by_day[day]
-        day_start = min(c.timestamp for c in day_clips)
-        day_end = max(c.timestamp for c in day_clips)
-        active_groups = sorted(
-            {
-                f"{record_type}/{camera}"
-                for record_type, camera, clips in groups
-                if any(c.timestamp.date() == day for c in clips)
-            }
-        )
-        log(
-            f"  {day.isoformat()}  {format_clock(day_start)} — {format_clock(day_end)}  "
-            f"| {len(day_clips)} clips | {', '.join(active_groups)}"
-        )
+    if all_clips:
+        log("\n=== By date (video) ===")
+        by_day: dict[date, list[Clip]] = {}
+        for clip in all_clips:
+            day = clip.timestamp.date()
+            by_day.setdefault(day, []).append(clip)
+
+        for day in sorted(by_day):
+            day_clips = by_day[day]
+            day_start = min(c.timestamp for c in day_clips)
+            day_end = max(c.timestamp for c in day_clips)
+            active_groups = sorted(
+                {
+                    f"{record_type}/{camera}"
+                    for record_type, camera, clips in groups
+                    if any(c.timestamp.date() == day for c in clips)
+                }
+            )
+            log(
+                f"  {day.isoformat()}  {format_clock(day_start)} — {format_clock(day_end)}  "
+                f"| {len(day_clips)} clips | {', '.join(active_groups)}"
+            )
 
     log("\nUse --date / --from-time / --to-time or --from / --to to export a range.")
 
@@ -677,8 +844,10 @@ def main() -> int:
     if args.scan:
         if args.dry_run:
             log("Note: --dry-run is ignored with --scan")
-        groups = collect_groups(args.source, record_types, cameras)
-        print_scan_report(args.source, groups, args.gap_seconds)
+        scan_types = list(dict.fromkeys([*record_types, "Event"]))
+        groups = collect_groups(args.source, scan_types, cameras)
+        gps_files = scan_gps_files(args.source)
+        print_scan_report(args.source, groups, args.gap_seconds, gps_files)
         return 0
 
     ffmpeg = find_tool("ffmpeg")
