@@ -21,6 +21,14 @@ __pycache__/
 venv/
 .env
 
+# YouTube OAuth (keep locally)
+youtube_credentials.json
+youtube_token.json
+.config/70mai/
+
+# Publish state (under video/ but explicit if copied)
+*.state.json
+
 # IDE
 .idea/
 .vscode/

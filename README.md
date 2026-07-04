@@ -432,7 +432,61 @@ python3 plan_estimate.py --source /Volumes/Untitled --chunk-minutes 120
 
 Example (current SD card, Normal only): **7h 30m** → **5 YouTube uploads**, peak chunk **~7.7 GB** (`balanced` estimate ~45 MB/min).
 
-Full pipeline (`compose_2cam_70mai.py`, `publish_70mai.py`, YouTube upload) — planned; use `plan_estimate.py` to preview chunks today.
+Full pipeline (`compose_2cam_70mai.py`, `publish_70mai.py`, YouTube upload) — use `plan_estimate.py` to preview chunks first.
+
+### Compose 2-cam (Front + Back)
+
+Vertical stack without Screen Recording. Sync by wall-clock (`--from` + `--to` / `-d`).
+
+```bash
+# 60-second test
+python3 compose_2cam_70mai.py --from "2026-04-27 08:13:38" -d 60 \
+  -o video/Output/test_2cam_60s.mp4
+
+# Default profile balanced (same as compose_70mai)
+python3 compose_2cam_70mai.py --from "2026-04-25 13:01:19" --to "2026-04-25 13:46:49"
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from DATETIME` | — | Wall-clock start (required) |
+| `--to` / `-d` | — | End or duration (one required) |
+| `--video-dir` | `video/Output` | Merged Normal/Front + Back |
+| `--profile` | `balanced` | Encode profile |
+| `--audio` | `front` | `front` or `back` |
+
+### Publish (trip chunks → YouTube)
+
+```bash
+pip install -r requirements.txt
+# OAuth: save Desktop client JSON to ~/.config/70mai/youtube_credentials.json
+
+# Preview plan only
+python3 publish_70mai.py --source /Volumes/Untitled --types Normal --estimate-only
+
+# Compose chunk 5 only (short tail, good test) — no YouTube
+python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
+  --compose-only --dry-run
+
+# Full publish (needs OAuth)
+python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
+  --title "Поездка 70mai" --privacy unlisted
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source` | `/Volumes/Untitled` | SD card for trip detection |
+| `--video-dir` | `video/Output` | Merged clips for compose |
+| `--chunk-minutes` | `120` | Target chunk size (trip packing) |
+| `--chunk-mode` | `trips` | Pack by driving sessions |
+| `--compose-only` | off | Skip YouTube upload |
+| `--estimate-only` | off | Plan only, no ffmpeg |
+| `--resume` | off | Continue from state file |
+| `--keep` | off | Keep MP4 after upload |
+| `--credentials` | `~/.config/70mai/youtube_credentials.json` | OAuth client |
+| `--token` | `~/.config/70mai/youtube_token.json` | Saved refresh token |
+
+State: `video/Output/.publish_tmp/publish_*.state.json`. Temp parts under `.publish_tmp/`.
 
 ## Notes
 

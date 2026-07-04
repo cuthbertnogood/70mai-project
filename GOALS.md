@@ -37,12 +37,14 @@
 
 Решение можно принять позже, когда станет ясен типичный объём сырых файлов и требования к качеству.
 
-## Шаг 3 — публикация 2-cam на YouTube (в работе)
+## Шаг 3 — публикация 2-cam на YouTube
 
-- Вертикальная склейка **Front + Back** (без Screen Recording).
-- Куски по **поездкам**: target ~2 ч; длинная поездка — один upload; короткие — объединяются.
-- Pre-flight расчёт: `plan_estimate.py` → `video/Output/publish_plan.md`.
-- Далее: compose → upload → удаление локального куска (скрипты `compose_2cam_70mai.py`, `publish_70mai.py`).
+- **`plan_estimate.py`** — pre-flight: поездки, куски, `publish_plan.md`
+- **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
+- **`publish_70mai.py`** — trip chunks → compose → concat → YouTube → delete
+- **`youtube_upload.py`** — OAuth + resumable upload + playlist
+
+Target chunk: **2 ч по поездкам** (короткие поездки склеиваются; длинная ≥2 ч — solo).
 
 ## Что не входит в текущие цели (пока)
 
