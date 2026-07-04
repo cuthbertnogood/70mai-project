@@ -397,6 +397,43 @@ python3 compose_70mai.py "video/ScreenRecording_....mp4" \
   --audio mix --audio-offset 0.5
 ```
 
+## Publish plan (2-cam, trip-based chunks)
+
+Before compose/upload, estimate trip-based chunks with `plan_estimate.py`. It probes clips, groups **trips** (gap >120 s between clip starts, same as import), and packs them into upload chunks:
+
+- Trip **≥ target** (default 2 h): one chunk (whole trip, even if longer).
+- Trip **< target**: merge with following trips until sum **≥ target**.
+- Short tail at the end: final chunk.
+
+Output: stdout summary + append to `video/Output/publish_plan.md`.
+
+```bash
+# Normal driving only (typical first step)
+python3 plan_estimate.py --source /Volumes/Untitled --types Normal
+
+# All record types on SD card
+python3 plan_estimate.py --source /Volumes/Untitled \
+  --types Normal Event Parking
+
+# Custom target chunk size (minutes)
+python3 plan_estimate.py --source /Volumes/Untitled --chunk-minutes 120
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source` | `/Volumes/Untitled` | SD card or `video/Output`-style tree |
+| `--types` | `Normal` | `Normal`, `Event`, `Parking` |
+| `--chunk-minutes` | `120` | Target chunk size (minutes) |
+| `--chunk-mode` | `trips` | Trip packing (`fixed` not implemented yet) |
+| `--session-gap` | `120` | New trip after N seconds between clips |
+| `--plan-file` | `video/Output/publish_plan.md` | Append markdown report |
+| `--no-write` | off | Skip writing plan file |
+| `--check-disk` | `.` | Path for free-disk check |
+
+Example (current SD card, Normal only): **7h 30m** → **5 YouTube uploads**, peak chunk **~7.7 GB** (`balanced` estimate ~45 MB/min).
+
+Full pipeline (`compose_2cam_70mai.py`, `publish_70mai.py`, YouTube upload) — planned; use `plan_estimate.py` to preview chunks today.
+
 ## Notes
 
 - Front camera: 3840x2160, Back camera: 1920x1080
