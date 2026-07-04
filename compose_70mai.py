@@ -28,24 +28,24 @@ PROFILES: dict[str, dict[str, int | bool]] = {
         "hw_quality": 65,
         "width": 1206,
         "fps": 25,
-        "hw_decode": True,
-        "use_vt_scale": True,
+        "hw_decode": False,
+        "use_vt_scale": False,
     },
     "draft": {
         "hw": True,
         "hw_quality": 50,
         "width": 960,
         "fps": 20,
-        "hw_decode": True,
-        "use_vt_scale": True,
+        "hw_decode": False,
+        "use_vt_scale": False,
     },
     "quality": {
         "hw": True,
         "hw_quality": 75,
         "width": 1206,
         "fps": 25,
-        "hw_decode": True,
-        "use_vt_scale": True,
+        "hw_decode": False,
+        "use_vt_scale": False,
     },
 }
 
@@ -743,9 +743,9 @@ def run_compose(
 
     if hw and hw_decode:
         attempts: list[tuple[bool, bool, str]] = [
-            (True, True, "full VT (hw decode + scale_vt)"),
-            (True, False, "hw decode + CPU scale"),
             (False, False, "hw encode only"),
+            (True, False, "hw decode + CPU scale"),
+            (True, True, "full VT (hw decode + scale_vt)"),
         ]
     elif hw:
         attempts = [(False, False, "hw encode only")]
@@ -908,9 +908,13 @@ def main() -> None:
     args = parser.parse_args()
 
     args.use_vt_scale = False
+    hw_decode_explicit = args.hw_decode
     apply_profile(args)
 
-    if args.profile is None:
+    if hw_decode_explicit:
+        args.hw_decode = True
+        args.use_vt_scale = not args.no_vt_scale
+    elif args.profile is None:
         if args.hw and args.hw_decode:
             args.use_vt_scale = not args.no_vt_scale
         else:

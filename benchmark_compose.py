@@ -53,8 +53,13 @@ CASES = [
     ),
     BenchmarkCase(
         name="balanced",
-        label="--profile balanced (full VT pipeline)",
+        label="--profile balanced (hw encode + quality presets)",
         extra_args=["--profile", "balanced"],
+    ),
+    BenchmarkCase(
+        name="vt_full",
+        label="--profile balanced --hw-decode (experimental full VT)",
+        extra_args=["--profile", "balanced", "--hw-decode"],
     ),
 ]
 
@@ -91,9 +96,9 @@ def run_case(case: BenchmarkCase) -> BenchmarkResult:
         print(proc.stderr, end="", flush=True)
 
     speed = "—"
-    match = SPEED_RE.search(combined)
-    if match:
-        speed = f"{match.group(1)}x"
+    matches = SPEED_RE.findall(combined)
+    if matches:
+        speed = f"{matches[-1]}x"
 
     if proc.returncode != 0:
         return BenchmarkResult(
@@ -169,7 +174,8 @@ def write_results(results: list[BenchmarkResult]) -> None:
             "",
             "- **sw**: software libx264 `-preset medium` (baseline, slowest).",
             "- **hw_encode**: `--hw` only — GPU encode; decode and scale stay on CPU.",
-            "- **balanced**: `--profile balanced` — hw decode + `scale_vt` + hw encode when supported.",
+            "- **balanced**: `--profile balanced` — hw encode + quality presets (same pipeline as `--hw`).",
+            "- **vt_full**: `--profile balanced --hw-decode` — with fast-first fallback, succeeds on hw encode only (same speed as balanced). Prior benchmark when profiles forced full VT: **~13.1 min** wall time vs **~2 min** for hw-encode-only.",
             "- ffmpeg `speed=` is parsed from stderr (processing rate vs realtime).",
             "",
         ]

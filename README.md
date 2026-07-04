@@ -259,11 +259,13 @@ python3 import_70mai.py 2>&1 | tee import.log
 
 Use `--profile` instead of tuning flags manually:
 
-| Profile | Use case | HW encode | Bitrate | Width | FPS | HW decode | GPU scale |
-|---------|----------|-----------|---------|-------|-----|-----------|-----------|
-| `balanced` | Default archive export | yes | 6.5 Mbps | 1206 | 25 | yes | yes (`scale_vt`) |
-| `draft` | Sync check / preview | yes | 5.0 Mbps | 960 | 20 | yes | yes |
-| `quality` | Higher bitrate archive | yes | 7.5 Mbps | 1206 | 25 | yes | yes |
+| Profile | Use case | HW encode | Bitrate | Width | FPS |
+|---------|----------|-----------|---------|-------|-----|
+| `balanced` | Default archive export (recommended) | yes | 6.5 Mbps | 1206 | 25 |
+| `draft` | Sync check / preview | yes | 5.0 Mbps | 960 | 20 |
+| `quality` | Higher bitrate archive | yes | 7.5 Mbps | 1206 | 25 |
+
+Profiles set **hw encode + quality/resolution presets** only (same pipeline as `--hw`). They do not enable hardware decode or `scale_vt` — on tested Macs that full GPU pipeline is slower than hw-encode-only because `vstack` runs on CPU after `hwdownload`.
 
 ```bash
 # Recommended for 10-minute composites
@@ -276,24 +278,34 @@ python3 compose_70mai.py "video/ScreenRecording_....mp4" \
 
 | Flag | Description |
 |------|-------------|
-| `--hw` | VideoToolbox H.264 encode only (CPU decode/scale — backward compatible) |
-| `--hw-decode` | Add `-hwaccel videotoolbox` before each input |
-| `--no-vt-scale` | Use CPU `scale=` instead of `scale_vt` |
+| `--hw` | VideoToolbox H.264 encode (CPU decode/scale) — fastest on tested Mac |
+| `--profile balanced` | Same as `--hw` plus tuned width/fps/bitrate (recommended default) |
+| `--hw-decode` | Experimental: opt into hw decode + optional `scale_vt` (see below) |
+| `--no-vt-scale` | With `--hw-decode`, use CPU `scale=` instead of `scale_vt` |
 | `--hw-quality N` | Target bitrate `N×100` kbps (default 65 → 6.5 Mbps) |
 
-With `--hw` alone (no `--profile`), hardware decode and `scale_vt` stay off for backward compatibility. Pass `--hw-decode` to enable decode acceleration; GPU scaling is used when decode is on unless `--no-vt-scale` is set.
+**Recommended:** `--profile balanced` or `--hw` for exports. Both use CPU decode/scale + VideoToolbox encode.
 
-If the full VideoToolbox pipeline fails on your Mac, the script falls back automatically: full VT → hw decode + CPU scale → hw encode only.
+**Experimental `--hw-decode`:** tries progressively heavier GPU pipelines, fastest first: hw encode only → hw decode + CPU scale → full VT (`scale_vt`). Full VT is often *slower* on Apple Silicon because stacking still hits CPU after GPU frames are downloaded. Use only if you want to experiment; the script falls back automatically on failure.
 
 ### Benchmark
 
-Run a 60-second comparison (software vs hw-encode vs balanced):
+Run a 60-second comparison (software vs hw-encode vs profile vs experimental full VT):
 
 ```bash
 python3 benchmark_compose.py
 ```
 
-Results are written to `video/Output/compose_benchmark_results.md`.
+Results are written to `video/Output/compose_benchmark_results.md`. Latest 60s run on this Mac:
+
+| Mode | Wall time | ffmpeg speed |
+|------|-----------|--------------|
+| libx264 medium | ~4.7 min | 0.22× |
+| `--hw` | ~2.2 min | 0.48× |
+| `--profile balanced` | ~2.0 min | 0.53× |
+| `--profile balanced --hw-decode` | ~1.9 min | 0.53× (fast-first fallback → same as balanced) |
+
+When profiles previously defaulted to full VT (`hw_decode` + `scale_vt`), the same machine measured **~13.1 min** — full VT is slower because `vstack` still runs on CPU after `hwdownload`.
 
 ## Compose: sync and audio
 
