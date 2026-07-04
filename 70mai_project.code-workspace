@@ -7,5 +7,7 @@
 			"path": "../../../../Volumes/Untitled"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"specstory.cloudSync.enabled": "always"
+	}
 }
