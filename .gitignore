@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Video and media (large files — keep locally, not in git)
+video/
+*.mp4
+*.MP4
+*.mov
+*.avi
+*.mkv
+
+# GPS data from dashcam SD card
+GPSData*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
