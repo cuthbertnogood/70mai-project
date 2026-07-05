@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import json
-import socket
 import time
 from pathlib import Path
 
 UPLOAD_CHUNK_BYTES = 10 * 1024 * 1024
 HTTP_TIMEOUT_SEC = 600
 MAX_UPLOAD_RETRIES = 12
+UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 
 DEFAULT_CREDENTIALS = Path.home() / ".config/70mai/youtube_credentials.json"
 DEFAULT_TOKEN = Path.home() / ".config/70mai/youtube_token.json"
@@ -24,27 +24,33 @@ class YouTubeUploadError(RuntimeError):
 def _require_google():
     try:
         import httplib2
-        from google.auth.transport.requests import Request
+        import requests
+        from google.auth.transport.requests import AuthorizedSession, Request
         from google.oauth2.credentials import Credentials
         from google_auth_httplib2 import AuthorizedHttp
         from google_auth_oauthlib.flow import InstalledAppFlow
         from googleapiclient.discovery import build
-        from googleapiclient.errors import HttpError
-        from googleapiclient.http import MediaFileUpload
     except ImportError as exc:
         raise YouTubeUploadError(
             "Google API libraries missing. Install: pip install -r requirements.txt"
         ) from exc
-    return Request, Credentials, InstalledAppFlow, build, HttpError, MediaFileUpload, httplib2, AuthorizedHttp
+    return (
+        Request,
+        Credentials,
+        InstalledAppFlow,
+        build,
+        httplib2,
+        AuthorizedHttp,
+        requests,
+        AuthorizedSession,
+    )
 
 
-def get_youtube_service(
+def load_credentials(
     credentials_path: Path = DEFAULT_CREDENTIALS,
     token_path: Path = DEFAULT_TOKEN,
 ):
-    Request, Credentials, InstalledAppFlow, build, HttpError, _Media, httplib2, AuthorizedHttp = (
-        _require_google()
-    )
+    Request, Credentials, InstalledAppFlow, *_ = _require_google()
 
     creds = None
     if token_path.is_file():
@@ -65,9 +71,36 @@ def get_youtube_service(
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
 
+    return creds
+
+
+def get_youtube_service(
+    credentials_path: Path = DEFAULT_CREDENTIALS,
+    token_path: Path = DEFAULT_TOKEN,
+):
+    _, _, _, build, httplib2, AuthorizedHttp, *_ = _require_google()
+    creds = load_credentials(credentials_path, token_path)
     http = httplib2.Http(timeout=HTTP_TIMEOUT_SEC)
     http = AuthorizedHttp(creds, http=http)
     return build("youtube", "v3", http=http, cache_discovery=False)
+
+
+def _request_with_retries(session, method: str, url: str, **kwargs):
+    _, _, _, _, _, _, requests, _ = _require_google()
+    last_exc = None
+    for attempt in range(MAX_UPLOAD_RETRIES):
+        try:
+            resp = session.request(method, url, timeout=HTTP_TIMEOUT_SEC, **kwargs)
+            if resp.status_code in (500, 502, 503, 504) and attempt + 1 < MAX_UPLOAD_RETRIES:
+                time.sleep(min(2 ** (attempt + 1), 60))
+                continue
+            return resp
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt + 1 >= MAX_UPLOAD_RETRIES:
+                break
+            time.sleep(min(2 ** (attempt + 1), 60))
+    raise YouTubeUploadError(f"YouTube upload request failed: {last_exc}") from last_exc
 
 
 def upload_video(
@@ -82,14 +115,16 @@ def upload_video(
     token_path: Path = DEFAULT_TOKEN,
     on_progress=None,
 ) -> str:
-    """Upload video; returns YouTube video ID."""
-    _, _, _, _, HttpError, MediaFileUpload, httplib2, _ = _require_google()
-    youtube = get_youtube_service(credentials_path, token_path)
+    """Upload video via resumable protocol (requests, not httplib2)."""
+    *_, requests, AuthorizedSession = _require_google()
+    creds = load_credentials(credentials_path, token_path)
+    session = AuthorizedSession(creds)
+    # System/VPN proxies often break resumable PUT (RedirectMissingLocation).
+    session.trust_env = False
 
-    old_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(HTTP_TIMEOUT_SEC)
-
-    body = {
+    video_path = Path(video_path)
+    size = video_path.stat().st_size
+    metadata = {
         "snippet": {
             "title": title,
             "description": description,
@@ -102,41 +137,57 @@ def upload_video(
         },
     }
 
-    media = MediaFileUpload(
-        str(video_path),
-        mimetype="video/mp4",
-        resumable=True,
-        chunksize=UPLOAD_CHUNK_BYTES,
+    init = _request_with_retries(
+        session,
+        "POST",
+        UPLOAD_INIT_URL,
+        params={"uploadType": "resumable", "part": "snippet,status"},
+        json=metadata,
+        headers={
+            "X-Upload-Content-Type": "video/mp4",
+            "X-Upload-Content-Length": str(size),
+        },
     )
+    if init.status_code not in (200, 201):
+        raise YouTubeUploadError(
+            f"Upload init failed ({init.status_code}): {init.text[:500]}"
+        )
+    upload_url = init.headers.get("Location")
+    if not upload_url:
+        raise YouTubeUploadError("Upload init missing Location header")
 
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    offset = 0
+    last_logged = -1
+    with video_path.open("rb") as fh:
+        while offset < size:
+            chunk = fh.read(UPLOAD_CHUNK_BYTES)
+            end = offset + len(chunk) - 1
+            resp = _request_with_retries(
+                session,
+                "PUT",
+                upload_url,
+                data=chunk,
+                headers={
+                    "Content-Length": str(len(chunk)),
+                    "Content-Range": f"bytes {offset}-{end}/{size}",
+                },
+            )
+            if resp.status_code in (200, 201):
+                if on_progress:
+                    on_progress(100)
+                return resp.json()["id"]
+            if resp.status_code == 308:
+                offset = end + 1
+                pct = min(99, int(offset * 100 / size))
+                if on_progress and pct >= last_logged + 5:
+                    on_progress(pct)
+                    last_logged = pct
+                continue
+            raise YouTubeUploadError(
+                f"Upload chunk failed ({resp.status_code}): {resp.text[:500]}"
+            )
 
-    response = None
-    retry = 0
-    try:
-        while response is None:
-            try:
-                status, response = request.next_chunk()
-                retry = 0
-                if status and on_progress:
-                    on_progress(int(status.progress() * 100))
-            except HttpError as exc:
-                if exc.resp.status in (500, 502, 503, 504) and retry < MAX_UPLOAD_RETRIES:
-                    retry += 1
-                    time.sleep(min(2**retry, 60))
-                    continue
-                raise YouTubeUploadError(f"YouTube upload failed: {exc}") from exc
-            except (TimeoutError, socket.timeout, OSError, httplib2.error.HttpLib2Error) as exc:
-                if retry < MAX_UPLOAD_RETRIES:
-                    retry += 1
-                    time.sleep(min(2**retry, 60))
-                    continue
-                raise YouTubeUploadError(f"YouTube upload timed out: {exc}") from exc
-    finally:
-        socket.setdefaulttimeout(old_timeout)
-
-    video_id = response["id"]
-    return video_id
+    raise YouTubeUploadError("Upload finished without video ID")
 
 
 def ensure_playlist(

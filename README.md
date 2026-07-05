@@ -494,6 +494,8 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
 4. Save as `~/.config/70mai/youtube_credentials.json`
 5. First upload opens a browser; token saved to `~/.config/70mai/youtube_token.json`
 
+Large uploads use the resumable protocol via `requests` (not httplib2) and ignore system proxy env vars to avoid VPN/proxy redirect errors.
+
 After compose finishes, upload a single part:
 
 ```bash
