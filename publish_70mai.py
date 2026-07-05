@@ -33,9 +33,10 @@ from youtube_upload import (
     ensure_playlist,
     load_state_playlist,
     save_state_playlist,
-    upload_session_path,
+    upload_session_path_for_file,
     upload_video,
 )
+from youtube_upload_diagnostics import DEFAULT_DIAG_LOG
 
 
 def escape_concat_path(path: Path) -> str:
@@ -299,6 +300,7 @@ def publish_and_upload_trips(
     playlist_title: str,
     state: dict,
     st_path: Path,
+    diag_log: Path | None,
 ) -> tuple[str | None, str | None]:
     """Compose and upload each trip separately; returns (last_video_id, playlist_id)."""
     chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
@@ -357,7 +359,7 @@ def publish_and_upload_trips(
             f"{base_title} {record_type} — поездка {trip.index} "
             f"({trip.start:%m-%d %H:%M})"
         )
-        session_file = upload_session_path(temp_dir, chunk.index, trip_idx)
+        session_file = upload_session_path_for_file(part_path, temp_dir)
         log(f"  Uploading to YouTube: {trip_title}")
 
         def progress(pct: int) -> None:
@@ -373,10 +375,14 @@ def publish_and_upload_trips(
                 token_path=token,
                 session_path=session_file,
                 resume=resume_upload,
+                diag_log=diag_log,
                 on_progress=progress,
             )
         except YouTubeUploadError as exc:
             log(f"  Upload failed: {exc}")
+            if diag_log:
+                log(f"  Diagnostics: {diag_log}")
+                log("  Analyze: python3 scripts/analyze_youtube_upload.py")
             mark_trip_state(
                 state,
                 record_type=record_type,
@@ -499,7 +505,18 @@ def main() -> None:
     parser.add_argument(
         "--resume-upload",
         action="store_true",
-        help="Resume YouTube upload from saved session URI (.session.json)",
+        help="Resume YouTube upload from saved session URI (.upload.json)",
+    )
+    parser.add_argument(
+        "--diag-log",
+        type=Path,
+        default=DEFAULT_DIAG_LOG,
+        help="Append YouTube upload diagnostics (JSONL)",
+    )
+    parser.add_argument(
+        "--no-diag",
+        action="store_true",
+        help="Disable YouTube upload diagnostic logging",
     )
     parser.add_argument("--check-disk", type=Path, default=Path("."))
     args = parser.parse_args()
@@ -593,6 +610,7 @@ def main() -> None:
         total_by_type[chunk.record_type] = total_by_type.get(chunk.record_type, 0) + 1
 
     playlist_id = load_state_playlist(st_path) if args.resume else None
+    diag_log = None if args.no_diag else args.diag_log
 
     for chunk in chunks:
         record_type = chunk.record_type
@@ -637,6 +655,7 @@ def main() -> None:
                 playlist_title=pl_title,
                 state=state,
                 st_path=st_path,
+                diag_log=diag_log,
             )
             continue
 
@@ -669,7 +688,7 @@ def main() -> None:
                     if pct % 10 == 0:
                         log(f"    upload {pct}%")
 
-                session_file = args.temp_dir / f"upload_part_{chunk.index:02d}.session.json"
+                session_file = upload_session_path_for_file(output, args.temp_dir)
                 video_id = upload_video(
                     output,
                     title=part_title,
@@ -678,6 +697,7 @@ def main() -> None:
                     token_path=args.token,
                     session_path=session_file,
                     resume=args.resume_upload,
+                    diag_log=diag_log,
                     on_progress=progress,
                 )
                 uploaded = True
@@ -701,6 +721,9 @@ def main() -> None:
                     )
             except YouTubeUploadError as exc:
                 log(f"  Upload failed: {exc}")
+                if diag_log:
+                    log(f"  Diagnostics: {diag_log}")
+                    log("  Analyze: python3 scripts/analyze_youtube_upload.py")
                 mark_chunk_state(
                     state,
                     record_type=record_type,

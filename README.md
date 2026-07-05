@@ -492,9 +492,11 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 | `--compose-only` | off | Skip YouTube upload |
 | `--estimate-only` | off | Plan only, no ffmpeg |
 | `--resume` | off | Skip chunks/trips already marked uploaded in state |
-| `--resume-upload` | off | Resume YouTube transfer from saved `.session.json` |
+| `--resume-upload` | off | Resume YouTube transfer from saved `.upload.json` |
 | `--per-trip-upload` | off | Upload each trip separately (no concat) |
 | `--trip` | all | Within chunk: only trip N (1-based) |
+| `--diag-log` | `.publish_tmp/youtube_upload.diag.jsonl` | Structured upload diagnostics |
+| `--no-diag` | off | Disable diagnostic JSONL |
 | `--chunk` | all | Only chunk N (1-based) |
 | `--keep` | off | Keep MP4 after upload |
 | `--credentials` | `~/.config/70mai/youtube_credentials.json` | OAuth client |
@@ -508,7 +510,16 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 4. Save as `~/.config/70mai/youtube_credentials.json`
 5. First upload opens a browser; token saved to `~/.config/70mai/youtube_token.json`
 
-Large uploads use the resumable protocol via `requests` (64 MB chunks, 600 s timeout). System proxy env vars are ignored to avoid VPN/proxy redirect errors. Session state for resume: `video/Output/.publish_tmp/upload_*.session.json` (deleted on success).
+Large uploads use the resumable protocol via `requests` (64 MB chunks, 600 s timeout). System proxy env vars are ignored to avoid VPN/proxy redirect errors.
+
+**Session resume:** `video/Output/.publish_tmp/<stem>.upload.json` (e.g. `trip_01.upload.json`) — deleted on success.
+
+**Diagnostics:** structured JSONL at `video/Output/.publish_tmp/youtube_upload.diag.jsonl` (retries, throughput, error categories). Analyze after failures:
+
+```bash
+python3 scripts/analyze_youtube_upload.py
+python3 scripts/analyze_youtube_upload.py --last 3 --write-report video/Output/.publish_tmp/youtube_upload.report.md
+```
 
 Standalone upload CLI:
 
@@ -528,7 +539,7 @@ from youtube_upload import upload_video
 vid = upload_video(
     Path('video/Output/.publish_tmp/part_01.mp4'),
     title='70mai 2026-04-25 — часть 1/5',
-    session_path=Path('video/Output/.publish_tmp/upload_part_01.session.json'),
+    session_path=Path('video/Output/.publish_tmp/trip_01.upload.json'),
     resume=True,
 )
 print('https://youtu.be/' + vid)

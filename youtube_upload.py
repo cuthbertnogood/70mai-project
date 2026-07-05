@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+from youtube_upload_diagnostics import DEFAULT_DIAG_LOG, UploadDiagnostics
 
 UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024  # must be multiple of 256 KiB for files > 256 KiB
 HTTP_TIMEOUT_SEC = 600
@@ -99,18 +102,39 @@ def _authorized_session(
     return session
 
 
-def _request_with_retries(session, method: str, url: str, **kwargs):
+def _request_with_retries(
+    session,
+    method: str,
+    url: str,
+    *,
+    diag: UploadDiagnostics | None = None,
+    **kwargs,
+):
     _, _, _, _, _, _, requests, _ = _require_google()
     last_exc = None
     for attempt in range(MAX_UPLOAD_RETRIES):
         try:
             resp = session.request(method, url, timeout=HTTP_TIMEOUT_SEC, **kwargs)
             if resp.status_code in (500, 502, 503, 504) and attempt + 1 < MAX_UPLOAD_RETRIES:
+                if diag:
+                    diag.retry(
+                        attempt=attempt + 1,
+                        reason=f"HTTP {resp.status_code}",
+                        method=method,
+                        url_hint=url,
+                    )
                 time.sleep(min(2 ** (attempt + 1), 60))
                 continue
             return resp
         except requests.RequestException as exc:
             last_exc = exc
+            if diag and attempt + 1 < MAX_UPLOAD_RETRIES:
+                diag.retry(
+                    attempt=attempt + 1,
+                    reason=str(exc),
+                    method=method,
+                    url_hint=url,
+                )
             if attempt + 1 >= MAX_UPLOAD_RETRIES:
                 break
             time.sleep(min(2 ** (attempt + 1), 60))
@@ -154,11 +178,12 @@ def _session_matches(session: dict[str, Any], video_path: Path, size: int) -> bo
     return bool(session.get("upload_url"))
 
 
-def _query_upload_offset(session, upload_url: str, size: int) -> int:
+def _query_upload_offset(session, upload_url: str, size: int, *, diag: UploadDiagnostics | None = None) -> int:
     resp = _request_with_retries(
         session,
         "PUT",
         upload_url,
+        diag=diag,
         data=b"",
         headers={
             "Content-Length": "0",
@@ -177,11 +202,12 @@ def _query_upload_offset(session, upload_url: str, size: int) -> int:
     )
 
 
-def _init_upload(session, *, size: int, metadata: dict) -> str:
+def _init_upload(session, *, size: int, metadata: dict, diag: UploadDiagnostics | None = None) -> str:
     init = _request_with_retries(
         session,
         "POST",
         UPLOAD_INIT_URL,
+        diag=diag,
         params={"uploadType": "resumable", "part": "snippet,status"},
         json=metadata,
         headers={
@@ -199,6 +225,12 @@ def _init_upload(session, *, size: int, metadata: dict) -> str:
     return upload_url
 
 
+def upload_session_path_for_file(video_path: Path, temp_dir: Path | None = None) -> Path:
+    """Default session file, e.g. trip_01.upload.json under .publish_tmp."""
+    base = temp_dir or Path("video/Output/.publish_tmp")
+    return base / f"{Path(video_path).stem}.upload.json"
+
+
 def upload_video(
     video_path: Path,
     *,
@@ -211,15 +243,70 @@ def upload_video(
     token_path: Path = DEFAULT_TOKEN,
     session_path: Path | None = None,
     resume: bool = False,
+    diag_log: Path | None = DEFAULT_DIAG_LOG,
     on_progress: Callable[[int], None] | None = None,
 ) -> str:
     """Upload video via resumable protocol; optional session file for cross-run resume."""
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(HTTP_TIMEOUT_SEC)
+    diag = UploadDiagnostics(log_path=diag_log, video_path=str(video_path)) if diag_log else None
+
+    try:
+        return _upload_video_inner(
+            video_path,
+            title=title,
+            description=description,
+            tags=tags,
+            privacy=privacy,
+            category_id=category_id,
+            credentials_path=credentials_path,
+            token_path=token_path,
+            session_path=session_path,
+            resume=resume,
+            diag=diag,
+            on_progress=on_progress,
+        )
+    except YouTubeUploadError as exc:
+        if diag:
+            diag.error(str(exc))
+        raise
+    finally:
+        socket.setdefaulttimeout(old_timeout)
+
+
+def _upload_video_inner(
+    video_path: Path,
+    *,
+    title: str,
+    description: str,
+    tags: list[str] | None,
+    privacy: str,
+    category_id: str,
+    credentials_path: Path,
+    token_path: Path,
+    session_path: Path | None,
+    resume: bool,
+    diag: UploadDiagnostics | None,
+    on_progress: Callable[[int], None] | None,
+) -> str:
     session = _authorized_session(credentials_path, token_path)
 
     video_path = Path(video_path).resolve()
     if not video_path.is_file():
         raise YouTubeUploadError(f"Video not found: {video_path}")
     size = video_path.stat().st_size
+
+    if session_path is None:
+        session_path = upload_session_path_for_file(video_path)
+
+    if diag:
+        diag.start(
+            video_path=video_path,
+            size=size,
+            title=title,
+            resume=resume,
+            chunk_bytes=UPLOAD_CHUNK_BYTES,
+        )
 
     metadata = {
         "snippet": {
@@ -242,8 +329,10 @@ def upload_video(
         if saved and _session_matches(saved, video_path, size):
             upload_url = saved["upload_url"]
             try:
-                offset = _query_upload_offset(session, upload_url, size)
-            except YouTubeUploadError:
+                offset = _query_upload_offset(session, upload_url, size, diag=diag)
+            except YouTubeUploadError as exc:
+                if diag:
+                    diag.error(str(exc), status_code=404)
                 clear_upload_session(session_path)
                 upload_url = None
             else:
@@ -252,21 +341,24 @@ def upload_video(
                     raise YouTubeUploadError(
                         "Session file indicates complete upload but no video ID saved"
                     )
+                if diag:
+                    diag.session_resumed(offset, size)
 
     if upload_url is None:
-        upload_url = _init_upload(session, size=size, metadata=metadata)
+        upload_url = _init_upload(session, size=size, metadata=metadata, diag=diag)
         offset = 0
-        if session_path:
-            save_upload_session(
-                session_path,
-                {
-                    "video_path": str(video_path),
-                    "size": size,
-                    "upload_url": upload_url,
-                    "title": title,
-                    "offset": 0,
-                },
-            )
+        save_upload_session(
+            session_path,
+            {
+                "video_path": str(video_path),
+                "size": size,
+                "upload_url": upload_url,
+                "title": title,
+                "offset": 0,
+            },
+        )
+        if diag:
+            diag.session_created(str(session_path))
 
     last_logged = -1
     with video_path.open("rb") as fh:
@@ -280,6 +372,7 @@ def upload_video(
                 session,
                 "PUT",
                 upload_url,
+                diag=diag,
                 data=chunk,
                 headers={
                     "Content-Length": str(len(chunk)),
@@ -287,11 +380,13 @@ def upload_video(
                 },
             )
             if resp.status_code in (200, 201):
-                if session_path:
-                    clear_upload_session(session_path)
+                clear_upload_session(session_path)
+                video_id = resp.json()["id"]
+                if diag:
+                    diag.success(video_id, size)
                 if on_progress:
                     on_progress(100)
-                return resp.json()["id"]
+                return video_id
             if resp.status_code == 308:
                 server_offset = _parse_range_end(resp.headers.get("Range"))
                 if server_offset is not None and server_offset > offset:
@@ -299,31 +394,33 @@ def upload_video(
                     fh.seek(offset)
                 else:
                     offset = end + 1
-                if session_path:
-                    save_upload_session(
-                        session_path,
-                        {
-                            "video_path": str(video_path),
-                            "size": size,
-                            "upload_url": upload_url,
-                            "title": title,
-                            "offset": offset,
-                        },
-                    )
+                save_upload_session(
+                    session_path,
+                    {
+                        "video_path": str(video_path),
+                        "size": size,
+                        "upload_url": upload_url,
+                        "title": title,
+                        "offset": offset,
+                    },
+                )
+                if diag:
+                    diag.chunk_ok(offset, size, status_code=308)
                 pct = min(99, int(offset * 100 / size))
                 if on_progress and pct >= last_logged + 5:
                     on_progress(pct)
                     last_logged = pct
                 continue
             if resp.status_code == 404:
-                if session_path:
-                    clear_upload_session(session_path)
-                raise YouTubeUploadError(
-                    "Upload session expired mid-transfer (404); rerun with fresh upload"
-                )
-            raise YouTubeUploadError(
-                f"Upload chunk failed ({resp.status_code}): {resp.text[:500]}"
-            )
+                clear_upload_session(session_path)
+                msg = "Upload session expired mid-transfer (404); rerun with fresh upload"
+                if diag:
+                    diag.error(msg, status_code=404, offset=offset)
+                raise YouTubeUploadError(msg)
+            msg = f"Upload chunk failed ({resp.status_code}): {resp.text[:500]}"
+            if diag:
+                diag.error(msg, status_code=resp.status_code, offset=offset)
+            raise YouTubeUploadError(msg)
 
     raise YouTubeUploadError("Upload finished without video ID")
 
@@ -376,9 +473,6 @@ def save_state_playlist(state_path: Path, playlist_id: str) -> None:
     state_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def upload_session_path(temp_dir: Path, chunk_index: int, trip_index: int) -> Path:
-    return temp_dir / f"upload_chunk{chunk_index:02d}_trip{trip_index:02d}.session.json"
-
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Upload a video to YouTube (resumable)")
@@ -399,9 +493,20 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Resume from saved session URI if present",
     )
+    parser.add_argument(
+        "--diag-log",
+        type=Path,
+        default=DEFAULT_DIAG_LOG,
+        help="Append structured diagnostics to this JSONL file",
+    )
+    parser.add_argument(
+        "--no-diag",
+        action="store_true",
+        help="Disable diagnostic logging",
+    )
     args = parser.parse_args(argv)
 
-    session_path = args.session or args.video.with_suffix(".upload.session.json")
+    session_path = args.session or upload_session_path_for_file(args.video)
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] or None
 
     last = [-1]
@@ -421,9 +526,13 @@ def main(argv: list[str] | None = None) -> None:
         token_path=args.token,
         session_path=session_path,
         resume=args.resume_upload,
+        diag_log=None if args.no_diag else args.diag_log,
         on_progress=progress,
     )
     print(f"Done: https://youtu.be/{video_id}")
+    if not args.no_diag:
+        print(f"Diagnostics: {args.diag_log}", flush=True)
+        print("Analyze: python3 scripts/analyze_youtube_upload.py", flush=True)
 
 
 if __name__ == "__main__":
