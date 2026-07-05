@@ -33,6 +33,7 @@ from youtube_upload import (
     ensure_playlist,
     load_state_playlist,
     save_state_playlist,
+    upload_session_path,
     upload_video,
 )
 
@@ -98,6 +99,52 @@ def chunk_uploaded(state: dict, record_type: str, chunk_index: int) -> bool:
         if part.get("record_type") == record_type and part.get("index") == chunk_index:
             return bool(part.get("uploaded"))
     return False
+
+
+def trip_uploaded(
+    state: dict, record_type: str, chunk_index: int, trip_index: int
+) -> bool:
+    for part in state.get("trip_parts", []):
+        if (
+            part.get("record_type") == record_type
+            and part.get("chunk_index") == chunk_index
+            and part.get("trip_index") == trip_index
+        ):
+            return bool(part.get("uploaded"))
+    return False
+
+
+def mark_trip_state(
+    state: dict,
+    *,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+    video_id: str | None,
+    uploaded: bool,
+    output_path: Path | None,
+) -> None:
+    parts = state.setdefault("trip_parts", [])
+    entry = {
+        "record_type": record_type,
+        "chunk_index": chunk_index,
+        "trip_index": trip_index,
+        "video_id": video_id,
+        "uploaded": uploaded,
+        "output_path": str(output_path) if output_path else None,
+    }
+    replaced = False
+    for idx, part in enumerate(parts):
+        if (
+            part.get("record_type") == record_type
+            and part.get("chunk_index") == chunk_index
+            and part.get("trip_index") == trip_index
+        ):
+            parts[idx] = entry
+            replaced = True
+            break
+    if not replaced:
+        parts.append(entry)
 
 
 def mark_chunk_state(
@@ -168,12 +215,15 @@ def publish_chunk(
     gps_dir: Path | None = None,
     telemetry_map_size: int = 280,
     dry_run: bool,
+    trip_only: int | None = None,
 ) -> Path:
     trip_parts: list[Path] = []
     chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
     for trip_idx, trip in enumerate(chunk.trips, start=1):
+        if trip_only is not None and trip_idx != trip_only:
+            continue
         part_path = chunk_dir / f"trip_{trip_idx:02d}.mp4"
         log(
             f"  Trip {trip.index}: {trip.start:%Y-%m-%d %H:%M:%S} "
@@ -200,6 +250,11 @@ def publish_chunk(
         )
         trip_parts.append(part_path)
 
+    if trip_only is not None:
+        if not trip_parts:
+            raise ValueError(f"Trip {trip_only} not in chunk {chunk.index}")
+        return trip_parts[0]
+
     output = temp_dir / f"part_{chunk.index:02d}.mp4"
     if dry_run:
         log(f"  Would concat {len(trip_parts)} trip(s) -> {output.name}")
@@ -216,6 +271,159 @@ def publish_chunk(
         pass
 
     return output
+
+
+def publish_and_upload_trips(
+    chunk: ChunkPlan,
+    *,
+    video_dir: Path,
+    temp_dir: Path,
+    ffmpeg: str,
+    profile_args: dict,
+    audio_source: str,
+    telemetry: bool,
+    gps_dir: Path | None,
+    telemetry_map_size: int,
+    dry_run: bool,
+    trip_only: int | None,
+    base_title: str,
+    record_type: str,
+    privacy: str,
+    credentials: Path,
+    token: Path,
+    resume_upload: bool,
+    skip_uploaded: bool,
+    compose_only: bool,
+    keep: bool,
+    playlist_id: str | None,
+    playlist_title: str,
+    state: dict,
+    st_path: Path,
+) -> tuple[str | None, str | None]:
+    """Compose and upload each trip separately; returns (last_video_id, playlist_id)."""
+    chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    last_video_id = None
+    current_playlist = playlist_id
+
+    for trip_idx, trip in enumerate(chunk.trips, start=1):
+        if trip_only is not None and trip_idx != trip_only:
+            continue
+
+        if skip_uploaded and trip_uploaded(state, record_type, chunk.index, trip_idx):
+            log(f"  Trip {trip.index}: skip (already uploaded per state)")
+            continue
+
+        part_path = chunk_dir / f"trip_{trip_idx:02d}.mp4"
+        log(
+            f"  Trip {trip.index}: {trip.start:%Y-%m-%d %H:%M:%S} "
+            f"({format_duration(trip.duration_sec)})"
+        )
+        if dry_run:
+            log(f"  Would upload {part_path.name}")
+            continue
+
+        if not trip_part_complete(part_path, trip.duration_sec):
+            run_compose_2cam(
+                video_dir,
+                part_path,
+                wall_start=trip.start,
+                duration=trip.duration_sec,
+                audio_source=audio_source,
+                telemetry=telemetry,
+                gps_dir=gps_dir,
+                telemetry_map_size=telemetry_map_size,
+                dry_run=False,
+                **profile_args,
+            )
+        else:
+            log(f"  Skip compose (exists, {format_duration(probe_duration(part_path))})")
+
+        if compose_only:
+            log(f"  Compose-only: {part_path}")
+            mark_trip_state(
+                state,
+                record_type=record_type,
+                chunk_index=chunk.index,
+                trip_index=trip_idx,
+                video_id=None,
+                uploaded=False,
+                output_path=part_path,
+            )
+            save_state(st_path, state)
+            continue
+
+        trip_title = (
+            f"{base_title} {record_type} — поездка {trip.index} "
+            f"({trip.start:%m-%d %H:%M})"
+        )
+        session_file = upload_session_path(temp_dir, chunk.index, trip_idx)
+        log(f"  Uploading to YouTube: {trip_title}")
+
+        def progress(pct: int) -> None:
+            if pct % 10 == 0:
+                log(f"    upload {pct}%")
+
+        try:
+            video_id = upload_video(
+                part_path,
+                title=trip_title,
+                privacy=privacy,
+                credentials_path=credentials,
+                token_path=token,
+                session_path=session_file,
+                resume=resume_upload,
+                on_progress=progress,
+            )
+        except YouTubeUploadError as exc:
+            log(f"  Upload failed: {exc}")
+            mark_trip_state(
+                state,
+                record_type=record_type,
+                chunk_index=chunk.index,
+                trip_index=trip_idx,
+                video_id=None,
+                uploaded=False,
+                output_path=part_path,
+            )
+            save_state(st_path, state)
+            raise SystemExit(1) from exc
+
+        last_video_id = video_id
+        log(f"  Uploaded: https://youtu.be/{video_id}")
+
+        if current_playlist or playlist_title:
+            if not current_playlist:
+                current_playlist = ensure_playlist(
+                    playlist_title,
+                    credentials_path=credentials,
+                    token_path=token,
+                )
+                save_state_playlist(st_path, current_playlist)
+                log(f"  Playlist created: {playlist_title}")
+            add_to_playlist(
+                current_playlist,
+                video_id,
+                credentials_path=credentials,
+                token_path=token,
+            )
+
+        mark_trip_state(
+            state,
+            record_type=record_type,
+            chunk_index=chunk.index,
+            trip_index=trip_idx,
+            video_id=video_id,
+            uploaded=True,
+            output_path=part_path if keep else None,
+        )
+        save_state(st_path, state)
+
+        if not keep:
+            part_path.unlink(missing_ok=True)
+            log("  Deleted local trip after upload")
+
+    return last_video_id, current_playlist
 
 
 def main() -> None:
@@ -276,6 +484,22 @@ def main() -> None:
         type=int,
         metavar="N",
         help="Process only chunk index N (1-based, per record type order in plan)",
+    )
+    parser.add_argument(
+        "--trip",
+        type=int,
+        metavar="N",
+        help="Within chunk: compose/upload only trip N (1-based order in chunk)",
+    )
+    parser.add_argument(
+        "--per-trip-upload",
+        action="store_true",
+        help="Upload each trip as separate YouTube video (no concat)",
+    )
+    parser.add_argument(
+        "--resume-upload",
+        action="store_true",
+        help="Resume YouTube upload from saved session URI (.session.json)",
     )
     parser.add_argument("--check-disk", type=Path, default=Path("."))
     args = parser.parse_args()
@@ -385,6 +609,37 @@ def main() -> None:
             log("  Skip (already uploaded per state)")
             continue
 
+        pl_title = args.playlist or f"{base_title} {record_type}"
+
+        if args.per_trip_upload:
+            _, playlist_id = publish_and_upload_trips(
+                chunk,
+                video_dir=args.video_dir,
+                temp_dir=args.temp_dir,
+                ffmpeg=ffmpeg or "ffmpeg",
+                profile_args=profile_args,
+                audio_source=args.audio,
+                telemetry=args.telemetry,
+                gps_dir=args.gps_dir or args.source,
+                telemetry_map_size=args.telemetry_map_size,
+                dry_run=args.dry_run,
+                trip_only=args.trip,
+                base_title=base_title,
+                record_type=record_type,
+                privacy=args.privacy,
+                credentials=args.credentials,
+                token=args.token,
+                resume_upload=args.resume_upload,
+                skip_uploaded=args.resume,
+                compose_only=args.compose_only,
+                keep=args.keep,
+                playlist_id=playlist_id,
+                playlist_title=pl_title,
+                state=state,
+                st_path=st_path,
+            )
+            continue
+
         output = publish_chunk(
             chunk,
             video_dir=args.video_dir,
@@ -396,6 +651,7 @@ def main() -> None:
             gps_dir=args.gps_dir or args.source,
             telemetry_map_size=args.telemetry_map_size,
             dry_run=args.dry_run,
+            trip_only=args.trip,
         )
 
         if args.dry_run:
@@ -413,12 +669,15 @@ def main() -> None:
                     if pct % 10 == 0:
                         log(f"    upload {pct}%")
 
+                session_file = args.temp_dir / f"upload_part_{chunk.index:02d}.session.json"
                 video_id = upload_video(
                     output,
                     title=part_title,
                     privacy=args.privacy,
                     credentials_path=args.credentials,
                     token_path=args.token,
+                    session_path=session_file,
+                    resume=args.resume_upload,
                     on_progress=progress,
                 )
                 uploaded = True

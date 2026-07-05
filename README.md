@@ -471,6 +471,16 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
 # Full publish (needs OAuth; private by default)
 python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
   --title "Поездка 70mai"
+
+# Upload one trip at a time (compose → YouTube → next trip)
+python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
+  --trip 1 --per-trip-upload --keep --title "70mai 2026-04-25"
+
+# Resume interrupted YouTube upload (session URI saved in .session.json)
+python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
+  --trip 1 --per-trip-upload --resume-upload --compose-only
+python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
+  --trip 1 --per-trip-upload --resume-upload --keep
 ```
 
 | Flag | Default | Description |
@@ -481,7 +491,11 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
 | `--chunk-mode` | `trips` | Pack by driving sessions |
 | `--compose-only` | off | Skip YouTube upload |
 | `--estimate-only` | off | Plan only, no ffmpeg |
-| `--resume` | off | Continue from state file |
+| `--resume` | off | Skip chunks/trips already marked uploaded in state |
+| `--resume-upload` | off | Resume YouTube transfer from saved `.session.json` |
+| `--per-trip-upload` | off | Upload each trip separately (no concat) |
+| `--trip` | all | Within chunk: only trip N (1-based) |
+| `--chunk` | all | Only chunk N (1-based) |
 | `--keep` | off | Keep MP4 after upload |
 | `--credentials` | `~/.config/70mai/youtube_credentials.json` | OAuth client |
 | `--token` | `~/.config/70mai/youtube_token.json` | Saved refresh token |
@@ -494,9 +508,18 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
 4. Save as `~/.config/70mai/youtube_credentials.json`
 5. First upload opens a browser; token saved to `~/.config/70mai/youtube_token.json`
 
-Large uploads use the resumable protocol via `requests` (not httplib2) and ignore system proxy env vars to avoid VPN/proxy redirect errors.
+Large uploads use the resumable protocol via `requests` (64 MB chunks, 600 s timeout). System proxy env vars are ignored to avoid VPN/proxy redirect errors. Session state for resume: `video/Output/.publish_tmp/upload_*.session.json` (deleted on success).
 
-After compose finishes, upload a single part:
+Standalone upload CLI:
+
+```bash
+python3 youtube_upload.py video/Output/.publish_tmp/chunk_01/trip_01.mp4 \
+  --title "70mai 2026-04-25 — поездка 1" \
+  --privacy private \
+  --resume-upload
+```
+
+After compose finishes, upload a single part from Python:
 
 ```bash
 python3 -c "
@@ -505,6 +528,8 @@ from youtube_upload import upload_video
 vid = upload_video(
     Path('video/Output/.publish_tmp/part_01.mp4'),
     title='70mai 2026-04-25 — часть 1/5',
+    session_path=Path('video/Output/.publish_tmp/upload_part_01.session.json'),
+    resume=True,
 )
 print('https://youtu.be/' + vid)
 "

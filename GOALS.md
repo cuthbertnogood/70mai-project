@@ -41,8 +41,8 @@
 
 - **`plan_estimate.py`** — pre-flight: поездки, куски, `publish_plan.md`
 - **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
-- **`publish_70mai.py`** — trip chunks → compose → concat → YouTube → delete
-- **`youtube_upload.py`** — OAuth + resumable upload + playlist
+- **`publish_70mai.py`** — trip chunks → compose → YouTube → delete; `--per-trip-upload`, `--resume-upload`
+- **`youtube_upload.py`** — OAuth + resumable upload (64 MB chunks, session resume) + playlist
 - По умолчанию загрузка **private** (не public/unlisted)
 
 Target chunk: **2 ч по поездкам** (короткие поездки склеиваются; длинная ≥2 ч — solo).
