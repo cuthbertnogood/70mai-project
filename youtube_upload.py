@@ -4,8 +4,13 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 from pathlib import Path
+
+UPLOAD_CHUNK_BYTES = 10 * 1024 * 1024
+HTTP_TIMEOUT_SEC = 600
+MAX_UPLOAD_RETRIES = 12
 
 DEFAULT_CREDENTIALS = Path.home() / ".config/70mai/youtube_credentials.json"
 DEFAULT_TOKEN = Path.home() / ".config/70mai/youtube_token.json"
@@ -18,8 +23,10 @@ class YouTubeUploadError(RuntimeError):
 
 def _require_google():
     try:
+        import httplib2
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
+        from google_auth_httplib2 import AuthorizedHttp
         from google_auth_oauthlib.flow import InstalledAppFlow
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
@@ -28,14 +35,16 @@ def _require_google():
         raise YouTubeUploadError(
             "Google API libraries missing. Install: pip install -r requirements.txt"
         ) from exc
-    return Request, Credentials, InstalledAppFlow, build, HttpError, MediaFileUpload
+    return Request, Credentials, InstalledAppFlow, build, HttpError, MediaFileUpload, httplib2, AuthorizedHttp
 
 
 def get_youtube_service(
     credentials_path: Path = DEFAULT_CREDENTIALS,
     token_path: Path = DEFAULT_TOKEN,
 ):
-    Request, Credentials, InstalledAppFlow, build, HttpError, _Media = _require_google()
+    Request, Credentials, InstalledAppFlow, build, HttpError, _Media, httplib2, AuthorizedHttp = (
+        _require_google()
+    )
 
     creds = None
     if token_path.is_file():
@@ -72,8 +81,11 @@ def upload_video(
     on_progress=None,
 ) -> str:
     """Upload video; returns YouTube video ID."""
-    _, _, _, _, HttpError, MediaFileUpload = _require_google()
+    _, _, _, _, HttpError, MediaFileUpload, httplib2, _ = _require_google()
     youtube = get_youtube_service(credentials_path, token_path)
+
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(HTTP_TIMEOUT_SEC)
 
     body = {
         "snippet": {
@@ -92,24 +104,34 @@ def upload_video(
         str(video_path),
         mimetype="video/mp4",
         resumable=True,
-        chunksize=256 * 1024,
+        chunksize=UPLOAD_CHUNK_BYTES,
     )
 
     request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
 
     response = None
     retry = 0
-    while response is None:
-        try:
-            status, response = request.next_chunk()
-            if status and on_progress:
-                on_progress(int(status.progress() * 100))
-        except HttpError as exc:
-            if exc.resp.status in (500, 502, 503, 504) and retry < 3:
-                retry += 1
-                time.sleep(2**retry)
-                continue
-            raise YouTubeUploadError(f"YouTube upload failed: {exc}") from exc
+    try:
+        while response is None:
+            try:
+                status, response = request.next_chunk()
+                retry = 0
+                if status and on_progress:
+                    on_progress(int(status.progress() * 100))
+            except HttpError as exc:
+                if exc.resp.status in (500, 502, 503, 504) and retry < MAX_UPLOAD_RETRIES:
+                    retry += 1
+                    time.sleep(min(2**retry, 60))
+                    continue
+                raise YouTubeUploadError(f"YouTube upload failed: {exc}") from exc
+            except (TimeoutError, socket.timeout, OSError, httplib2.error.HttpLib2Error) as exc:
+                if retry < MAX_UPLOAD_RETRIES:
+                    retry += 1
+                    time.sleep(min(2**retry, 60))
+                    continue
+                raise YouTubeUploadError(f"YouTube upload timed out: {exc}") from exc
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
     video_id = response["id"]
     return video_id
