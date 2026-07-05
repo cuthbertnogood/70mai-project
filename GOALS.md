@@ -40,23 +40,49 @@
 ## Шаг 3 — публикация 2-cam на YouTube
 
 - **`plan_estimate.py`** — pre-flight: поездки, куски, `publish_plan.md`
-- **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync, опционально GPS-телеметрия (`--telemetry`)
+- **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
 - **`publish_70mai.py`** — trip chunks → compose → concat → YouTube → delete
 - **`youtube_upload.py`** — OAuth + resumable upload + playlist
 - По умолчанию загрузка **private** (не public/unlisted)
 
 Target chunk: **2 ч по поездкам** (короткие поездки склеиваются; длинная ≥2 ч — solo).
 
-## GPS-телеметрия в видео
-
-- **`gps_70mai.py`** + **`telemetry_overlay.py`** — парсинг `GPSData*.txt`, миникарта (OpenStreetMap), скорость, компас, координаты, G-force (из изменения скорости)
-- Флаг **`--telemetry`** в `compose_2cam_70mai.py` и `publish_70mai.py`
-- AR-эффекты приложения 70mai (распознавание машин, стрелки полос) в сырых файлах **не хранятся** — это постобработка в приложении
-
 ## Что не входит в текущие цели (пока)
 
 - Веб-интерфейс.
 - Автоматический запуск по подключению карты (можно добавить отдельно).
+
+## Backlog — позже
+
+### GPS-телеметрия и миникарта в видео
+
+Наложение данных из `GPSData*.txt` на итоговое 2-cam видео (стиль 70mai RS / dashcam HUD).
+
+**Что хотим на экране:**
+
+| Элемент | Источник | Статус данных |
+|---------|----------|---------------|
+| Миникарта + хвост маршрута | lat/lon из GPS | ✅ есть в `GPSData*.txt` |
+| Скорость (KM/H) | поле скорости в GPS | ✅ есть |
+| Компас / направление | heading или bearing между точками | ✅ вычисляется |
+| Координаты + время | GPS + wall-clock sync | ✅ есть |
+| G-force | поля аксelerometer в GPS или Δspeed | ⚠️ на карте часто нули; fallback — из изменения скорости |
+| Рамки машин, стрелки полос (AR) | приложение 70mai | ❌ в сырых файлах нет — только постобработка в приложении |
+
+**Технический план (черновик):**
+
+1. Парсинг `GPSData*.txt` по wall-clock диапазону видео (сканирование в `--scan` уже есть).
+2. Рендер HUD-панели: OpenStreetMap-тайлы (кэш `~/.cache/70mai/map_tiles`), Pillow.
+3. Наложение через ffmpeg `overlay` в `compose_2cam_70mai.py` — флаг `--telemetry`.
+4. Прокинуть `--telemetry` в `publish_70mai.py` для YouTube-роликов.
+
+**Заметки с пробы:**
+
+- GPS покрывает не весь wall-clock диапазон клипов — нужен overlap или предупреждение.
+- Рендер overlay + qtrle в filter_complex сильно замедляет encode; оптимизировать (5 Hz HUD, lighter codec).
+- Черновик кода: `gps_70mai.py`, `telemetry_overlay.py` (WIP, не в prod-пайплайне).
+
+**Отдельно (низкий приоритет):** экспорт GPX/HTML-карты для просмотра треков без видео.
 
 ## Ожидаемый результат
 
