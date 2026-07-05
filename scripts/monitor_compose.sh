@@ -54,21 +54,14 @@ progress_target() {
 }
 
 progress_signature() {
-  local target size log_mtime
+  local target size
   target="$(progress_target)"
-  if [[ -f "$target" ]]; then
+  if [[ -f "$target" && "$target" == *.mp4 ]]; then
     size="$(stat -f%z "$target" 2>/dev/null || echo 0)"
-  else
-    size=0
+    echo "${size}"
+    return
   fi
-  log_mtime=0
-  for f in "$LOG_DIR"/chunk*_compose*.log "$LOG_DIR"/chunk$(printf '%02d' "$CHUNK")_compose*.log; do
-    [[ -f "$f" ]] || continue
-    local m
-    m="$(stat -f%m "$f" 2>/dev/null || echo 0)"
-    (( log_mtime > m )) || log_mtime="$m"
-  done
-  echo "${size}:${log_mtime}"
+  echo "0"
 }
 
 publish_running() {

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from compose_2cam_70mai import run_compose_2cam
+from compose_70mai import probe_duration
 from import_70mai import format_duration, log, parse_datetime
 from plan_estimate import (
     DEFAULT_CHUNK_MINUTES,
@@ -145,6 +146,16 @@ def run_estimate(args: argparse.Namespace, ffprobe: str) -> tuple[list, list[Chu
     )
 
 
+def trip_part_complete(path: Path, expected_sec: float, *, tolerance: float = 0.9) -> bool:
+    if not path.is_file() or path.stat().st_size < 1_000_000:
+        return False
+    try:
+        actual = probe_duration(path)
+    except (subprocess.CalledProcessError, ValueError, OSError):
+        return False
+    return actual >= expected_sec * tolerance
+
+
 def publish_chunk(
     chunk: ChunkPlan,
     *,
@@ -169,6 +180,10 @@ def publish_chunk(
             f"({format_duration(trip.duration_sec)})"
         )
         if dry_run:
+            trip_parts.append(part_path)
+            continue
+        if trip_part_complete(part_path, trip.duration_sec):
+            log(f"  Skip compose (exists, {format_duration(probe_duration(part_path))})")
             trip_parts.append(part_path)
             continue
         run_compose_2cam(
