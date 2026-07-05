@@ -65,7 +65,9 @@ def get_youtube_service(
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
 
-    return build("youtube", "v3", credentials=creds)
+    http = httplib2.Http(timeout=HTTP_TIMEOUT_SEC)
+    http = AuthorizedHttp(creds, http=http)
+    return build("youtube", "v3", http=http, cache_discovery=False)
 
 
 def upload_video(
