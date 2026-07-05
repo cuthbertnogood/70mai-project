@@ -124,6 +124,34 @@ def parse_gps_line(line: str) -> GpsPoint | None:
     )
 
 
+def _file_time_range(path: Path) -> tuple[datetime, datetime] | None:
+    first: datetime | None = None
+    last: datetime | None = None
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            point = parse_gps_line(line)
+            if point is None:
+                continue
+            first = point.timestamp
+            break
+        if first is None:
+            return None
+        handle.seek(0, 2)
+        size = handle.tell()
+        chunk = min(size, 65536)
+        handle.seek(max(0, size - chunk))
+        tail = handle.read().splitlines()
+        for line in reversed(tail):
+            point = parse_gps_line(line)
+            if point is None:
+                continue
+            last = point.timestamp
+            break
+    if first is None or last is None:
+        return None
+    return first, last
+
+
 def load_gps_points(
     gps_files: list[Path],
     start: datetime,
@@ -133,25 +161,21 @@ def load_gps_points(
     for path in gps_files:
         if not path.is_file():
             continue
-        file_start: datetime | None = None
-        file_end: datetime | None = None
+        file_range = _file_time_range(path)
+        if file_range is not None:
+            file_start, file_end = file_range
+            if file_end < start or file_start > end:
+                continue
         with path.open(encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 point = parse_gps_line(line)
                 if point is None:
                     continue
-                if file_start is None:
-                    file_start = point.timestamp
-                file_end = point.timestamp
                 if point.timestamp < start:
                     continue
                 if point.timestamp > end:
                     break
                 points.append(point)
-        if file_end is not None and file_end < start:
-            continue
-        if file_start is not None and file_start > end:
-            continue
     points.sort(key=lambda p: p.timestamp)
     return points
 

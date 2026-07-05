@@ -233,7 +233,7 @@ def render_overlay_frame(
     draw.text((10, hud_y), sample.timestamp.strftime("%Y-%m-%d %H:%M:%S"), fill=TEXT, font=_font(11))
     draw.text((10, hud_y + 16), _format_coords(sample.lat, sample.lon), fill=TEXT_DIM, font=_font(10))
     _draw_speed_gauge(draw, panel_width - 130, hud_y + 4, sample.speed_kmh)
-    _draw_gforce(draw, 10, hud_y + 38)
+    _draw_gforce(draw, 10, hud_y + 38, sample.g_force)
     _draw_compass(draw, panel_width - 36, hud_y + 52, 24, sample.heading_deg)
     return panel
 
@@ -247,6 +247,7 @@ def render_telemetry_video(
     output: Path,
     map_size: int = 280,
     cache_dir: Path | None = None,
+    update_hz: int = 5,
 ) -> bool:
     wall_end = datetime.fromtimestamp(wall_start.timestamp() + duration_sec)
     points = load_gps_points(gps_sources, wall_start, wall_end)
@@ -254,7 +255,7 @@ def render_telemetry_video(
         log("Telemetry: no GPS points for this time range — skipping overlay.")
         return False
 
-    samples = build_telemetry_samples(points, wall_start, duration_sec, fps)
+    samples = build_telemetry_samples(points, wall_start, duration_sec, update_hz)
     if not samples:
         return False
 
@@ -267,12 +268,14 @@ def render_telemetry_video(
 
     log(
         f"Telemetry: {len(points)} GPS points -> {len(samples)} overlay frames "
-        f"({map_size}px map)"
+        f"({map_size}px map, {update_hz} Hz)"
     )
 
     with tempfile.TemporaryDirectory(prefix="70mai_telemetry_") as tmp:
         tmp_path = Path(tmp)
         for idx, sample in enumerate(samples):
+            if idx % 25 == 0:
+                log(f"  Rendering overlay frame {idx + 1}/{len(samples)}")
             frame = render_overlay_frame(
                 map_base=map_base,
                 samples_upto=samples[: idx + 1],
@@ -295,7 +298,7 @@ def render_telemetry_video(
             "error",
             "-y",
             "-framerate",
-            str(fps),
+            str(update_hz),
             "-i",
             str(tmp_path / "frame_%06d.png"),
             "-frames:v",

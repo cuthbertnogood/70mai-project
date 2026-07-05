@@ -75,11 +75,12 @@ def build_filter_2cam(
     return ";".join(parts)
 
 
-def append_telemetry_overlay(filter_complex: str, telemetry_input: int) -> str:
+def append_telemetry_overlay(filter_complex: str, telemetry_input: int, fps: int) -> str:
     return (
         f"{filter_complex};"
-        f"[{telemetry_input}:v]format=rgba[tel];"
-        f"[vout][tel]overlay=W-w-20:20:format=auto,format=yuv420p[vfinal]"
+        f"[{telemetry_input}:v]fps={fps}[tel];"
+        f"[tel]format=rgba[telrgba];"
+        f"[vout][telrgba]overlay=W-w-20:20:format=auto,format=yuv420p[vfinal]"
     )
 
 
@@ -152,7 +153,7 @@ def build_compose_2cam_cmd(
 
     video_map = "[vout]"
     if telemetry_input is not None:
-        filter_complex = append_telemetry_overlay(filter_complex, telemetry_input)
+        filter_complex = append_telemetry_overlay(filter_complex, telemetry_input, fps)
         video_map = "[vfinal]"
 
     cmd.extend(["-filter_complex", filter_complex])
