@@ -532,6 +532,8 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 | `--keep` | off | Keep MP4 after upload (debug only) |
 | `--state-on-sd` | off | Write/read upload state on SD `/.70mai/publish/` (portable) |
 | `--no-state-on-sd` | off | Disable SD state even if `--state-on-sd` |
+| `--auth-on-sd` | off | Store YouTube OAuth on SD `/.70mai/auth/` (portable; used by autopilot) |
+| `--no-auth-on-sd` | off | Keep OAuth only on host even if `--auth-on-sd` |
 | `--credentials` | `~/.config/70mai/youtube_credentials.json` | OAuth client |
 | `--token` | `~/.config/70mai/youtube_token.json` | Saved refresh token |
 
@@ -542,6 +544,10 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 3. Credentials → OAuth client ID → **Desktop app** → download JSON
 4. Save as `~/.config/70mai/youtube_credentials.json`
 5. First upload opens a browser; token saved to `~/.config/70mai/youtube_token.json`
+
+**Portable OAuth (autopilot default):** with `--auth-on-sd`, credentials and token live on the SD card at `/.70mai/auth/`. On first run, existing files from `~/.config/70mai/` are copied to the card; after refresh or re-login, the token is updated on SD and mirrored to the local cache. Opt out with `--no-auth-on-sd` (host-only OAuth).
+
+**Security:** `youtube_token.json` is a refresh token — anyone with the file can upload to your YouTube account. Keep the SD card private; if lost, revoke access at [Google Account → Third-party access](https://myaccount.google.com/permissions). Do not publish the OAuth client JSON either.
 
 Large uploads use the resumable protocol via `requests` (64 MB chunks, 600 s timeout). System proxy env vars are ignored to avoid VPN/proxy redirect errors.
 
@@ -602,7 +608,7 @@ WAIT_PID=23448 ./scripts/publish_pipeline.sh
 | `chunk01_upload.log` | Chunk 1 upload-only |
 | `chunk02_publish.log` … `chunk05_publish.log` | Per-chunk compose + upload |
 
-Order: **2, 5, 4, 3** — short chunks first; chunk 3 (trip 8, ~7.7 GB) last. Uses `--resume`, `--continue-on-error`. See [`GOALS.md`](GOALS.md) for full trip table.
+Order: **2, 5, 4, 3** — short chunks first; chunk 3 (trip 8, ~7.7 GB) last. Uses `--resume`, `--state-on-sd`, `--auth-on-sd`, `--continue-on-error`. See [`GOALS.md`](GOALS.md) for full trip table.
 
 ### Autopilot (SD card → YouTube, zero manual steps)
 
@@ -625,18 +631,20 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 | Import | `import_70mai.py` | Merge new clips into `video/Output/` |
 | Compose + upload | `publish_70mai.py` | `--per-trip-upload --resume --continue-on-error` |
 | Skip done | state file | `publish_Normal.state.json` on SD + local cache |
-| Portable | SD `.70mai/publish/` | Move card to another Mac; run same script |
+| Portable | SD `.70mai/` | State + OAuth on card; move to another Mac and run same script |
 
-**State on SD card** (default, ~few KB):
+**Data on SD card** (autopilot default, ~few KB total):
 
 ```
-/Volumes/Untitled/.70mai/publish/
-  publish_Normal.state.json   # uploaded trips + YouTube video_id
-  sessions/trip_03.upload.json  # resume interrupted upload
+/Volumes/Untitled/.70mai/
+  auth/youtube_credentials.json   # OAuth Desktop client (~1 KB)
+  auth/youtube_token.json         # refresh token after browser login (~1 KB)
+  publish/publish_Normal.state.json
+  publish/sessions/trip_03.upload.json
   README.txt
 ```
 
-On another host: install project + OAuth token (`~/.config/70mai/youtube_token.json`), insert SD, run `./scripts/publish_all_70mai.sh --wait`. Merged clips on host (`video/Output/`) are rebuilt by import if missing.
+On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh --wait` — no separate OAuth setup if the token on the card is still valid. Merged clips on host (`video/Output/`) are rebuilt by import if missing.
 
 | Flag | Description |
 |------|-------------|
@@ -644,7 +652,8 @@ On another host: install project + OAuth token (`~/.config/70mai/youtube_token.j
 | `--loop` | Re-run after each session (wait for SD again) |
 | `--dry-run` | Show plan only, no import/upload |
 | `--skip-import` | Publish only (merged clips already local) |
-| `--no-state-on-sd` | Keep state only on host (not portable) |
+| `--no-state-on-sd` | Keep upload state only on host (not portable) |
+| `--no-auth-on-sd` | Keep OAuth only on host (`~/.config/70mai/`) |
 | `--title` | YouTube title (default: date from first trip) |
 
 Master log: `video/Output/.publish_tmp/publish_all.log`. Lock file prevents duplicate runs.

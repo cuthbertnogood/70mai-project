@@ -27,7 +27,7 @@ from plan_estimate import (
     print_stdout_summary,
     render_markdown,
 )
-from publish_state import StateStore
+from publish_state import AuthStore, StateStore
 from project_env import cli_python
 from youtube_upload import (
     DEFAULT_CREDENTIALS,
@@ -729,6 +729,16 @@ def main() -> None:
         action="store_true",
         help="Store upload progress on SD card (portable across hosts; enables auto-resume)",
     )
+    parser.add_argument(
+        "--no-auth-on-sd",
+        action="store_true",
+        help="Keep YouTube OAuth only on host (~/.config/70mai/)",
+    )
+    parser.add_argument(
+        "--auth-on-sd",
+        action="store_true",
+        help="Store YouTube OAuth on SD card (.70mai/auth/; portable across hosts)",
+    )
     parser.add_argument("--check-disk", type=Path, default=Path("."))
     args = parser.parse_args()
     from telemetry_overlay import telemetry_requested
@@ -749,8 +759,20 @@ def main() -> None:
         if not args.resume_upload:
             args.resume_upload = True
 
+    auth_on_sd = args.auth_on_sd and not args.no_auth_on_sd
+
     if not args.source.is_dir():
         parser.error(f"Source not found: {args.source}")
+
+    if auth_on_sd:
+        try:
+            args.credentials, args.token = AuthStore.resolve(
+                args.source, auth_on_sd=True
+            )
+        except FileNotFoundError as exc:
+            parser.error(str(exc))
+        except RuntimeError as exc:
+            parser.error(str(exc))
 
     ffprobe = shutil.which("ffprobe")
     ffmpeg = shutil.which("ffmpeg")

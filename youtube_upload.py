@@ -141,6 +141,10 @@ def load_credentials(
             creds = flow.run_local_server(port=0)
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
+        if ".70mai/auth" in token_path.as_posix():
+            from publish_state import AuthStore
+
+            AuthStore.sync_token(token_path)
 
     return creds
 

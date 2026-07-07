@@ -23,7 +23,7 @@ from pathlib import Path
 from import_70mai import log
 from plan_estimate import DEFAULT_SESSION_GAP, build_plan
 from publish_70mai import trip_uploaded
-from publish_state import StateStore
+from publish_state import AuthStore, StateStore
 
 DEFAULT_SOURCE = Path("/Volumes/Untitled")
 DEFAULT_TYPES = ["Normal"]
@@ -219,6 +219,11 @@ def main() -> int:
         help="Keep upload state only on host, not on SD card",
     )
     parser.add_argument(
+        "--no-auth-on-sd",
+        action="store_true",
+        help="Keep YouTube OAuth only on host (~/.config/70mai/)",
+    )
+    parser.add_argument(
         "--log",
         type=Path,
         default=DEFAULT_LOG,
@@ -253,6 +258,12 @@ def main() -> int:
 
         label = "_".join(args.types)
         state_on_sd = not args.no_state_on_sd
+        auth_on_sd = not args.no_auth_on_sd
+        try:
+            creds, token = AuthStore.resolve(source, auth_on_sd=auth_on_sd)
+        except (FileNotFoundError, RuntimeError) as exc:
+            log(str(exc))
+            return 1
         state_store = StateStore(
             source, args.temp_dir, label, state_on_sd=state_on_sd
         )
@@ -320,6 +331,11 @@ def main() -> int:
                 "--resume-upload",
                 "--continue-on-error",
                 "--state-on-sd" if state_on_sd else "--no-state-on-sd",
+                "--credentials",
+                str(creds),
+                "--token",
+                str(token),
+                "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
                 "--title",
                 title,
             ],

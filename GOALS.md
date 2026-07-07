@@ -78,6 +78,7 @@ YouTube quota ~6 видео/день — при 429/errors продолжить 
 
 - Авто-поиск SD в `/Volumes/Untitled` или любой том с `Normal/Front` + `Normal/Back`
 - **Статус загрузки на флешке:** `/.70mai/publish/publish_Normal.state.json` + `sessions/*.upload.json` (resume)
+- **OAuth на флешке (по умолчанию):** `/.70mai/auth/youtube_credentials.json` + `youtube_token.json` — переносимая авторизация; отключение: `--no-auth-on-sd`
 - При повторном запуске или на **другом Mac** — продолжает с места остановки (`--resume` автоматически)
 - Локально — только кэш state и временные MP4 (удаляются после upload)
 - Лог: `video/Output/.publish_tmp/publish_all.log`

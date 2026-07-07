@@ -4,21 +4,36 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from import_70mai import log
 
+SD_ROOT_DIR = ".70mai"
 SD_PUBLISH_DIR = ".70mai/publish"
+SD_AUTH_DIR = ".70mai/auth"
 SD_SESSIONS_SUBDIR = "sessions"
-SD_README = """70mai publish state (auto-generated)
-================================
-publish_*.state.json  — which trips are uploaded to YouTube (video_id per trip)
-sessions/*.upload.json — resume data for interrupted uploads (~few KB each)
+CREDENTIALS_FILENAME = "youtube_credentials.json"
+TOKEN_FILENAME = "youtube_token.json"
+LOCAL_CONFIG_DIR = Path.home() / ".config/70mai"
+
+SD_README = """70mai portable data (auto-generated)
+=====================================
+
+auth/youtube_credentials.json  — OAuth Desktop client from Google Cloud (~1 KB)
+auth/youtube_token.json        — YouTube refresh token after browser login (~1 KB)
+
+publish/publish_*.state.json   — uploaded trips + YouTube video_id
+publish/sessions/*.upload.json — resume interrupted uploads (~few KB each)
 
 Insert this SD card on any Mac with the project + run:
   ./scripts/publish_all_70mai.sh --wait
 
 Raw clips stay on the card; composed MP4s are temporary on the host and deleted after upload.
+
+SECURITY: auth/youtube_token.json grants upload access to your YouTube account.
+Keep the card private; revoke access at https://myaccount.google.com/permissions if lost.
+Use --no-auth-on-sd to keep OAuth only on the host.
 """
 
 
@@ -41,6 +56,30 @@ def local_state_path(temp_dir: Path, label: str) -> Path:
 
 def sd_session_dir(source: Path) -> Path:
     return sd_publish_dir(source) / SD_SESSIONS_SUBDIR
+
+
+def sd_auth_dir(source: Path) -> Path:
+    return source.resolve() / SD_AUTH_DIR
+
+
+def sd_credentials_path(source: Path) -> Path:
+    return sd_auth_dir(source) / CREDENTIALS_FILENAME
+
+
+def sd_token_path(source: Path) -> Path:
+    return sd_auth_dir(source) / TOKEN_FILENAME
+
+
+def local_credentials_path() -> Path:
+    return LOCAL_CONFIG_DIR / CREDENTIALS_FILENAME
+
+
+def local_token_path() -> Path:
+    return LOCAL_CONFIG_DIR / TOKEN_FILENAME
+
+
+def sd_root_dir(source: Path) -> Path:
+    return source.resolve() / SD_ROOT_DIR
 
 
 def _trip_key(part: dict) -> tuple:
@@ -110,10 +149,65 @@ def save_state_file(path: Path, data: dict) -> None:
 
 
 def ensure_sd_readme(source: Path) -> None:
-    readme = sd_publish_dir(source) / "README.txt"
+    readme = sd_root_dir(source) / "README.txt"
     if not readme.is_file():
         try:
+            readme.parent.mkdir(parents=True, exist_ok=True)
             readme.write_text(SD_README, encoding="utf-8")
+        except OSError:
+            pass
+
+
+class AuthStore:
+    """Resolve YouTube OAuth paths on SD card (portable) or local host."""
+
+    @staticmethod
+    def resolve(source: Path, *, auth_on_sd: bool) -> tuple[Path, Path]:
+        local_creds = local_credentials_path()
+        local_token = local_token_path()
+        if not auth_on_sd:
+            log(f"OAuth (local): {LOCAL_CONFIG_DIR}")
+            return local_creds, local_token
+
+        sd_creds = sd_credentials_path(source)
+        sd_token = sd_token_path(source)
+        try:
+            sd_auth_dir(source).mkdir(parents=True, exist_ok=True)
+            ensure_sd_readme(source)
+        except OSError as exc:
+            raise RuntimeError(f"Cannot create SD auth dir: {sd_auth_dir(source)} ({exc})") from exc
+
+        if not sd_creds.is_file():
+            if local_creds.is_file():
+                shutil.copy2(local_creds, sd_creds)
+                log(f"Migrating credentials → SD: {sd_creds}")
+            else:
+                raise FileNotFoundError(
+                    f"OAuth credentials not found on SD or host.\n"
+                    f"  SD: {sd_creds}\n"
+                    f"  Local: {local_creds}\n"
+                    "Download Desktop OAuth JSON from Google Cloud Console "
+                    "(YouTube Data API v3) and save to either path."
+                )
+
+        if not sd_token.is_file() and local_token.is_file():
+            shutil.copy2(local_token, sd_token)
+            log(f"Migrating token → SD: {sd_token}")
+
+        log(f"OAuth (SD): {sd_auth_dir(source)}")
+        return sd_creds, sd_token
+
+    @staticmethod
+    def sync_token(primary: Path) -> None:
+        """Mirror token from SD (primary) to local cache."""
+        mirror = local_token_path()
+        if not primary.is_file():
+            return
+        try:
+            if primary.resolve() == mirror.resolve():
+                return
+            mirror.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(primary, mirror)
         except OSError:
             pass
 

@@ -80,6 +80,7 @@ run_chunk() {
     --resume-upload \
     --resume \
     --state-on-sd \
+    --auth-on-sd \
     --continue-on-error \
     --title "$TITLE" \
     >>"$logfile" 2>&1
