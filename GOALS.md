@@ -58,13 +58,7 @@ Target chunk: **2 ч по поездкам** (короткие поездки с
 | 4 | 9–10 | 6008 | compose → upload → delete |
 | 3 | 8 | 7729 | compose → upload → delete (самый долгий) |
 
-**Автопродолжение:** `scripts/publish_pipeline.sh` ждёт окончания chunk 1, затем запускает chunks **2 → 5 → 4 → 3** (короткие раньше, trip 8 последним). Import уже в `video/Output/Normal/`.
-
-```bash
-# После старта chunk 1 upload:
-WAIT_PID=<pid> ./scripts/publish_pipeline.sh
-# Лог оркестратора: video/Output/.publish_tmp/publish_pipeline.log
-```
+**Оставшиеся chunks (2–5):** autopilot (`publish_all_70mai.sh`) обрабатывает все pending trips сам — compose → upload → delete, с `--resume` и state на SD. Для долгой сессии с auto-restart: `watch_publish_all_70mai.sh --skip-import`.
 
 YouTube quota ~6 видео/день — при 429/errors продолжить на следующий день с `--resume`.
 
