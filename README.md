@@ -459,11 +459,6 @@ Vertical stack without Screen Recording. Sync by wall-clock (`--from` + `--to` /
 python3 compose_2cam_70mai.py --from "2026-04-27 08:13:38" -d 60 \
   -o video/Output/test_2cam_60s.mp4
 
-# GPS telemetry (follow-map z18, CARTO Voyager tiles, 2% transparent)
-python3 compose_2cam_70mai.py --from "2026-04-25 13:14:33" -d 15 \
-  --telemetry --gps-dir /Volumes/Untitled \
-  -o video/Output/test_telemetry_15s.mp4
-
 # Default profile balanced (same as compose_70mai)
 python3 compose_2cam_70mai.py --from "2026-04-25 13:01:19" --to "2026-04-25 13:46:49"
 ```
@@ -475,10 +470,8 @@ python3 compose_2cam_70mai.py --from "2026-04-25 13:01:19" --to "2026-04-25 13:4
 | `--video-dir` | `video/Output` | Merged Normal/Front + Back |
 | `--profile` | `balanced` | Encode profile |
 | `--audio` | `front` | `front` or `back` |
-| `--telemetry` | off | GPS HUD: follow-map (z18), speed, compass, G-force |
-| `--gps-dir` | auto | `GPSData*.txt` directory (SD card or `.GPS/`) |
-| `--gps-offset` | auto | GPS clock skew in seconds (auto from clip names) |
-| `--telemetry-map-size` | `280` | Mini-map width in pixels |
+
+GPS telemetry overlay (`--telemetry`) is **disabled** for now — see backlog in [`GOALS.md`](GOALS.md).
 
 ### Publish (trip chunks → YouTube)
 
@@ -584,7 +577,7 @@ MONITOR_CHUNK=1 MONITOR_STALL_SEC=900 ./scripts/monitor_compose.sh
 ## Notes
 
 - Front camera: 3840x2160, Back camera: 1920x1080
-- GPS logs (`GPSData*.txt`) scanned with `--scan`; video overlay via `--telemetry` (WIP, see [`GOALS.md`](GOALS.md) backlog)
+- GPS logs (`GPSData*.txt`) scanned with `--scan`; video overlay **disabled** (backlog — [`GOALS.md`](GOALS.md))
 - Map tiles 98% opaque (2% transparent); auto GPS offset from linked clip names
 - Speed from GPS field 8 (≥34 = km/h, else ÷2) — matches 70mai burn-in
 - Full import of all types and cameras needs ~360 GB free disk space

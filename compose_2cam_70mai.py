@@ -24,7 +24,7 @@ from compose_70mai import (
     scan_merged_clips,
 )
 from import_70mai import format_duration, parse_datetime
-from telemetry_overlay import render_telemetry_video, resolve_gps_sources
+from telemetry_overlay import render_telemetry_video, resolve_gps_sources, telemetry_requested
 
 
 def build_filter_2cam(
@@ -401,7 +401,7 @@ def main() -> None:
     parser.add_argument(
         "--telemetry",
         action="store_true",
-        help="GPS overlay: mini-map, speed, compass, coordinates, G-force",
+        help="GPS overlay (disabled — backlog; see GOALS.md)",
     )
     parser.add_argument(
         "--gps-dir",
@@ -461,7 +461,7 @@ def main() -> None:
             hw_decode=args.hw_decode,
             use_vt_scale=args.use_vt_scale,
             audio_source=args.audio,
-            telemetry=args.telemetry,
+            telemetry=telemetry_requested(args.telemetry),
             gps_dir=args.gps_dir,
             telemetry_map_size=args.telemetry_map_size,
             gps_offset_sec=args.gps_offset,

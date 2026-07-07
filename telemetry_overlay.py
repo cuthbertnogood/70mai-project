@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Render dashcam-style telemetry overlay (map, speed, compass, G-force)."""
+"""Render dashcam-style telemetry overlay (map, speed, compass, G-force).
+
+WIP — not used in prod pipeline until re-enabled (TELEMETRY_ENABLED).
+"""
 
 from __future__ import annotations
+
+TELEMETRY_ENABLED = False
 
 import math
 import subprocess
@@ -22,6 +27,14 @@ from gps_70mai import (
     load_gps_points,
 )
 from import_70mai import log
+
+
+def telemetry_requested(enabled: bool) -> bool:
+    if enabled and not TELEMETRY_ENABLED:
+        log("Telemetry: disabled (backlog) — see GOALS.md")
+        return False
+    return enabled
+
 
 TILE_URL = "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
 TILE_SIZE = 256

@@ -57,6 +57,8 @@ Target chunk: **2 ч по поездкам** (короткие поездки с
 
 ### GPS-телеметрия и миникарта в видео
 
+**Статус: отключено** (`TELEMETRY_ENABLED = False` в `telemetry_overlay.py`). Черновик кода остаётся в репо; `--telemetry` в compose/publish игнорируется.
+
 Наложение данных из `GPSData*.txt` на итоговое 2-cam видео (стиль 70mai RS / dashcam HUD).
 
 **Что хотим на экране:**
@@ -82,7 +84,7 @@ Target chunk: **2 ч по поездкам** (короткие поездки с
 - GPS покрывает не весь wall-clock диапазон клипов — нужен overlap или предупреждение.
 - Рендер overlay + qtrle в filter_complex сильно замедляет encode; оптимизировать (5 Hz HUD, lighter codec).
 - Черновик кода: `gps_70mai.py`, `telemetry_overlay.py` (WIP, не в prod-пайплайне).
-- **Фиксы (Jul 2026):** авто `--gps-offset` по именам клипов; Mercator-проекция; сглаживание heading при speed < 8 km/h; полупрозрачная карта (видео просвечивает).
+- **Фиксы (Jul 2026):** авто `--gps-offset`; follow-map z18 + CARTO Voyager; movement-gate для скорости при стоянке; 2% прозрачность панели.
 
 **Отдельно (низкий приоритет):** экспорт GPX/HTML-карты для просмотра треков без видео.
 

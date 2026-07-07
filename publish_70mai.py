@@ -467,7 +467,7 @@ def main() -> None:
     parser.add_argument(
         "--telemetry",
         action="store_true",
-        help="GPS overlay in compose (map, speed, compass, G-force)",
+        help="GPS overlay in compose (disabled — backlog; see GOALS.md)",
     )
     parser.add_argument(
         "--gps-dir",
@@ -521,6 +521,9 @@ def main() -> None:
     )
     parser.add_argument("--check-disk", type=Path, default=Path("."))
     args = parser.parse_args()
+    from telemetry_overlay import telemetry_requested
+
+    args.telemetry = telemetry_requested(args.telemetry)
 
     if not args.source.is_dir():
         parser.error(f"Source not found: {args.source}")
