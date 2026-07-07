@@ -4,7 +4,7 @@
     "stop": [
       {
         "command": ".cursor/hooks/auto-commit.sh",
-        "timeout": 30
+        "timeout": 120
       }
     ]
   }

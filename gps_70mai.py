@@ -79,16 +79,8 @@ def _parse_speed_kmh(parts: list[str]) -> float:
         raw = int(parts[8])
     except ValueError:
         return 0.0
-    if len(parts) >= 6:
-        try:
-            legacy = int(parts[5])
-            if legacy > 0 and raw < 200:
-                legacy_kmh = legacy * 0.036
-                if abs(legacy_kmh - raw) < 25:
-                    return max(0.0, legacy_kmh)
-        except ValueError:
-            pass
-    return max(0.0, float(raw))
+    # 70mai A810: field 8 is dashboard speed in 0.5 km/h units (matches burn-in).
+    return max(0.0, raw / 2.0)
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -263,12 +255,35 @@ def load_gps_points(
     return points
 
 
+def _track_speed_kmh(points: list[GpsPoint], idx: int) -> float:
+    if idx <= 0:
+        return 0.0
+    prev = points[idx - 1]
+    cur = points[idx]
+    dt = (cur.timestamp - prev.timestamp).total_seconds()
+    if dt <= 0:
+        return 0.0
+    dist = _haversine_m(prev.lat, prev.lon, cur.lat, cur.lon)
+    return dist / dt * 3.6
+
+
+def _display_speed_kmh(dashboard_kmh: float, track_kmh: float) -> float:
+    """Blend dashboard speed (field 8) with GPS track speed near standstill."""
+    if track_kmh < 1.0 and dashboard_kmh > 8.0:
+        return max(track_kmh, dashboard_kmh * 0.35)
+    if track_kmh < 3.0 and dashboard_kmh > 8.0:
+        return dashboard_kmh
+    return dashboard_kmh
+
+
 def _fill_headings(points: list[GpsPoint]) -> list[GpsPoint]:
     if not points:
         return points
     filled: list[GpsPoint] = []
     prev_heading: float | None = None
     for idx, point in enumerate(points):
+        track_kmh = _track_speed_kmh(points, idx)
+        speed = _display_speed_kmh(point.speed_kmh, track_kmh)
         heading: float | None = None
         if idx + 1 < len(points):
             nxt = points[idx + 1]
@@ -290,7 +305,7 @@ def _fill_headings(points: list[GpsPoint]) -> list[GpsPoint]:
                 valid=point.valid,
                 lat=point.lat,
                 lon=point.lon,
-                speed_kmh=point.speed_kmh,
+                speed_kmh=speed,
                 heading_deg=heading,
                 video_name=point.video_name,
             )
@@ -398,7 +413,12 @@ def build_telemetry_samples(
         ratio = max(0.0, min(1.0, ratio))
         lat = prev_p.lat + (next_p.lat - prev_p.lat) * ratio
         lon = prev_p.lon + (next_p.lon - prev_p.lon) * ratio
-        speed = prev_p.speed_kmh + (next_p.speed_kmh - prev_p.speed_kmh) * ratio
+        if (moment - prev_p.timestamp).total_seconds() <= (
+            next_p.timestamp - moment
+        ).total_seconds():
+            speed = prev_p.speed_kmh
+        else:
+            speed = next_p.speed_kmh
         h1 = prev_p.heading_deg or 0.0
         h2 = next_p.heading_deg or h1
         delta = ((h2 - h1 + 540) % 360) - 180
