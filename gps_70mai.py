@@ -257,13 +257,44 @@ def load_gps_points(
     return points
 
 
+def _movement_speed_kmh(points: list[GpsPoint], idx: int, window_sec: float = 6.0) -> float:
+    """Average speed from GPS positions over a short rolling window."""
+    if idx <= 0:
+        return 0.0
+    cur = points[idx]
+    dist = 0.0
+    for j in range(idx, 0, -1):
+        prev = points[j - 1]
+        nxt = points[j]
+        step = (nxt.timestamp - prev.timestamp).total_seconds()
+        if step <= 0:
+            continue
+        dist += _haversine_m(prev.lat, prev.lon, nxt.lat, nxt.lon)
+        span = (cur.timestamp - prev.timestamp).total_seconds()
+        if span >= window_sec:
+            break
+    else:
+        span = (cur.timestamp - points[0].timestamp).total_seconds()
+    if span <= 0:
+        return 0.0
+    return dist / span * 3.6
+
+
+def _effective_speed_kmh(dashboard_kmh: float, movement_kmh: float) -> float:
+    # Dashboard speed in GPS file lags; at standstill trust zero movement.
+    if movement_kmh < 1.0:
+        return 0.0
+    return dashboard_kmh
+
+
 def _fill_headings(points: list[GpsPoint]) -> list[GpsPoint]:
     if not points:
         return points
     filled: list[GpsPoint] = []
     prev_heading: float | None = None
     for idx, point in enumerate(points):
-        speed = point.speed_kmh
+        movement = _movement_speed_kmh(points, idx)
+        speed = _effective_speed_kmh(point.speed_kmh, movement)
         heading: float | None = None
         if idx + 1 < len(points):
             nxt = points[idx + 1]

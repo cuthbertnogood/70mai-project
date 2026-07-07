@@ -585,6 +585,6 @@ MONITOR_CHUNK=1 MONITOR_STALL_SEC=900 ./scripts/monitor_compose.sh
 
 - Front camera: 3840x2160, Back camera: 1920x1080
 - GPS logs (`GPSData*.txt`) scanned with `--scan`; video overlay via `--telemetry` (WIP, see [`GOALS.md`](GOALS.md) backlog)
-- Map tiles 90% opaque (10% transparent); auto GPS offset from linked clip names
+- Map tiles 98% opaque (2% transparent); auto GPS offset from linked clip names
 - Speed from GPS field 8 (≥34 = km/h, else ÷2) — matches 70mai burn-in
 - Full import of all types and cameras needs ~360 GB free disk space
