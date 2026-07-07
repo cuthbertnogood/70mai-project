@@ -257,20 +257,23 @@ def upload_and_cleanup(
 
     current_playlist = playlist_id
     if current_playlist or playlist_title:
-        if not current_playlist:
-            current_playlist = ensure_playlist(
-                playlist_title,
+        try:
+            if not current_playlist:
+                current_playlist = ensure_playlist(
+                    playlist_title,
+                    credentials_path=credentials,
+                    token_path=token,
+                )
+                save_state_playlist(st_path, current_playlist)
+                log(f"  Playlist created: {playlist_title}")
+            add_to_playlist(
+                current_playlist,
+                video_id,
                 credentials_path=credentials,
                 token_path=token,
             )
-            save_state_playlist(st_path, current_playlist)
-            log(f"  Playlist created: {playlist_title}")
-        add_to_playlist(
-            current_playlist,
-            video_id,
-            credentials_path=credentials,
-            token_path=token,
-        )
+        except Exception as exc:
+            log(f"  Warning: playlist skipped ({exc})")
 
     log(
         f"  Uploaded: https://youtu.be/{video_id} "
@@ -853,7 +856,7 @@ def main() -> None:
                 )
                 last_chunk_key = chunk_key
 
-            pl_title = args.playlist or f"{base_title} {record_type}"
+            pl_title = args.playlist or ""
             _, playlist_id = publish_and_upload_trips(
                 chunk,
                 video_dir=args.video_dir,
@@ -906,7 +909,7 @@ def main() -> None:
             log("  Skip (already uploaded per state)")
             continue
 
-        pl_title = args.playlist or f"{base_title} {record_type}"
+        pl_title = args.playlist or ""
 
         output = publish_chunk(
             chunk,
