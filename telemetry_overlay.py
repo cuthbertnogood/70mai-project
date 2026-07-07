@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
 from gps_70mai import (
     TelemetrySample,
@@ -23,12 +23,15 @@ from gps_70mai import (
 )
 from import_70mai import log
 
-TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+TILE_URL = "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
 TILE_SIZE = 256
 USER_AGENT = "70mai_project/1.0 (local dashcam telemetry; contact: local)"
-OSM_ATTRIBUTION = "© OpenStreetMap"
+MAP_ATTRIBUTION = "© CARTO © OpenStreetMap"
 
-MAP_OPACITY = 0.98
+# Follow-mode: fixed zoom + window around current position (sharp at standstill too).
+FOLLOW_ZOOM = 18
+MAP_PANEL_OPACITY = 0.98  # 2% transparent — video bleeds through slightly
+MAP_CONTRAST = 1.12
 HUD_BG = (12, 16, 24, 150)
 ACCENT = (0, 210, 255)
 ACCENT_DIM = (0, 140, 180)
@@ -71,7 +74,7 @@ def _lonlat_to_tile(lon: float, lat: float, zoom: int) -> tuple[float, float]:
     return x, y
 
 
-def _apply_map_opacity(image: Image.Image, opacity: float) -> Image.Image:
+def _apply_panel_opacity(image: Image.Image, opacity: float) -> Image.Image:
     image = image.convert("RGBA")
     alpha = image.getchannel("A").point(lambda value: int(value * opacity))
     image.putalpha(alpha)
@@ -80,65 +83,56 @@ def _apply_map_opacity(image: Image.Image, opacity: float) -> Image.Image:
 
 def _fetch_tile(zoom: int, x: int, y: int, cache_dir: Path) -> Image.Image | None:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{zoom}_{x}_{y}.png"
+    cache_path = cache_dir / f"voyager_{zoom}_{x}_{y}.png"
     if cache_path.is_file():
-        tile = Image.open(cache_path).convert("RGBA")
-    else:
-        url = TILE_URL.format(z=zoom, x=x, y=y)
-        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                data = response.read()
-            cache_path.write_bytes(data)
-            tile = Image.open(cache_path).convert("RGBA")
-        except (urllib.error.URLError, TimeoutError, OSError):
-            return None
-    return _apply_map_opacity(tile, MAP_OPACITY)
+        return Image.open(cache_path).convert("RGBA")
+    url = TILE_URL.format(z=zoom, x=x, y=y)
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = response.read()
+        cache_path.write_bytes(data)
+        return Image.open(cache_path).convert("RGBA")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
 
 
-def _build_viewport(samples: list[TelemetrySample], map_size: int) -> MapViewport:
-    zoom = 16
-    for trial in range(16, 11, -1):
-        xs = [_lonlat_to_tile(s.lon, s.lat, trial)[0] for s in samples]
-        ys = [_lonlat_to_tile(s.lon, s.lat, trial)[1] for s in samples]
-        span_x = max(xs) - min(xs)
-        span_y = max(ys) - min(ys)
-        max_span = max(span_x, span_y, 0.0005)
-        if max_span * TILE_SIZE <= map_size * 1.2:
-            zoom = trial
-            break
-
+def _prefetch_route_tiles(
+    samples: list[TelemetrySample],
+    zoom: int,
+    map_size: int,
+    cache_dir: Path,
+) -> int:
+    margin = map_size / TILE_SIZE / 2 + 1
     xs = [_lonlat_to_tile(s.lon, s.lat, zoom)[0] for s in samples]
     ys = [_lonlat_to_tile(s.lon, s.lat, zoom)[1] for s in samples]
-    min_tx, max_tx = min(xs), max(xs)
-    min_ty, max_ty = min(ys), max(ys)
-    pad = max(0.0008, (max_tx - min_tx) * 0.2, (max_ty - min_ty) * 0.2)
-    min_tx -= pad
-    max_tx += pad
-    min_ty -= pad
-    max_ty += pad
-    span_x = max(max_tx - min_tx, 0.0005)
-    span_y = max(max_ty - min_ty, 0.0005)
-    if span_x > span_y:
-        extra = (span_x - span_y) / 2
-        min_ty -= extra
-        max_ty += extra
-    else:
-        extra = (span_y - span_x) / 2
-        min_tx -= extra
-        max_tx += extra
+    tx0 = math.floor(min(xs) - margin)
+    tx1 = math.ceil(max(xs) + margin)
+    ty0 = math.floor(min(ys) - margin)
+    ty1 = math.ceil(max(ys) + margin)
+    fetched = 0
+    for tx in range(tx0, tx1):
+        for ty in range(ty0, ty1):
+            if _fetch_tile(zoom, tx, ty, cache_dir) is not None:
+                fetched += 1
+    return fetched
+
+
+def _build_follow_viewport(lat: float, lon: float, zoom: int, map_size: int) -> MapViewport:
+    span_tiles = map_size / TILE_SIZE
+    tx, ty = _lonlat_to_tile(lon, lat, zoom)
+    half = span_tiles / 2
     return MapViewport(
         zoom=zoom,
-        min_tx=min_tx,
-        max_tx=max_tx,
-        min_ty=min_ty,
-        max_ty=max_ty,
+        min_tx=tx - half,
+        max_tx=tx + half,
+        min_ty=ty - half,
+        max_ty=ty + half,
         map_size=map_size,
     )
 
 
 def _render_map_base(
-    samples: list[TelemetrySample],
     viewport: MapViewport,
     cache_dir: Path,
 ) -> Image.Image:
@@ -168,7 +162,11 @@ def _render_map_base(
     width = max(1, int((viewport.max_tx - viewport.min_tx) * TILE_SIZE))
     height = max(1, int((viewport.max_ty - viewport.min_ty) * TILE_SIZE))
     cropped = mosaic.crop((left, top, left + width, top + height))
-    return cropped.resize((viewport.map_size, viewport.map_size), Image.Resampling.LANCZOS)
+    if cropped.width != viewport.map_size or cropped.height != viewport.map_size:
+        cropped = cropped.resize((viewport.map_size, viewport.map_size), Image.Resampling.LANCZOS)
+    if MAP_CONTRAST != 1.0:
+        cropped = ImageEnhance.Contrast(cropped).enhance(MAP_CONTRAST)
+    return cropped
 
 
 def _project(lat: float, lon: float, viewport: MapViewport) -> tuple[int, int]:
@@ -224,16 +222,18 @@ def _format_coords(lat: float, lon: float) -> str:
 
 def render_overlay_frame(
     *,
-    map_base: Image.Image,
     samples_upto: list[TelemetrySample],
     sample: TelemetrySample,
-    viewport: MapViewport,
+    zoom: int,
+    cache_dir: Path,
     panel_width: int,
     hud_height: int,
+    map_size: int,
 ) -> Image.Image:
-    map_size = viewport.map_size
+    viewport = _build_follow_viewport(sample.lat, sample.lon, zoom, map_size)
     panel = Image.new("RGBA", (panel_width, map_size + hud_height), (0, 0, 0, 0))
-    map_layer = map_base.copy()
+    map_layer = _render_map_base(viewport, cache_dir)
+    map_layer = _apply_panel_opacity(map_layer, MAP_PANEL_OPACITY)
     draw_map = ImageDraw.Draw(map_layer)
 
     if len(samples_upto) >= 2:
@@ -252,7 +252,7 @@ def render_overlay_frame(
     panel.paste(map_layer, (0, 0), map_layer)
     draw = ImageDraw.Draw(panel)
     draw.rectangle((0, map_size - 18, panel_width, map_size), fill=(0, 0, 0, 90))
-    draw.text((6, map_size - 16), OSM_ATTRIBUTION, fill=TEXT_DIM + (180,), font=_font(9))
+    draw.text((6, map_size - 16), MAP_ATTRIBUTION, fill=TEXT_DIM + (180,), font=_font(9))
 
     draw.rectangle((0, map_size, panel_width, map_size + hud_height), fill=HUD_BG)
     hud_y = map_size + 8
@@ -292,14 +292,13 @@ def render_telemetry_video(
         return False
 
     cache = cache_dir or Path.home() / ".cache" / "70mai" / "map_tiles"
-    viewport = _build_viewport(samples, map_size)
-    map_base = _render_map_base(samples, viewport, cache)
+    tile_count = _prefetch_route_tiles(samples, FOLLOW_ZOOM, map_size, cache)
     panel_width = map_size
     hud_height = 96
 
     log(
         f"Telemetry: {len(points)} GPS points -> {len(samples)} overlay frames "
-        f"({map_size}px map, {update_hz} Hz, offset {offset:+.0f}s)"
+        f"({map_size}px follow-map z{FOLLOW_ZOOM}, {tile_count} tiles, {update_hz} Hz, offset {offset:+.0f}s)"
     )
 
     with tempfile.TemporaryDirectory(prefix="70mai_telemetry_") as tmp:
@@ -308,12 +307,13 @@ def render_telemetry_video(
             if idx % 25 == 0:
                 log(f"  Rendering overlay frame {idx + 1}/{len(samples)}")
             frame = render_overlay_frame(
-                map_base=map_base,
                 samples_upto=samples[: idx + 1],
                 sample=sample,
-                viewport=viewport,
+                zoom=FOLLOW_ZOOM,
+                cache_dir=cache,
                 panel_width=panel_width,
                 hud_height=hud_height,
+                map_size=map_size,
             )
             frame.save(tmp_path / f"frame_{idx:06d}.png")
 

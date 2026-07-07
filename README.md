@@ -459,7 +459,7 @@ Vertical stack without Screen Recording. Sync by wall-clock (`--from` + `--to` /
 python3 compose_2cam_70mai.py --from "2026-04-27 08:13:38" -d 60 \
   -o video/Output/test_2cam_60s.mp4
 
-# GPS telemetry (semi-transparent map; video shows through)
+# GPS telemetry (follow-map z18, CARTO Voyager tiles, 2% transparent)
 python3 compose_2cam_70mai.py --from "2026-04-25 13:14:33" -d 15 \
   --telemetry --gps-dir /Volumes/Untitled \
   -o video/Output/test_telemetry_15s.mp4
@@ -475,7 +475,7 @@ python3 compose_2cam_70mai.py --from "2026-04-25 13:01:19" --to "2026-04-25 13:4
 | `--video-dir` | `video/Output` | Merged Normal/Front + Back |
 | `--profile` | `balanced` | Encode profile |
 | `--audio` | `front` | `front` or `back` |
-| `--telemetry` | off | GPS HUD: transparent mini-map, speed, compass, G-force |
+| `--telemetry` | off | GPS HUD: follow-map (z18), speed, compass, G-force |
 | `--gps-dir` | auto | `GPSData*.txt` directory (SD card or `.GPS/`) |
 | `--gps-offset` | auto | GPS clock skew in seconds (auto from clip names) |
 | `--telemetry-map-size` | `280` | Mini-map width in pixels |
