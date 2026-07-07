@@ -656,14 +656,62 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 | `--no-auth-on-sd` | Keep OAuth only on host (`~/.config/70mai/`) |
 | `--title` | YouTube title (default: date from first trip) |
 
-Master log: `video/Output/.publish_tmp/publish_all.log`. Lock file prevents duplicate runs.
+Master log: `video/Output/.publish_tmp/publish_all.log`. Lock file (`.publish_all.lock`) prevents duplicate autopilot runs.
 
-Long compose runs — background monitor (restarts if stalled 15 min or process dies):
+**Watch progress:**
+
+```bash
+tail -f video/Output/.publish_tmp/publish_all.log
+
+# upload / trip lines only
+tail -f video/Output/.publish_tmp/publish_all.log \
+  | grep -E 'Upload|Resume|Trip|Chunk|Done|Failed|Error'
+
+# process still running?
+pgrep -fl publish_all_70mai
+pgrep -fl publish_70mai
+```
+
+**Resume & recovery (built-in):**
+
+| Mechanism | What it does |
+|-----------|--------------|
+| `--resume` + `--resume-upload` | Continue from SD state + `publish/sessions/*.upload.json` (YouTube resumable upload) |
+| `--continue-on-error` | On one trip failure, continue to the next |
+| `--wait` | Block until SD card appears |
+| `--loop` | After a full run, wait for SD again and start next session (not crash recovery) |
+| Lock file | Refuses a second autopilot instance |
+
+Autopilot does **not** auto-restart if `publish_70mai.py` crashes or an upload stalls with no progress. After a kill/crash, rerun manually — pending trips and in-progress uploads resume from SD:
+
+```bash
+./scripts/publish_all_70mai.sh --skip-import   # MP4s already on host
+```
+
+**Switch mid-upload to autopilot:** copy the active session to SD before stopping the old process, or the trip restarts from 0%:
+
+```bash
+mkdir -p /Volumes/Untitled/.70mai/publish/sessions
+cp video/Output/.publish_tmp/trip_NN.upload.json \
+   /Volumes/Untitled/.70mai/publish/sessions/
+# then kill old publish_70mai.py and start autopilot
+```
+
+**Compose-only monitor (separate, not part of autopilot):** `scripts/monitor_compose.sh` watches **ffmpeg compose** for one chunk; restarts if the process dies or output stalls (default 15 min). Does not monitor YouTube upload.
 
 ```bash
 ./scripts/monitor_compose.sh          # chunk 1, check every 60s
 MONITOR_CHUNK=1 MONITOR_STALL_SEC=900 ./scripts/monitor_compose.sh
 # log: video/Output/.publish_tmp/monitor_chunk1.log
+```
+
+Optional crude upload watchdog (restart on any exit — inspect `publish_all.log` for root cause):
+
+```bash
+while true; do
+  ./scripts/publish_all_70mai.sh --skip-import || true
+  sleep 60
+done >> video/Output/.publish_tmp/publish_all.log 2>&1
 ```
 
 ## Notes
