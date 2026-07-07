@@ -530,6 +530,8 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 | `--no-diag` | off | Disable diagnostic JSONL |
 | `--chunk` | all | Only chunk N (1-based) |
 | `--keep` | off | Keep MP4 after upload (debug only) |
+| `--state-on-sd` | off | Write/read upload state on SD `/.70mai/publish/` (portable) |
+| `--no-state-on-sd` | off | Disable SD state even if `--state-on-sd` |
 | `--credentials` | `~/.config/70mai/youtube_credentials.json` | OAuth client |
 | `--token` | `~/.config/70mai/youtube_token.json` | Saved refresh token |
 
@@ -601,6 +603,51 @@ WAIT_PID=23448 ./scripts/publish_pipeline.sh
 | `chunk02_publish.log` … `chunk05_publish.log` | Per-chunk compose + upload |
 
 Order: **2, 5, 4, 3** — short chunks first; chunk 3 (trip 8, ~7.7 GB) last. Uses `--resume`, `--continue-on-error`. See [`GOALS.md`](GOALS.md) for full trip table.
+
+### Autopilot (SD card → YouTube, zero manual steps)
+
+One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron):
+
+```bash
+# Wait for SD insert, then import → compose → upload → delete
+./scripts/publish_all_70mai.sh --wait
+
+# SD already mounted
+./scripts/publish_all_70mai.sh
+
+# Daemon: after finishing, wait for next card session
+./scripts/publish_all_70mai.sh --wait --loop
+```
+
+| Step | Tool | Notes |
+|------|------|-------|
+| Detect SD | auto | `/Volumes/Untitled` or scan `/Volumes/*` for 70mai layout |
+| Import | `import_70mai.py` | Merge new clips into `video/Output/` |
+| Compose + upload | `publish_70mai.py` | `--per-trip-upload --resume --continue-on-error` |
+| Skip done | state file | `publish_Normal.state.json` on SD + local cache |
+| Portable | SD `.70mai/publish/` | Move card to another Mac; run same script |
+
+**State on SD card** (default, ~few KB):
+
+```
+/Volumes/Untitled/.70mai/publish/
+  publish_Normal.state.json   # uploaded trips + YouTube video_id
+  sessions/trip_03.upload.json  # resume interrupted upload
+  README.txt
+```
+
+On another host: install project + OAuth token (`~/.config/70mai/youtube_token.json`), insert SD, run `./scripts/publish_all_70mai.sh --wait`. Merged clips on host (`video/Output/`) are rebuilt by import if missing.
+
+| Flag | Description |
+|------|-------------|
+| `--wait` | Block until SD card appears |
+| `--loop` | Re-run after each session (wait for SD again) |
+| `--dry-run` | Show plan only, no import/upload |
+| `--skip-import` | Publish only (merged clips already local) |
+| `--no-state-on-sd` | Keep state only on host (not portable) |
+| `--title` | YouTube title (default: date from first trip) |
+
+Master log: `video/Output/.publish_tmp/publish_all.log`. Lock file prevents duplicate runs.
 
 Long compose runs — background monitor (restarts if stalled 15 min or process dies):
 

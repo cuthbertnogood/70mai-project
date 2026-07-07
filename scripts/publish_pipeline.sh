@@ -79,6 +79,7 @@ run_chunk() {
     --per-trip-upload \
     --resume-upload \
     --resume \
+    --state-on-sd \
     --continue-on-error \
     --title "$TITLE" \
     >>"$logfile" 2>&1

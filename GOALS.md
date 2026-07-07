@@ -68,6 +68,20 @@ WAIT_PID=<pid> ./scripts/publish_pipeline.sh
 
 YouTube quota ~6 видео/день — при 429/errors продолжить на следующий день с `--resume`.
 
+### Автопилот (один скрипт, без Cursor)
+
+**`publish_all_70mai.py`** / **`scripts/publish_all_70mai.sh`** — вставил флешку → import → compose → YouTube → delete:
+
+```bash
+./scripts/publish_all_70mai.sh --wait
+```
+
+- Авто-поиск SD в `/Volumes/Untitled` или любой том с `Normal/Front` + `Normal/Back`
+- **Статус загрузки на флешке:** `/.70mai/publish/publish_Normal.state.json` + `sessions/*.upload.json` (resume)
+- При повторном запуске или на **другом Mac** — продолжает с места остановки (`--resume` автоматически)
+- Локально — только кэш state и временные MP4 (удаляются после upload)
+- Лог: `video/Output/.publish_tmp/publish_all.log`
+
 ## Что не входит в текущие цели (пока)
 
 - Веб-интерфейс.

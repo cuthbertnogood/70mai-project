@@ -237,8 +237,16 @@ def clear_upload_session(path: Path) -> None:
 
 def _session_matches(session: dict[str, Any], video_path: Path, size: int) -> bool:
     stored = session.get("video_path")
-    if stored and Path(stored).resolve() != video_path.resolve():
+    stored_stem = session.get("video_stem") or (Path(stored).stem if stored else None)
+    if stored_stem and stored_stem != video_path.stem:
         return False
+    if stored and not stored_stem:
+        try:
+            if Path(stored).resolve() != video_path.resolve() and Path(stored).name != video_path.name:
+                return False
+        except OSError:
+            if Path(stored).name != video_path.name:
+                return False
     if session.get("size") not in (None, size):
         return False
     return bool(session.get("upload_url"))
@@ -425,6 +433,7 @@ def _upload_video_inner(
             session_path,
             {
                 "video_path": str(video_path),
+                "video_stem": video_path.stem,
                 "size": size,
                 "upload_url": upload_url,
                 "title": title,
@@ -471,6 +480,7 @@ def _upload_video_inner(
                     session_path,
                     {
                         "video_path": str(video_path),
+                        "video_stem": video_path.stem,
                         "size": size,
                         "upload_url": upload_url,
                         "title": title,

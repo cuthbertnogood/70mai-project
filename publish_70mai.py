@@ -27,6 +27,7 @@ from plan_estimate import (
     print_stdout_summary,
     render_markdown,
 )
+from publish_state import StateStore
 from project_env import cli_python
 from youtube_upload import (
     DEFAULT_CREDENTIALS,
@@ -37,8 +38,6 @@ from youtube_upload import (
     clear_upload_session,
     ensure_playlist,
     format_file_size,
-    load_state_playlist,
-    save_state_playlist,
     upload_session_path_for_file,
     upload_video,
 )
@@ -220,20 +219,19 @@ def upload_and_cleanup(
     privacy: str,
     credentials: Path,
     token: Path,
-    temp_dir: Path,
+    session_dir: Path,
     resume_upload: bool,
     diag_log: Path | None,
     keep: bool,
     playlist_id: str | None,
     playlist_title: str,
-    st_path: Path,
 ) -> tuple[str | None, str | None, int, float]:
     """Upload, add to playlist, delete local file. Returns (video_id, playlist_id, freed_bytes, elapsed_sec)."""
     if not path.is_file():
         raise YouTubeUploadError(f"Video not found: {path}")
 
     file_size = path.stat().st_size
-    session_file = upload_session_path_for_file(path, temp_dir)
+    session_file = upload_session_path_for_file(path, session_dir)
     reporter = UploadProgressReporter(path.name, file_size)
     started = time.monotonic()
 
@@ -264,7 +262,6 @@ def upload_and_cleanup(
                     credentials_path=credentials,
                     token_path=token,
                 )
-                save_state_playlist(st_path, current_playlist)
                 log(f"  Playlist created: {playlist_title}")
             add_to_playlist(
                 current_playlist,
@@ -480,7 +477,7 @@ def publish_and_upload_trips(
     playlist_id: str | None,
     playlist_title: str,
     state: dict,
-    st_path: Path,
+    state_store: StateStore,
     diag_log: Path | None,
     summary: UploadSummary,
     queue_ctx: tuple[int, int, int, int] | None = None,
@@ -558,7 +555,7 @@ def publish_and_upload_trips(
                 uploaded=False,
                 output_path=part_path,
             )
-            save_state(st_path, state)
+            state_store.save(state)
             continue
 
         trip_title = (
@@ -572,13 +569,12 @@ def publish_and_upload_trips(
                 privacy=privacy,
                 credentials=credentials,
                 token=token,
-                temp_dir=temp_dir,
+                session_dir=state_store.session_dir,
                 resume_upload=resume_upload,
                 diag_log=diag_log,
                 keep=keep,
                 playlist_id=current_playlist,
                 playlist_title=playlist_title,
-                st_path=st_path,
             )
         except YouTubeUploadError as exc:
             msg = f"chunk {chunk.index} trip {trip_idx}: {exc}"
@@ -595,7 +591,7 @@ def publish_and_upload_trips(
                 uploaded=False,
                 output_path=part_path,
             )
-            save_state(st_path, state)
+            state_store.save(state)
             summary.failed += 1
             summary.errors.append(msg)
             if continue_on_error:
@@ -612,7 +608,9 @@ def publish_and_upload_trips(
             uploaded=True,
             output_path=part_path if keep else None,
         )
-        save_state(st_path, state)
+        if current_playlist:
+            state["playlist_id"] = current_playlist
+        state_store.save(state)
         summary.uploaded += 1
         summary.freed_bytes += freed
 
@@ -721,6 +719,16 @@ def main() -> None:
         action="store_true",
         help="Disable YouTube upload diagnostic logging",
     )
+    parser.add_argument(
+        "--no-state-on-sd",
+        action="store_true",
+        help="Do not read/write publish state on SD card (.70mai/publish/)",
+    )
+    parser.add_argument(
+        "--state-on-sd",
+        action="store_true",
+        help="Store upload progress on SD card (portable across hosts; enables auto-resume)",
+    )
     parser.add_argument("--check-disk", type=Path, default=Path("."))
     args = parser.parse_args()
     from telemetry_overlay import telemetry_requested
@@ -734,6 +742,12 @@ def main() -> None:
 
     if args.upload_only and args.compose_only:
         parser.error("--upload-only and --compose-only are mutually exclusive")
+
+    state_on_sd = args.state_on_sd and not args.no_state_on_sd
+    if state_on_sd:
+        args.resume = True
+        if not args.resume_upload:
+            args.resume_upload = True
 
     if not args.source.is_dir():
         parser.error(f"Source not found: {args.source}")
@@ -801,8 +815,10 @@ def main() -> None:
     )
 
     label = "_".join(args.types)
-    st_path = state_path(args.temp_dir, label)
-    state = load_state(st_path) if args.resume else {}
+    state_store = StateStore(
+        args.source, args.temp_dir, label, state_on_sd=state_on_sd
+    )
+    state = state_store.load(resume=args.resume)
     if args.resume and state.get("chunk_minutes") not in (None, args.chunk_minutes):
         log(
             f"Warning: state chunk_minutes={state.get('chunk_minutes')} "
@@ -823,7 +839,7 @@ def main() -> None:
     for chunk in chunks:
         total_by_type[chunk.record_type] = total_by_type.get(chunk.record_type, 0) + 1
 
-    playlist_id = load_state_playlist(st_path) if args.resume else None
+    playlist_id = state.get("playlist_id") if args.resume else None
     diag_log = None if args.no_diag else args.diag_log
     summary = UploadSummary()
 
@@ -832,7 +848,7 @@ def main() -> None:
         if record_type_for_marks is None:
             parser.error("--mark-uploaded requires a single --types value")
         apply_mark_uploaded(state, args.mark_uploaded, record_type=record_type_for_marks)
-        save_state(st_path, state)
+        state_store.save(state)
 
     if args.per_trip_upload:
         trip_tasks = build_trip_tasks(
@@ -882,7 +898,7 @@ def main() -> None:
                 playlist_id=playlist_id,
                 playlist_title=pl_title,
                 state=state,
-                st_path=st_path,
+                state_store=state_store,
                 diag_log=diag_log,
                 summary=summary,
                 queue_ctx=(overall_i, len(trip_tasks), trip_idx, len(chunk.trips)),
@@ -940,15 +956,16 @@ def main() -> None:
                     privacy=args.privacy,
                     credentials=args.credentials,
                     token=args.token,
-                    temp_dir=args.temp_dir,
+                    session_dir=state_store.session_dir,
                     resume_upload=args.resume_upload,
                     diag_log=diag_log,
                     keep=args.keep,
                     playlist_id=playlist_id,
                     playlist_title=pl_title,
-                    st_path=st_path,
                 )
                 uploaded = True
+                if playlist_id:
+                    state["playlist_id"] = playlist_id
                 summary.uploaded += 1
                 summary.freed_bytes += freed
             except YouTubeUploadError as exc:
@@ -964,7 +981,7 @@ def main() -> None:
                     uploaded=False,
                     output_path=output,
                 )
-                save_state(st_path, state)
+                state_store.save(state)
                 summary.failed += 1
                 summary.errors.append(f"chunk {chunk.index}: {exc}")
                 if args.continue_on_error:
@@ -982,7 +999,7 @@ def main() -> None:
             uploaded=uploaded,
             output_path=output if args.compose_only or args.keep else None,
         )
-        save_state(st_path, state)
+        state_store.save(state)
 
         if args.compose_only and not args.keep:
             log(f"  Kept: {output}")
