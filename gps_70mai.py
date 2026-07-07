@@ -79,7 +79,9 @@ def _parse_speed_kmh(parts: list[str]) -> float:
         raw = int(parts[8])
     except ValueError:
         return 0.0
-    # 70mai A810: field 8 is dashboard speed in 0.5 km/h units (matches burn-in).
+    # A810 field 8: values >= 34 are km/h; lower values are stored as 2× km/h.
+    if raw >= 34:
+        return float(raw)
     return max(0.0, raw / 2.0)
 
 
@@ -253,18 +255,6 @@ def load_gps_points(
                     points.append(point)
     points.sort(key=lambda p: p.timestamp)
     return points
-
-
-def _track_speed_kmh(points: list[GpsPoint], idx: int) -> float:
-    if idx <= 0:
-        return 0.0
-    prev = points[idx - 1]
-    cur = points[idx]
-    dt = (cur.timestamp - prev.timestamp).total_seconds()
-    if dt <= 0:
-        return 0.0
-    dist = _haversine_m(prev.lat, prev.lon, cur.lat, cur.lon)
-    return dist / dt * 3.6
 
 
 def _fill_headings(points: list[GpsPoint]) -> list[GpsPoint]:
