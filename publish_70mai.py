@@ -25,6 +25,7 @@ from plan_estimate import (
     print_stdout_summary,
     render_markdown,
 )
+from project_env import cli_python
 from youtube_upload import (
     DEFAULT_CREDENTIALS,
     DEFAULT_TOKEN,
@@ -382,7 +383,7 @@ def publish_and_upload_trips(
             log(f"  Upload failed: {exc}")
             if diag_log:
                 log(f"  Diagnostics: {diag_log}")
-                log("  Analyze: python3 scripts/analyze_youtube_upload.py")
+                log(f"  Analyze: {cli_python()} scripts/analyze_youtube_upload.py")
             mark_trip_state(
                 state,
                 record_type=record_type,
@@ -723,7 +724,7 @@ def main() -> None:
                 log(f"  Upload failed: {exc}")
                 if diag_log:
                     log(f"  Diagnostics: {diag_log}")
-                    log("  Analyze: python3 scripts/analyze_youtube_upload.py")
+                    log(f"  Analyze: {cli_python()} scripts/analyze_youtube_upload.py")
                 mark_chunk_state(
                     state,
                     record_type=record_type,
@@ -758,4 +759,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    from project_env import ensure_venv_python
+
+    ensure_venv_python()
     main()

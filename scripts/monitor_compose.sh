@@ -4,6 +4,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=70mai-env.sh
+source "$ROOT/scripts/70mai-env.sh"
 
 CHUNK="${MONITOR_CHUNK:-1}"
 STALL_SEC="${MONITOR_STALL_SEC:-900}"   # 15 min without progress => restart
@@ -16,7 +18,7 @@ PART="$TEMP_DIR/part_$(printf '%02d' "$CHUNK").mp4"
 CHUNK_DIR="$TEMP_DIR/chunk_$(printf '%02d' "$CHUNK")"
 
 PUBLISH_CMD=(
-  python3 publish_70mai.py
+  "$_70MAI_PY" publish_70mai.py
   --source /Volumes/Untitled
   --types Normal
   --chunk "$CHUNK"

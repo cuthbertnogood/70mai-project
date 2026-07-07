@@ -7,16 +7,21 @@ Import and merge 70mai A810 SD card clips into ~10 minute videos.
 - Python **3.10+** (recommended: **3.12** via Homebrew — system `/usr/bin/python3` 3.9 uses LibreSSL and triggers Google API warnings)
 - ffmpeg (`brew install ffmpeg`)
 
-### Python setup (recommended)
+### Python setup
+
+First time only (or after dependency changes):
 
 ```bash
-brew install python@3.12
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+scripts/setup-venv.sh
 ```
 
-Use `.venv/bin/python` (or activate the venv) for all scripts below instead of system `python3`.
+All CLI scripts **auto-use `.venv`** — you can keep running `python3 publish_70mai.py ...` as before; if `.venv` is missing, it is created on first run.
+
+Alternative launcher:
+
+```bash
+./run publish_70mai.py --source /Volumes/Untitled --estimate-only
+```
 
 ## SD Card Layout
 
@@ -478,9 +483,7 @@ python3 compose_2cam_70mai.py --from "2026-04-25 13:01:19" --to "2026-04-25 13:4
 ### Publish (trip chunks → YouTube)
 
 ```bash
-# See "Python setup" above — use .venv with Python 3.12
-source .venv/bin/activate
-pip install -r requirements.txt
+# Dependencies: scripts/setup-venv.sh (once)
 # OAuth: save Desktop client JSON to ~/.config/70mai/youtube_credentials.json
 
 # Preview plan only

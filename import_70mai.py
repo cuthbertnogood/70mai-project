@@ -1482,4 +1482,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    from project_env import ensure_venv_python
+
+    ensure_venv_python()
     raise SystemExit(main())

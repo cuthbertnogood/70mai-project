@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Run any project script with .venv Python (creates venv on first use).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+
+PY="$ROOT/.venv/bin/python"
+if [[ ! -x "$PY" ]]; then
+  exec "$ROOT/scripts/setup-venv.sh"
+fi
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: ./run <script.py> [args...]" >&2
+  echo "Example: ./run publish_70mai.py --source /Volumes/Untitled --estimate-only" >&2
+  exit 1
+fi
+
+exec "$PY" "$@"

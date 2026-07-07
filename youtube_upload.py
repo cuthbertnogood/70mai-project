@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from youtube_upload_diagnostics import DEFAULT_DIAG_LOG, UploadDiagnostics
 
-UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024  # must be multiple of 256 KiB for files > 256 KiB
+from project_env import cli_python
 HTTP_TIMEOUT_SEC = 600
 MAX_UPLOAD_RETRIES = 12
 UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
@@ -532,8 +532,11 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Done: https://youtu.be/{video_id}")
     if not args.no_diag:
         print(f"Diagnostics: {args.diag_log}", flush=True)
-        print("Analyze: python3 scripts/analyze_youtube_upload.py", flush=True)
+        print(f"Analyze: {cli_python()} scripts/analyze_youtube_upload.py", flush=True)
 
 
 if __name__ == "__main__":
+    from project_env import ensure_venv_python
+
+    ensure_venv_python()
     main()
