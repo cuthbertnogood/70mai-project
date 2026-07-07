@@ -6,15 +6,18 @@ from __future__ import annotations
 import argparse
 import json
 import socket
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
 
+from import_70mai import format_bar, format_duration, is_tty, log
 from youtube_upload_diagnostics import DEFAULT_DIAG_LOG, UploadDiagnostics
 
 from project_env import cli_python
 HTTP_TIMEOUT_SEC = 600
 MAX_UPLOAD_RETRIES = 12
+UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024
 UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 
 DEFAULT_CREDENTIALS = Path.home() / ".config/70mai/youtube_credentials.json"
@@ -24,6 +27,69 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 class YouTubeUploadError(RuntimeError):
     pass
+
+
+def format_file_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            if unit in ("B", "KB"):
+                return f"{size:.0f} {unit}"
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} GB"
+
+
+class UploadProgressReporter:
+    """Detailed upload progress: bar, MB, speed, ETA."""
+
+    def __init__(self, label: str, size: int) -> None:
+        self.label = label
+        self.size = max(size, 1)
+        self.start = time.monotonic()
+        self._last_logged_pct = -1
+
+    def update(self, pct: int, offset: int | None = None) -> None:
+        if offset is None:
+            offset = min(self.size, int(self.size * pct / 100))
+        elapsed = time.monotonic() - self.start
+        rate = offset / elapsed if elapsed > 0 else 0.0
+        remaining = self.size - offset
+        eta = remaining / rate if rate > 0 else 0.0
+        speed_mb = rate / (1024 * 1024)
+        bar = format_bar(offset / self.size)
+        line = (
+            f"Upload {self.label}: [{bar}] "
+            f"{format_file_size(offset)}/{format_file_size(self.size)} ({pct}%) "
+            f"| {speed_mb:.1f} MB/s | ETA {format_duration(eta)}"
+        )
+        if is_tty():
+            sys.stderr.write("\r\033[K" + line)
+            sys.stderr.flush()
+            return
+        pct_bucket = pct // 2 * 2
+        if pct == 100 or pct_bucket > self._last_logged_pct or self._last_logged_pct < 0:
+            log(f"  {line}")
+            self._last_logged_pct = pct_bucket
+
+    def finish(self) -> None:
+        if is_tty():
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+
+
+def _call_progress(
+    on_progress: Callable[..., None] | None,
+    pct: int,
+    offset: int,
+    size: int,
+) -> None:
+    if on_progress is None:
+        return
+    try:
+        on_progress(pct, offset, size)
+    except TypeError:
+        on_progress(pct)
 
 
 def _require_google():
@@ -299,6 +365,10 @@ def _upload_video_inner(
     if session_path is None:
         session_path = upload_session_path_for_file(video_path)
 
+    log(
+        f"Uploading: {video_path.name} ({format_file_size(size)}) — {title}"
+    )
+
     if diag:
         diag.start(
             video_path=video_path,
@@ -343,6 +413,10 @@ def _upload_video_inner(
                     )
                 if diag:
                     diag.session_resumed(offset, size)
+                log(
+                    f"  Resume from {format_file_size(offset)} "
+                    f"({int(offset * 100 / size)}%)"
+                )
 
     if upload_url is None:
         upload_url = _init_upload(session, size=size, metadata=metadata, diag=diag)
@@ -384,8 +458,7 @@ def _upload_video_inner(
                 video_id = resp.json()["id"]
                 if diag:
                     diag.success(video_id, size)
-                if on_progress:
-                    on_progress(100)
+                _call_progress(on_progress, 100, size, size)
                 return video_id
             if resp.status_code == 308:
                 server_offset = _parse_range_end(resp.headers.get("Range"))
@@ -407,8 +480,8 @@ def _upload_video_inner(
                 if diag:
                     diag.chunk_ok(offset, size, status_code=308)
                 pct = min(99, int(offset * 100 / size))
-                if on_progress and pct >= last_logged + 5:
-                    on_progress(pct)
+                if on_progress and pct >= last_logged + 2:
+                    _call_progress(on_progress, pct, offset, size)
                     last_logged = pct
                 continue
             if resp.status_code == 404:
@@ -508,13 +581,11 @@ def main(argv: list[str] | None = None) -> None:
 
     session_path = args.session or upload_session_path_for_file(args.video)
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] or None
+    file_size = args.video.stat().st_size if args.video.is_file() else 0
+    reporter = UploadProgressReporter(args.video.name, file_size)
 
-    last = [-1]
-
-    def progress(pct: int) -> None:
-        if pct >= last[0] + 5 or pct == 100:
-            print(f"upload {pct}%", flush=True)
-            last[0] = pct
+    def progress(pct: int, offset: int = 0, size: int = 0) -> None:
+        reporter.update(pct, offset or None)
 
     video_id = upload_video(
         args.video,
@@ -529,6 +600,7 @@ def main(argv: list[str] | None = None) -> None:
         diag_log=None if args.no_diag else args.diag_log,
         on_progress=progress,
     )
+    reporter.finish()
     print(f"Done: https://youtu.be/{video_id}")
     if not args.no_diag:
         print(f"Diagnostics: {args.diag_log}", flush=True)

@@ -41,7 +41,7 @@
 
 - **`plan_estimate.py`** — pre-flight: поездки, куски, `publish_plan.md`
 - **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
-- **`publish_70mai.py`** — trip chunks → compose → YouTube → delete; `--per-trip-upload`, `--resume-upload`
+- **`publish_70mai.py`** — trip chunks → compose → YouTube → delete; `--per-trip-upload`, `--upload-only`, `--resume-upload`, `--mark-uploaded`
 - **`youtube_upload.py`** — OAuth + resumable upload (64 MB chunks, `.upload.json` resume) + playlist
 - **`youtube_upload_diagnostics.py`** + **`scripts/analyze_youtube_upload.py`** — JSONL diag log + failure analysis
 - По умолчанию загрузка **private** (не public/unlisted)

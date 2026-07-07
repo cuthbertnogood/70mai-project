@@ -490,15 +490,25 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
 python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
   --title "Поездка 70mai"
 
-# Upload one trip at a time (compose → YouTube → next trip)
+# Upload already-composed trips (trip_01 was uploaded manually)
 python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
-  --trip 1 --per-trip-upload --keep --title "70mai 2026-04-25"
+  --upload-only --resume-upload \
+  --mark-uploaded 1:1:q9EMi4eP3kI \
+  --title "70mai 2026-04-25" --playlist "70mai 2026-04-25 Normal"
 
-# Resume interrupted YouTube upload (session URI saved in .session.json)
+# Full per-trip loop: compose → upload → delete next trip
+python3 publish_70mai.py --source /Volumes/Untitled --types Normal \
+  --per-trip-upload --resume-upload --title "70mai 2026-04-25"
+
+# Dry-run upload queue (no OAuth)
+python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
+  --upload-only --dry-run --mark-uploaded 1:1:q9EMi4eP3kI
+
+# Resume interrupted YouTube upload (session URI saved in .upload.json)
 python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
   --trip 1 --per-trip-upload --resume-upload --compose-only
 python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
-  --trip 1 --per-trip-upload --resume-upload --keep
+  --trip 1 --per-trip-upload --resume-upload
 ```
 
 | Flag | Default | Description |
@@ -509,14 +519,17 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 | `--chunk-mode` | `trips` | Pack by driving sessions |
 | `--compose-only` | off | Skip YouTube upload |
 | `--estimate-only` | off | Plan only, no ffmpeg |
-| `--resume` | off | Skip chunks/trips already marked uploaded in state |
+| `--resume` | off | Load state file; skip chunks already marked uploaded |
 | `--resume-upload` | off | Resume YouTube transfer from saved `.upload.json` |
+| `--upload-only` | off | Skip compose; upload existing `chunk_NN/trip_NN.mp4` (auto `--per-trip-upload`, auto `--resume-upload`) |
+| `--mark-uploaded` | — | Mark trip uploaded: `CHUNK:TRIP:VIDEO_ID` (repeatable) |
+| `--continue-on-error` | off | On upload failure, continue to next trip |
 | `--per-trip-upload` | off | Upload each trip separately (no concat) |
 | `--trip` | all | Within chunk: only trip N (1-based) |
 | `--diag-log` | `.publish_tmp/youtube_upload.diag.jsonl` | Structured upload diagnostics |
 | `--no-diag` | off | Disable diagnostic JSONL |
 | `--chunk` | all | Only chunk N (1-based) |
-| `--keep` | off | Keep MP4 after upload |
+| `--keep` | off | Keep MP4 after upload (debug only) |
 | `--credentials` | `~/.config/70mai/youtube_credentials.json` | OAuth client |
 | `--token` | `~/.config/70mai/youtube_token.json` | Saved refresh token |
 
@@ -529,6 +542,9 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 5. First upload opens a browser; token saved to `~/.config/70mai/youtube_token.json`
 
 Large uploads use the resumable protocol via `requests` (64 MB chunks, 600 s timeout). System proxy env vars are ignored to avoid VPN/proxy redirect errors.
+
+**Upload progress:** during transfer, stdout/stderr shows a bar with MB uploaded, speed, and ETA, e.g.  
+`Upload trip_02.mp4: [████░░░░] 512.00 MB/2.12 GB (24%) | 3.2 MB/s | ETA 8m 24s`
 
 **Session resume:** `video/Output/.publish_tmp/<stem>.upload.json` (e.g. `trip_01.upload.json`) — deleted on success.
 

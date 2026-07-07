@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -29,15 +31,27 @@ from project_env import cli_python
 from youtube_upload import (
     DEFAULT_CREDENTIALS,
     DEFAULT_TOKEN,
+    UploadProgressReporter,
     YouTubeUploadError,
     add_to_playlist,
+    clear_upload_session,
     ensure_playlist,
+    format_file_size,
     load_state_playlist,
     save_state_playlist,
     upload_session_path_for_file,
     upload_video,
 )
 from youtube_upload_diagnostics import DEFAULT_DIAG_LOG
+
+
+@dataclass
+class UploadSummary:
+    uploaded: int = 0
+    skipped: int = 0
+    failed: int = 0
+    freed_bytes: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 def escape_concat_path(path: Path) -> str:
@@ -114,6 +128,168 @@ def trip_uploaded(
         ):
             return bool(part.get("uploaded"))
     return False
+
+
+def get_trip_state(
+    state: dict, record_type: str, chunk_index: int, trip_index: int
+) -> dict | None:
+    for part in state.get("trip_parts", []):
+        if (
+            part.get("record_type") == record_type
+            and part.get("chunk_index") == chunk_index
+            and part.get("trip_index") == trip_index
+        ):
+            return part
+    return None
+
+
+def parse_mark_uploaded(value: str) -> tuple[int, int, str]:
+    parts = value.split(":", 2)
+    if len(parts) != 3:
+        raise ValueError(
+            f"Invalid --mark-uploaded {value!r}; expected CHUNK:TRIP:VIDEO_ID"
+        )
+    chunk_index, trip_index, video_id = int(parts[0]), int(parts[1]), parts[2].strip()
+    if not video_id:
+        raise ValueError(f"Empty video_id in --mark-uploaded {value!r}")
+    return chunk_index, trip_index, video_id
+
+
+def apply_mark_uploaded(
+    state: dict,
+    marks: list[str],
+    *,
+    record_type: str,
+) -> None:
+    for mark in marks:
+        chunk_index, trip_index, video_id = parse_mark_uploaded(mark)
+        mark_trip_state(
+            state,
+            record_type=record_type,
+            chunk_index=chunk_index,
+            trip_index=trip_index,
+            video_id=video_id,
+            uploaded=True,
+            output_path=None,
+        )
+        log(
+            f"Marked uploaded: chunk {chunk_index} trip {trip_index} "
+            f"-> https://youtu.be/{video_id}"
+        )
+
+
+def build_trip_tasks(
+    chunks: list[ChunkPlan],
+    *,
+    chunk_filter: int | None,
+    trip_filter: int | None,
+) -> list[tuple[ChunkPlan, int, object, str]]:
+    tasks: list[tuple[ChunkPlan, int, object, str]] = []
+    for chunk in chunks:
+        if chunk_filter is not None and chunk.index != chunk_filter:
+            continue
+        for trip_idx, trip in enumerate(chunk.trips, start=1):
+            if trip_filter is not None and trip_idx != trip_filter:
+                continue
+            tasks.append((chunk, trip_idx, trip, chunk.record_type))
+    return tasks
+
+
+def cleanup_uploaded_file(
+    path: Path,
+    session_path: Path,
+    *,
+    keep: bool,
+) -> int:
+    if keep or not path.is_file():
+        return 0
+    size = path.stat().st_size
+    path.unlink(missing_ok=True)
+    clear_upload_session(session_path)
+    rel = path.name
+    if path.parent.name.startswith("chunk_"):
+        rel = f"{path.parent.name}/{path.name}"
+    log(f"  Deleted: {rel} (freed {format_file_size(size)})")
+    return size
+
+
+def upload_and_cleanup(
+    path: Path,
+    title: str,
+    *,
+    privacy: str,
+    credentials: Path,
+    token: Path,
+    temp_dir: Path,
+    resume_upload: bool,
+    diag_log: Path | None,
+    keep: bool,
+    playlist_id: str | None,
+    playlist_title: str,
+    st_path: Path,
+) -> tuple[str | None, str | None, int, float]:
+    """Upload, add to playlist, delete local file. Returns (video_id, playlist_id, freed_bytes, elapsed_sec)."""
+    if not path.is_file():
+        raise YouTubeUploadError(f"Video not found: {path}")
+
+    file_size = path.stat().st_size
+    session_file = upload_session_path_for_file(path, temp_dir)
+    reporter = UploadProgressReporter(path.name, file_size)
+    started = time.monotonic()
+
+    def progress(pct: int, offset: int = 0, size: int = 0) -> None:
+        reporter.update(pct, offset or None)
+
+    log(f"  Uploading to YouTube: {title}")
+    video_id = upload_video(
+        path,
+        title=title,
+        privacy=privacy,
+        credentials_path=credentials,
+        token_path=token,
+        session_path=session_file,
+        resume=resume_upload,
+        diag_log=diag_log,
+        on_progress=progress,
+    )
+    reporter.finish()
+    elapsed = time.monotonic() - started
+
+    current_playlist = playlist_id
+    if current_playlist or playlist_title:
+        if not current_playlist:
+            current_playlist = ensure_playlist(
+                playlist_title,
+                credentials_path=credentials,
+                token_path=token,
+            )
+            save_state_playlist(st_path, current_playlist)
+            log(f"  Playlist created: {playlist_title}")
+        add_to_playlist(
+            current_playlist,
+            video_id,
+            credentials_path=credentials,
+            token_path=token,
+        )
+
+    log(
+        f"  Uploaded: https://youtu.be/{video_id} "
+        f"({format_file_size(file_size)}, {format_duration(elapsed)})"
+    )
+    freed = cleanup_uploaded_file(path, session_file, keep=keep)
+    return video_id, current_playlist, freed, elapsed
+
+
+def print_upload_summary(summary: UploadSummary) -> None:
+    log("")
+    log("=== Upload summary ===")
+    log(f"  Uploaded: {summary.uploaded}")
+    log(f"  Skipped:  {summary.skipped}")
+    log(f"  Failed:   {summary.failed}")
+    if summary.freed_bytes:
+        log(f"  Freed:    {format_file_size(summary.freed_bytes)}")
+    for err in summary.errors:
+        log(f"  Error: {err}")
 
 
 def mark_trip_state(
@@ -294,14 +470,17 @@ def publish_and_upload_trips(
     credentials: Path,
     token: Path,
     resume_upload: bool,
-    skip_uploaded: bool,
     compose_only: bool,
+    upload_only: bool,
     keep: bool,
+    continue_on_error: bool,
     playlist_id: str | None,
     playlist_title: str,
     state: dict,
     st_path: Path,
     diag_log: Path | None,
+    summary: UploadSummary,
+    queue_ctx: tuple[int, int, int, int] | None = None,
 ) -> tuple[str | None, str | None]:
     """Compose and upload each trip separately; returns (last_video_id, playlist_id)."""
     chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
@@ -313,8 +492,21 @@ def publish_and_upload_trips(
         if trip_only is not None and trip_idx != trip_only:
             continue
 
-        if skip_uploaded and trip_uploaded(state, record_type, chunk.index, trip_idx):
-            log(f"  Trip {trip.index}: skip (already uploaded per state)")
+        if queue_ctx:
+            overall_i, overall_total, chunk_trip_i, chunk_trip_total = queue_ctx
+            log(
+                f"=== Upload queue: trip {chunk_trip_i}/{chunk_trip_total} "
+                f"in chunk {chunk.index} (overall {overall_i}/{overall_total}) ==="
+            )
+
+        if trip_uploaded(state, record_type, chunk.index, trip_idx):
+            entry = get_trip_state(state, record_type, chunk.index, trip_idx)
+            vid = entry.get("video_id") if entry else None
+            if vid:
+                log(f"  Trip {trip.index}: skip (already uploaded): https://youtu.be/{vid}")
+            else:
+                log(f"  Trip {trip.index}: skip (already uploaded per state)")
+            summary.skipped += 1
             continue
 
         part_path = chunk_dir / f"trip_{trip_idx:02d}.mp4"
@@ -322,11 +514,21 @@ def publish_and_upload_trips(
             f"  Trip {trip.index}: {trip.start:%Y-%m-%d %H:%M:%S} "
             f"({format_duration(trip.duration_sec)})"
         )
+
         if dry_run:
-            log(f"  Would upload {part_path.name}")
+            if part_path.is_file():
+                log(f"  Would upload {part_path.name} ({format_file_size(part_path.stat().st_size)})")
+            else:
+                log(f"  Would upload {part_path.name} (missing — skip in dry-run)")
             continue
 
-        if not trip_part_complete(part_path, trip.duration_sec):
+        if upload_only:
+            if not part_path.is_file():
+                log(f"  Warning: missing {part_path} — skip")
+                summary.skipped += 1
+                continue
+            log(f"  Upload-only: {part_path.name} ({format_file_size(part_path.stat().st_size)})")
+        elif not trip_part_complete(part_path, trip.duration_sec):
             run_compose_2cam(
                 video_dir,
                 part_path,
@@ -360,26 +562,23 @@ def publish_and_upload_trips(
             f"{base_title} {record_type} — поездка {trip.index} "
             f"({trip.start:%m-%d %H:%M})"
         )
-        session_file = upload_session_path_for_file(part_path, temp_dir)
-        log(f"  Uploading to YouTube: {trip_title}")
-
-        def progress(pct: int) -> None:
-            if pct % 10 == 0:
-                log(f"    upload {pct}%")
-
         try:
-            video_id = upload_video(
+            video_id, current_playlist, freed, _elapsed = upload_and_cleanup(
                 part_path,
-                title=trip_title,
+                trip_title,
                 privacy=privacy,
-                credentials_path=credentials,
-                token_path=token,
-                session_path=session_file,
-                resume=resume_upload,
+                credentials=credentials,
+                token=token,
+                temp_dir=temp_dir,
+                resume_upload=resume_upload,
                 diag_log=diag_log,
-                on_progress=progress,
+                keep=keep,
+                playlist_id=current_playlist,
+                playlist_title=playlist_title,
+                st_path=st_path,
             )
         except YouTubeUploadError as exc:
+            msg = f"chunk {chunk.index} trip {trip_idx}: {exc}"
             log(f"  Upload failed: {exc}")
             if diag_log:
                 log(f"  Diagnostics: {diag_log}")
@@ -394,27 +593,13 @@ def publish_and_upload_trips(
                 output_path=part_path,
             )
             save_state(st_path, state)
+            summary.failed += 1
+            summary.errors.append(msg)
+            if continue_on_error:
+                continue
             raise SystemExit(1) from exc
 
         last_video_id = video_id
-        log(f"  Uploaded: https://youtu.be/{video_id}")
-
-        if current_playlist or playlist_title:
-            if not current_playlist:
-                current_playlist = ensure_playlist(
-                    playlist_title,
-                    credentials_path=credentials,
-                    token_path=token,
-                )
-                save_state_playlist(st_path, current_playlist)
-                log(f"  Playlist created: {playlist_title}")
-            add_to_playlist(
-                current_playlist,
-                video_id,
-                credentials_path=credentials,
-                token_path=token,
-            )
-
         mark_trip_state(
             state,
             record_type=record_type,
@@ -425,10 +610,8 @@ def publish_and_upload_trips(
             output_path=part_path if keep else None,
         )
         save_state(st_path, state)
-
-        if not keep:
-            part_path.unlink(missing_ok=True)
-            log("  Deleted local trip after upload")
+        summary.uploaded += 1
+        summary.freed_bytes += freed
 
     return last_video_id, current_playlist
 
@@ -509,6 +692,22 @@ def main() -> None:
         help="Resume YouTube upload from saved session URI (.upload.json)",
     )
     parser.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="Skip compose; upload existing MP4 from temp-dir/chunk_NN/trip_NN.mp4",
+    )
+    parser.add_argument(
+        "--mark-uploaded",
+        action="append",
+        metavar="CHUNK:TRIP:VIDEO_ID",
+        help="Mark trip as already uploaded in state (repeatable)",
+    )
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="On upload failure, log and continue to next trip",
+    )
+    parser.add_argument(
         "--diag-log",
         type=Path,
         default=DEFAULT_DIAG_LOG,
@@ -525,6 +724,14 @@ def main() -> None:
 
     args.telemetry = telemetry_requested(args.telemetry)
 
+    if args.upload_only:
+        args.per_trip_upload = True
+        if not args.resume_upload:
+            args.resume_upload = True
+
+    if args.upload_only and args.compose_only:
+        parser.error("--upload-only and --compose-only are mutually exclusive")
+
     if not args.source.is_dir():
         parser.error(f"Source not found: {args.source}")
 
@@ -532,7 +739,7 @@ def main() -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffprobe:
         parser.error("ffprobe not found")
-    if not ffmpeg and not args.dry_run and not args.estimate_only:
+    if not ffmpeg and not args.dry_run and not args.estimate_only and not args.upload_only:
         parser.error("ffmpeg not found")
 
     trips, chunks, dur_by_type = run_estimate(args, ffprobe)
@@ -615,6 +822,74 @@ def main() -> None:
 
     playlist_id = load_state_playlist(st_path) if args.resume else None
     diag_log = None if args.no_diag else args.diag_log
+    summary = UploadSummary()
+
+    record_type_for_marks = args.types[0] if len(args.types) == 1 else None
+    if args.mark_uploaded:
+        if record_type_for_marks is None:
+            parser.error("--mark-uploaded requires a single --types value")
+        apply_mark_uploaded(state, args.mark_uploaded, record_type=record_type_for_marks)
+        save_state(st_path, state)
+
+    if args.per_trip_upload:
+        trip_tasks = build_trip_tasks(
+            chunks, chunk_filter=args.chunk, trip_filter=args.trip
+        )
+        if not trip_tasks:
+            log("No trips to upload.")
+            raise SystemExit(1)
+
+        last_chunk_key: tuple[int, str] | None = None
+        for overall_i, (chunk, trip_idx, _trip, record_type) in enumerate(
+            trip_tasks, start=1
+        ):
+            chunk_key = (chunk.index, record_type)
+            if chunk_key != last_chunk_key:
+                total = total_by_type[record_type]
+                log("")
+                log(
+                    f"=== Chunk {chunk.index}/{total} [{record_type}] "
+                    f"{format_duration(chunk.duration_sec)} | {chunk.trip_labels} ==="
+                )
+                last_chunk_key = chunk_key
+
+            pl_title = args.playlist or f"{base_title} {record_type}"
+            _, playlist_id = publish_and_upload_trips(
+                chunk,
+                video_dir=args.video_dir,
+                temp_dir=args.temp_dir,
+                ffmpeg=ffmpeg or "ffmpeg",
+                profile_args=profile_args,
+                audio_source=args.audio,
+                telemetry=args.telemetry,
+                gps_dir=args.gps_dir or args.source,
+                telemetry_map_size=args.telemetry_map_size,
+                dry_run=args.dry_run,
+                trip_only=trip_idx,
+                base_title=base_title,
+                record_type=record_type,
+                privacy=args.privacy,
+                credentials=args.credentials,
+                token=args.token,
+                resume_upload=args.resume_upload,
+                compose_only=args.compose_only,
+                upload_only=args.upload_only,
+                keep=args.keep,
+                continue_on_error=args.continue_on_error,
+                playlist_id=playlist_id,
+                playlist_title=pl_title,
+                state=state,
+                st_path=st_path,
+                diag_log=diag_log,
+                summary=summary,
+                queue_ctx=(overall_i, len(trip_tasks), trip_idx, len(chunk.trips)),
+            )
+
+        print_upload_summary(summary)
+        if summary.failed:
+            raise SystemExit(1)
+        log("\nDone.")
+        return
 
     for chunk in chunks:
         record_type = chunk.record_type
@@ -632,36 +907,6 @@ def main() -> None:
             continue
 
         pl_title = args.playlist or f"{base_title} {record_type}"
-
-        if args.per_trip_upload:
-            _, playlist_id = publish_and_upload_trips(
-                chunk,
-                video_dir=args.video_dir,
-                temp_dir=args.temp_dir,
-                ffmpeg=ffmpeg or "ffmpeg",
-                profile_args=profile_args,
-                audio_source=args.audio,
-                telemetry=args.telemetry,
-                gps_dir=args.gps_dir or args.source,
-                telemetry_map_size=args.telemetry_map_size,
-                dry_run=args.dry_run,
-                trip_only=args.trip,
-                base_title=base_title,
-                record_type=record_type,
-                privacy=args.privacy,
-                credentials=args.credentials,
-                token=args.token,
-                resume_upload=args.resume_upload,
-                skip_uploaded=args.resume,
-                compose_only=args.compose_only,
-                keep=args.keep,
-                playlist_id=playlist_id,
-                playlist_title=pl_title,
-                state=state,
-                st_path=st_path,
-                diag_log=diag_log,
-            )
-            continue
 
         output = publish_chunk(
             chunk,
@@ -686,43 +931,23 @@ def main() -> None:
         if not args.compose_only:
             part_title = f"{base_title} {record_type} — часть {chunk.index}/{total}"
             try:
-                log(f"  Uploading to YouTube: {part_title}")
-
-                def progress(pct: int) -> None:
-                    if pct % 10 == 0:
-                        log(f"    upload {pct}%")
-
-                session_file = upload_session_path_for_file(output, args.temp_dir)
-                video_id = upload_video(
+                video_id, playlist_id, freed, _elapsed = upload_and_cleanup(
                     output,
-                    title=part_title,
+                    part_title,
                     privacy=args.privacy,
-                    credentials_path=args.credentials,
-                    token_path=args.token,
-                    session_path=session_file,
-                    resume=args.resume_upload,
+                    credentials=args.credentials,
+                    token=args.token,
+                    temp_dir=args.temp_dir,
+                    resume_upload=args.resume_upload,
                     diag_log=diag_log,
-                    on_progress=progress,
+                    keep=args.keep,
+                    playlist_id=playlist_id,
+                    playlist_title=pl_title,
+                    st_path=st_path,
                 )
                 uploaded = True
-                log(f"  Uploaded: https://youtu.be/{video_id}")
-
-                if args.playlist or args.title:
-                    if not playlist_id:
-                        pl_title = args.playlist or f"{base_title} {record_type}"
-                        playlist_id = ensure_playlist(
-                            pl_title,
-                            credentials_path=args.credentials,
-                            token_path=args.token,
-                        )
-                        save_state_playlist(st_path, playlist_id)
-                        log(f"  Playlist created: {pl_title}")
-                    add_to_playlist(
-                        playlist_id,
-                        video_id,
-                        credentials_path=args.credentials,
-                        token_path=args.token,
-                    )
+                summary.uploaded += 1
+                summary.freed_bytes += freed
             except YouTubeUploadError as exc:
                 log(f"  Upload failed: {exc}")
                 if diag_log:
@@ -737,6 +962,10 @@ def main() -> None:
                     output_path=output,
                 )
                 save_state(st_path, state)
+                summary.failed += 1
+                summary.errors.append(f"chunk {chunk.index}: {exc}")
+                if args.continue_on_error:
+                    continue
                 raise SystemExit(1) from exc
         else:
             uploaded = False
@@ -752,12 +981,12 @@ def main() -> None:
         )
         save_state(st_path, state)
 
-        if uploaded and not args.keep:
-            output.unlink(missing_ok=True)
-            log("  Deleted local chunk after upload")
-        elif args.compose_only and not args.keep:
+        if args.compose_only and not args.keep:
             log(f"  Kept: {output}")
 
+    print_upload_summary(summary)
+    if summary.failed:
+        raise SystemExit(1)
     log("\nDone.")
 
 
