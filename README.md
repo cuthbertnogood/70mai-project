@@ -582,6 +582,26 @@ print('https://youtu.be/' + vid)
 
 State: `video/Output/.publish_tmp/publish_*.state.json`. Temp parts under `.publish_tmp/`.
 
+### Publish pipeline (auto-continue after chunk 1)
+
+When chunk 1 ready MP4s are uploading, chain the remaining SD-card chunks (compose → upload → delete):
+
+```bash
+# Wait for current chunk-1 upload, then run chunks 2 → 5 → 4 → 3
+WAIT_PID=23448 ./scripts/publish_pipeline.sh
+
+# Or wait for any chunk-1 upload-only process:
+./scripts/publish_pipeline.sh
+```
+
+| Log | Contents |
+|-----|----------|
+| `publish_pipeline.log` | Orchestrator: wait + chunk handoff |
+| `chunk01_upload.log` | Chunk 1 upload-only |
+| `chunk02_publish.log` … `chunk05_publish.log` | Per-chunk compose + upload |
+
+Order: **2, 5, 4, 3** — short chunks first; chunk 3 (trip 8, ~7.7 GB) last. Uses `--resume`, `--continue-on-error`. See [`GOALS.md`](GOALS.md) for full trip table.
+
 Long compose runs — background monitor (restarts if stalled 15 min or process dies):
 
 ```bash

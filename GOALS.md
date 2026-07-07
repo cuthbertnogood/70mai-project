@@ -48,6 +48,26 @@
 
 Target chunk: **2 ч по поездкам** (короткие поездки склеиваются; длинная ≥2 ч — solo).
 
+### План публикации Normal (Apr 2026)
+
+| Chunk | Поездки | ~MB | Статус |
+|-------|---------|-----|--------|
+| 1 | 1–5 | 6074 | upload готовых MP4 (trip 1–2 ✅, 3–5 в процессе) |
+| 2 | 6–7 | 403 | compose → upload → delete |
+| 5 | 11 | 26 | compose → upload → delete (быстрый хвост) |
+| 4 | 9–10 | 6008 | compose → upload → delete |
+| 3 | 8 | 7729 | compose → upload → delete (самый долгий) |
+
+**Автопродолжение:** `scripts/publish_pipeline.sh` ждёт окончания chunk 1, затем запускает chunks **2 → 5 → 4 → 3** (короткие раньше, trip 8 последним). Import уже в `video/Output/Normal/`.
+
+```bash
+# После старта chunk 1 upload:
+WAIT_PID=<pid> ./scripts/publish_pipeline.sh
+# Лог оркестратора: video/Output/.publish_tmp/publish_pipeline.log
+```
+
+YouTube quota ~6 видео/день — при 429/errors продолжить на следующий день с `--resume`.
+
 ## Что не входит в текущие цели (пока)
 
 - Веб-интерфейс.
