@@ -193,6 +193,7 @@ def run_compose_2cam(
     telemetry: bool = False,
     gps_dir: Path | None = None,
     telemetry_map_size: int = 280,
+    gps_offset_sec: float | None = None,
     dry_run: bool = False,
 ) -> None:
     wall_end = wall_start + timedelta(seconds=duration)
@@ -263,6 +264,7 @@ def run_compose_2cam(
                 fps=fps,
                 output=telemetry_path,
                 map_size=telemetry_map_size,
+                gps_offset_sec=gps_offset_sec,
             ):
                 telemetry = False
                 telemetry_path = None
@@ -413,6 +415,13 @@ def main() -> None:
         metavar="PX",
         help="Mini-map width in pixels (default: 280)",
     )
+    parser.add_argument(
+        "--gps-offset",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="GPS clock offset in seconds (default: auto from clip names)",
+    )
     args = parser.parse_args()
 
     args.use_vt_scale = False
@@ -455,6 +464,7 @@ def main() -> None:
             telemetry=args.telemetry,
             gps_dir=args.gps_dir,
             telemetry_map_size=args.telemetry_map_size,
+            gps_offset_sec=args.gps_offset,
             dry_run=args.dry_run,
         )
     except subprocess.CalledProcessError as exc:

@@ -150,8 +150,13 @@ def estimate_gps_offset(
     wall_end: datetime,
     *,
     sample_limit: int = 2000,
+    near_clip_sec: float = 90.0,
 ) -> float:
-    """Estimate seconds to add to GPS unix time to match video wall-clock."""
+    """Estimate seconds added to GPS unix time to match video wall-clock.
+
+    Uses GPS records logged near the start of each referenced clip — robust
+    against mid-clip log lines where ``clip_start - gps_ts`` would be negative.
+    """
     offsets: list[float] = []
     search_start = wall_start.timestamp() - 6 * 3600
     search_end = wall_end.timestamp() + 6 * 3600
@@ -176,7 +181,8 @@ def estimate_gps_offset(
                 clip_start = clip_time_from_video_name(parts[9])
                 if clip_start is None:
                     continue
-                # GPS log time vs clip start — median skew between GPS clock and system clock.
+                if abs(ts - clip_start.timestamp()) > near_clip_sec:
+                    continue
                 offsets.append(clip_start.timestamp() - ts)
                 if len(offsets) >= sample_limit:
                     break
