@@ -28,7 +28,7 @@ TILE_SIZE = 256
 USER_AGENT = "70mai_project/1.0 (local dashcam telemetry; contact: local)"
 OSM_ATTRIBUTION = "© OpenStreetMap"
 
-MAP_OPACITY = 0.50
+MAP_OPACITY = 0.90
 HUD_BG = (12, 16, 24, 150)
 ACCENT = (0, 210, 255)
 ACCENT_DIM = (0, 140, 180)

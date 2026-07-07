@@ -267,23 +267,13 @@ def _track_speed_kmh(points: list[GpsPoint], idx: int) -> float:
     return dist / dt * 3.6
 
 
-def _display_speed_kmh(dashboard_kmh: float, track_kmh: float) -> float:
-    """Blend dashboard speed (field 8) with GPS track speed near standstill."""
-    if track_kmh < 1.0 and dashboard_kmh > 8.0:
-        return max(track_kmh, dashboard_kmh * 0.35)
-    if track_kmh < 3.0 and dashboard_kmh > 8.0:
-        return dashboard_kmh
-    return dashboard_kmh
-
-
 def _fill_headings(points: list[GpsPoint]) -> list[GpsPoint]:
     if not points:
         return points
     filled: list[GpsPoint] = []
     prev_heading: float | None = None
     for idx, point in enumerate(points):
-        track_kmh = _track_speed_kmh(points, idx)
-        speed = _display_speed_kmh(point.speed_kmh, track_kmh)
+        speed = point.speed_kmh
         heading: float | None = None
         if idx + 1 < len(points):
             nxt = points[idx + 1]
