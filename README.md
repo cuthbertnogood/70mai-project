@@ -705,14 +705,26 @@ MONITOR_CHUNK=1 MONITOR_STALL_SEC=900 ./scripts/monitor_compose.sh
 # log: video/Output/.publish_tmp/monitor_chunk1.log
 ```
 
-Optional crude upload watchdog (restart on any exit — inspect `publish_all.log` for root cause):
+**Upload watchdog:** `scripts/watch_publish_all_70mai.sh` restarts autopilot after a crash; exits when autopilot finishes cleanly (default). Clears stale lock files if the previous run was killed.
 
 ```bash
-while true; do
-  ./scripts/publish_all_70mai.sh --skip-import || true
-  sleep 60
-done >> video/Output/.publish_tmp/publish_all.log 2>&1
+# Long upload session — restart on crash, stop when all trips uploaded
+./scripts/watch_publish_all_70mai.sh --skip-import
+
+# Wait for SD, keep retrying on failure
+./scripts/watch_publish_all_70mai.sh --wait
+
+# Single wrapped run (no restart loop)
+WATCH_ONCE=1 ./scripts/watch_publish_all_70mai.sh --skip-import
 ```
+
+| Env | Default | Description |
+|-----|---------|-------------|
+| `WATCH_RESTART_SEC` | `60` | Sleep before restart after failure |
+| `WATCH_STOP_ON_SUCCESS` | `1` | Exit watchdog when autopilot returns 0 |
+| `WATCH_ONCE` | `0` | One autopilot run, then exit |
+
+Watchdog log: `video/Output/.publish_tmp/publish_all_watchdog.log`. Do not run two watchdogs at once (separate lock file).
 
 ## Notes
 

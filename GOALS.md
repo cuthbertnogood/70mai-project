@@ -82,7 +82,7 @@ YouTube quota ~6 видео/день — при 429/errors продолжить 
 - При повторном запуске или на **другом Mac** — продолжает с места остановки (`--resume` автоматически)
 - Локально — только кэш state и временные MP4 (удаляются после upload)
 - Лог: `video/Output/.publish_tmp/publish_all.log` (`tail -f …`)
-- **Resume встроен** (state + `sessions/*.upload.json` на SD); **автоперезапуск при падении upload — нет** — после kill/crash: `./scripts/publish_all_70mai.sh --skip-import`
+- **Resume встроен** (state + `sessions/*.upload.json` на SD); **автоперезапуск при падении upload — нет** — после kill/crash: `./scripts/publish_all_70mai.sh --skip-import` или **`./scripts/watch_publish_all_70mai.sh --skip-import`** (watchdog с restart)
 - `monitor_compose.sh` — отдельный watchdog только для compose (ffmpeg), не для upload и не внутри autopilot
 
 ## Что не входит в текущие цели (пока)
