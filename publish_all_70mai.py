@@ -25,10 +25,33 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from import_70mai import log
+from import_70mai import log as _console_log
 from plan_estimate import DEFAULT_SESSION_GAP, YOUTUBE_DAILY_UPLOADS, build_plan
 from publish_70mai import trip_uploaded
 from publish_state import AuthStore, StateStore
+
+_log_sink = None
+
+
+def log(msg: str) -> None:
+    """Print to terminal and mirror to publish_all.log when tee is active."""
+    _console_log(msg)
+    if _log_sink is not None:
+        _log_sink.write(msg + "\n")
+        _log_sink.flush()
+
+
+def setup_log_tee(path: Path) -> None:
+    global _log_sink
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _log_sink = path.open("a", encoding="utf-8")
+
+
+def close_log_tee() -> None:
+    global _log_sink
+    if _log_sink is not None:
+        _log_sink.close()
+        _log_sink = None
 
 DEFAULT_SOURCE = Path("/Volumes/Untitled")
 DEFAULT_TYPES = ["Normal", "Event"]
@@ -231,8 +254,14 @@ def run_step(
     if dry_run:
         log("(dry-run — skipped)")
         return 0
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     with log_path.open("a", encoding="utf-8") as handle:
-        proc = subprocess.run(cmd, stdout=handle, stderr=subprocess.STDOUT)
+        proc = subprocess.run(
+            cmd,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
     return proc.returncode
 
 
@@ -678,6 +707,7 @@ def main() -> int:
         return failed
 
     acquire_lock(force=args.force_restart)
+    setup_log_tee(args.log)
     try:
         if args.loop:
             while True:
@@ -688,6 +718,7 @@ def main() -> int:
                 time.sleep(SD_POLL_SEC)
         return run_once()
     finally:
+        close_log_tee()
         release_lock()
 
 

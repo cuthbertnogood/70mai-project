@@ -326,7 +326,8 @@ When output is piped to a log file (`tee`, autopilot), bars are printed as perio
        → NO_20260426-153356_154256_F.mp4
        clips: NO20260426-153356F.MP4 … NO20260426-154256F.MP4
        ffmpeg concat -c copy …
-       ✓ 2325 MB in 1m 59s
+       … merging NO_….mp4 (1m 30s)   ← heartbeat every 30s while ffmpeg runs
+       ✓ 2325 MB in 4m 59s
 Merge [██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 18/104 (17.3%) | new 3 skip 14 fail 0 | 2m 41s elapsed, ETA 12m 52s
 ```
 
@@ -730,7 +731,7 @@ Fastest configuration for slow uplinks:
 ./scripts/publish_all_70mai.sh --wait --profile hevc --prune-merged after-compose
 ```
 
-Master log: `video/Output/.publish_tmp/publish_all.log`. Lock file (`.publish_all.lock`) prevents duplicate autopilot runs.
+Master log: `video/Output/.publish_tmp/publish_all.log`. Autopilot mirrors **all** its own messages (plan, step headers, done summary) into this file, not only subprocess output. Import merge logs a **heartbeat every 30s** while ffmpeg concat runs (`… merging FILE (elapsed)`). Lock file (`.publish_all.lock`) prevents duplicate autopilot runs.
 
 **Watch progress:**
 

@@ -50,6 +50,7 @@ MERGE_RETRY_DELAY_SEC = 3.0
 MIN_MERGE_BYTES = 10_000
 MERGE_DURATION_TOLERANCE = 0.85  # merged file must be >= 85% of source clips sum
 MERGE_WORKERS = 2  # Front + Back merged in parallel (I/O-bound concat)
+MERGE_HEARTBEAT_SEC = 30.0  # log while ffmpeg concat is silent
 PREFETCH_BLOCK = 4 * 1024 * 1024  # sequential read block for page-cache warmup
 
 
@@ -66,6 +67,31 @@ def format_duration(seconds: float) -> str:
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def run_quiet_subprocess(
+    cmd: list[str],
+    *,
+    heartbeat: str | None = None,
+    heartbeat_sec: float = MERGE_HEARTBEAT_SEC,
+) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess with captured output; optional periodic heartbeat logs."""
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    start = time.monotonic()
+    next_beat = start + heartbeat_sec if heartbeat else float("inf")
+    while proc.poll() is None:
+        now = time.monotonic()
+        if heartbeat and now >= next_beat:
+            log(f"       … {heartbeat} ({format_duration(now - start)})")
+            next_beat = now + heartbeat_sec
+        time.sleep(1)
+    stdout, stderr = proc.communicate()
+    return subprocess.CompletedProcess(cmd, proc.returncode or 0, stdout, stderr)
 
 
 def format_bar(ratio: float, width: int = BAR_WIDTH) -> str:
@@ -1241,7 +1267,7 @@ def merge_clips(
                 )
                 time.sleep(MERGE_RETRY_DELAY_SEC)
 
-            result = subprocess.run(
+            result = run_quiet_subprocess(
                 [
                     ffmpeg,
                     "-hide_banner",
@@ -1263,9 +1289,7 @@ def merge_clips(
                     "copy",
                     str(output_path),
                 ],
-                capture_output=True,
-                text=True,
-                check=False,
+                heartbeat=f"merging {output_path.name}",
             )
             if result.returncode != 0:
                 last_error = _ffmpeg_merge_error(result)
