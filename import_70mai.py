@@ -1529,9 +1529,19 @@ Export each event as a separate clip (no merge):
 """
 
 
-def parse_types_and_cameras(types: str, cameras: str) -> tuple[list[str], list[str]]:
-    record_types = [t.strip() for t in types.split(",") if t.strip()]
-    camera_list = [c.strip() for c in cameras.split(",") if c.strip()]
+def _split_csv_or_list(value: str | list[str]) -> list[str]:
+    items = value if isinstance(value, list) else [value]
+    out: list[str] = []
+    for item in items:
+        out.extend(part.strip() for part in item.split(",") if part.strip())
+    return out
+
+
+def parse_types_and_cameras(
+    types: str | list[str], cameras: str | list[str]
+) -> tuple[list[str], list[str]]:
+    record_types = _split_csv_or_list(types)
+    camera_list = _split_csv_or_list(cameras)
     invalid_types = set(record_types) - set(RECORD_TYPES)
     invalid_cameras = set(camera_list) - set(CAMERAS)
     if invalid_types:
@@ -1573,13 +1583,17 @@ def main() -> int:
     )
     parser.add_argument(
         "--types",
-        default="Normal,Event,Parking",
-        help="Comma-separated record types to process",
+        nargs="+",
+        default=["Normal", "Event", "Parking"],
+        metavar="TYPE",
+        help="Record types: Normal Event or Normal,Event (default: all three)",
     )
     parser.add_argument(
         "--cameras",
-        default="Front,Back",
-        help="Comma-separated cameras to process",
+        nargs="+",
+        default=["Front", "Back"],
+        metavar="CAMERA",
+        help="Cameras: Front Back or Front,Back (default: both)",
     )
     parser.add_argument(
         "--dry-run",

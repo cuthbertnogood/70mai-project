@@ -520,7 +520,7 @@ def main() -> int:
                 "--source",
                 str(source),
                 "--types",
-                *args.types,
+                ",".join(args.types),
                 "--output",
                 str(args.video_dir),
                 "--gap-seconds",
