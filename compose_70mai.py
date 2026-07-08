@@ -37,30 +37,43 @@ BAR_WIDTH = 36
 FFMPEG_TIME_RE = re.compile(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})")
 FFMPEG_SPEED_RE = re.compile(r"speed=\s*([\d.]+)x")
 
-PROFILES: dict[str, dict[str, int | bool]] = {
+PROFILES: dict[str, dict[str, int | bool | str]] = {
     "balanced": {
         "hw": True,
         "hw_quality": 65,
         "width": 1206,
         "fps": 25,
-        "hw_decode": False,
+        "hw_decode": True,
         "use_vt_scale": False,
+        "codec": "h264",
     },
     "draft": {
         "hw": True,
         "hw_quality": 50,
         "width": 960,
         "fps": 20,
-        "hw_decode": False,
+        "hw_decode": True,
         "use_vt_scale": False,
+        "codec": "h264",
     },
     "quality": {
         "hw": True,
         "hw_quality": 75,
         "width": 1206,
         "fps": 25,
-        "hw_decode": False,
+        "hw_decode": True,
         "use_vt_scale": False,
+        "codec": "h264",
+    },
+    # HEVC ~3.5 Mbps visually matches H.264 6.5 Mbps → ~1.9x smaller upload.
+    "hevc": {
+        "hw": True,
+        "hw_quality": 35,
+        "width": 1206,
+        "fps": 25,
+        "hw_decode": True,
+        "use_vt_scale": False,
+        "codec": "hevc",
     },
 }
 
@@ -308,7 +321,7 @@ def resolve_moment(clips: list[MergedClip], moment: datetime) -> datetime:
     raise ValueError(f"No merged clip covers {moment:%Y-%m-%d %H:%M:%S}")
 
 
-def probe_duration(path: Path) -> float:
+def _probe_duration_uncached(path: Path) -> float:
     result = subprocess.run(
         [
             "ffprobe",
@@ -325,6 +338,12 @@ def probe_duration(path: Path) -> float:
         check=True,
     )
     return float(result.stdout.strip())
+
+
+def probe_duration(path: Path) -> float:
+    from probe_cache import cached_probe_duration
+
+    return cached_probe_duration(path, _probe_duration_uncached)
 
 
 @dataclass(frozen=True)
@@ -722,15 +741,54 @@ def build_filter(
     return ";".join(parts)
 
 
-def append_hwaccel_args(cmd: list[str]) -> None:
-    cmd.extend(
-        [
-            "-hwaccel",
-            "videotoolbox",
-            "-hwaccel_output_format",
-            "videotoolbox_vld",
-        ]
-    )
+_HEVC_VT_AVAILABLE: bool | None = None
+
+
+def hevc_encoder_available() -> bool:
+    """Probe hevc_videotoolbox with a tiny encode (cached per process)."""
+    global _HEVC_VT_AVAILABLE
+    if _HEVC_VT_AVAILABLE is None:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=320x240:rate=25:duration=0.2",
+                "-c:v",
+                "hevc_videotoolbox",
+                "-b:v",
+                "1000k",
+                "-allow_sw",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+        )
+        _HEVC_VT_AVAILABLE = result.returncode == 0
+    return _HEVC_VT_AVAILABLE
+
+
+def resolve_codec(codec: str, hw_quality: int, *, hw: bool) -> tuple[str, int]:
+    """Fall back to h264 (at full bitrate) when hevc_videotoolbox is unavailable."""
+    if not hw or codec != "hevc":
+        return codec, hw_quality
+    if hevc_encoder_available():
+        return codec, hw_quality
+    log("HEVC encoder unavailable on this Mac — falling back to h264_videotoolbox")
+    return "h264", max(hw_quality, 65)
+
+
+def append_hwaccel_args(cmd: list[str], *, keep_hw_frames: bool = True) -> None:
+    cmd.extend(["-hwaccel", "videotoolbox"])
+    if keep_hw_frames:
+        # Frames stay in GPU memory — only usable with scale_vt.
+        cmd.extend(["-hwaccel_output_format", "videotoolbox_vld"])
 
 
 def append_video_encode_args(
@@ -741,14 +799,16 @@ def append_video_encode_args(
     preset: str,
     hw_quality: int,
     fps: int,
+    codec: str = "h264",
 ) -> None:
     cmd.extend(["-r", str(fps)])
     if hw:
         bitrate_k = max(hw_quality, 1) * 100
+        encoder = "hevc_videotoolbox" if codec == "hevc" else "h264_videotoolbox"
         cmd.extend(
             [
                 "-c:v",
-                "h264_videotoolbox",
+                encoder,
                 "-b:v",
                 f"{bitrate_k}k",
                 "-maxrate",
@@ -757,10 +817,15 @@ def append_video_encode_args(
                 f"{bitrate_k * 2}k",
                 "-allow_sw",
                 "1",
+                "-prio_speed",
+                "1",
                 "-pix_fmt",
                 "yuv420p",
             ]
         )
+        if codec == "hevc":
+            # hvc1 tag required for QuickTime/YouTube compatibility.
+            cmd.extend(["-tag:v", "hvc1"])
     else:
         cmd.extend(
             [
@@ -791,22 +856,23 @@ def build_compose_cmd(
     hw_quality: int,
     hw_decode: bool,
     use_vt_scale: bool,
+    codec: str = "h264",
     audio_mode: str = "screen",
     audio_offset_front: float = 0.0,
 ) -> list[str]:
     cmd: list[str] = ["ffmpeg", "-y"]
 
     if hw_decode:
-        append_hwaccel_args(cmd)
+        append_hwaccel_args(cmd, keep_hw_frames=use_vt_scale)
     cmd.extend(["-ss", str(from_offset), "-t", str(duration), "-i", str(screen)])
 
     for seg in front_segments:
         if hw_decode:
-            append_hwaccel_args(cmd)
+            append_hwaccel_args(cmd, keep_hw_frames=use_vt_scale)
         cmd.extend(["-ss", f"{seg.ss:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(seg.path)])
     for seg in back_segments:
         if hw_decode:
-            append_hwaccel_args(cmd)
+            append_hwaccel_args(cmd, keep_hw_frames=use_vt_scale)
         cmd.extend(["-ss", f"{seg.ss:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(seg.path)])
 
     filter_complex = build_filter(
@@ -838,6 +904,7 @@ def build_compose_cmd(
         preset=preset,
         hw_quality=hw_quality,
         fps=fps,
+        codec=codec,
     )
     cmd.append(str(output))
     return cmd
@@ -870,11 +937,13 @@ def run_compose(
     hw_quality: int,
     hw_decode: bool,
     use_vt_scale: bool,
+    codec: str = "h264",
     audio: str,
     audio_offset: float | None,
     no_audio_analyze: bool,
     dry_run: bool,
 ) -> None:
+    codec, hw_quality = resolve_codec(codec, hw_quality, hw=hw)
     screen_start = parse_screen_start(screen)
     wall_start = screen_start + timedelta(seconds=from_offset)
     wall_end = wall_start + timedelta(seconds=duration)
@@ -899,7 +968,7 @@ def run_compose(
     log(f"Front offset:  {sync_offset_front:+g} sec")
     log(f"Back offset:   {sync_offset_back:+g} sec")
     encoder = (
-        f"h264_videotoolbox ({hw_quality * 100}k)"
+        f"{'hevc' if codec == 'hevc' else 'h264'}_videotoolbox ({hw_quality * 100}k)"
         if hw
         else f"libx264 (crf {crf}, {preset})"
     )
@@ -933,14 +1002,16 @@ def run_compose(
         fps=fps,
         hw=hw,
         hw_quality=hw_quality,
+        codec=codec,
     )
 
     if hw and hw_decode:
-        attempts: list[tuple[bool, bool, str]] = [
-            (False, False, "hw encode only"),
-            (True, False, "hw decode + CPU scale"),
-            (True, True, "full VT (hw decode + scale_vt)"),
-        ]
+        # Fastest pipeline first, degrade gracefully on failure.
+        attempts: list[tuple[bool, bool, str]] = []
+        if use_vt_scale:
+            attempts.append((True, True, "full VT (hw decode + scale_vt)"))
+        attempts.append((True, False, "hw decode + CPU scale"))
+        attempts.append((False, False, "hw encode only"))
     elif hw:
         attempts = [(False, False, "hw encode only")]
     else:
@@ -972,7 +1043,7 @@ def run_compose(
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
             run_ffmpeg_with_progress(cmd, duration_sec=duration)
-            if label != describe_pipeline(hw=hw, hw_decode=hw_decode, use_vt_scale=use_vt_scale):
+            if label != attempts[0][2]:
                 log(f"\nNote: fell back to {label}")
             log(f"\nDone: {output}")
             return
@@ -980,7 +1051,7 @@ def run_compose(
             last_error = exc
             if output.is_file():
                 output.unlink()
-            if attempt_hw_decode or attempt_vt_scale:
+            if label != attempts[-1][2]:
                 log(f"\n{label} failed (exit {exc.returncode}), trying fallback...")
             else:
                 raise
@@ -999,6 +1070,7 @@ def apply_profile(args: argparse.Namespace) -> None:
     args.fps = int(profile["fps"])
     args.hw_decode = bool(profile["hw_decode"])
     args.use_vt_scale = bool(profile["use_vt_scale"])
+    args.codec = str(profile.get("codec", "h264"))
 
 
 def main() -> None:
@@ -1080,6 +1152,12 @@ def main() -> None:
         help="Use CPU scale filter instead of scale_vt (when hw decode is enabled)",
     )
     parser.add_argument(
+        "--codec",
+        choices=("h264", "hevc"),
+        default=None,
+        help="HW encoder codec (default: from profile; hevc ≈ half the bitrate)",
+    )
+    parser.add_argument(
         "--audio",
         choices=("auto", "screen", "front", "mix"),
         default="auto",
@@ -1102,6 +1180,7 @@ def main() -> None:
 
     args.use_vt_scale = False
     hw_decode_explicit = args.hw_decode
+    codec_explicit = args.codec
     apply_profile(args)
 
     if hw_decode_explicit:
@@ -1109,6 +1188,8 @@ def main() -> None:
         args.use_vt_scale = not args.no_vt_scale
     elif args.no_vt_scale:
         args.use_vt_scale = False
+    if codec_explicit:
+        args.codec = codec_explicit
 
     if not args.screen.is_file():
         parser.error(f"Screen recording not found: {args.screen}")
@@ -1141,6 +1222,7 @@ def main() -> None:
             hw_quality=args.hw_quality,
             hw_decode=args.hw_decode,
             use_vt_scale=args.use_vt_scale,
+            codec=args.codec,
             audio=args.audio,
             audio_offset=args.audio_offset,
             no_audio_analyze=args.no_audio_analyze,

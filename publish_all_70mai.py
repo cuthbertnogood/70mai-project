@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 from import_70mai import log
-from plan_estimate import DEFAULT_SESSION_GAP, build_plan
+from plan_estimate import DEFAULT_SESSION_GAP, YOUTUBE_DAILY_UPLOADS, build_plan
 from publish_70mai import trip_uploaded
 from publish_state import AuthStore, StateStore
 
@@ -346,6 +346,14 @@ def print_plan_summary(
             f"  [{chunk.record_type}] chunk {chunk.index}: {label} "
             f"({chunk.duration_sec / 60:.0f} min, ~{chunk.est_mb:.0f} MB est.)"
         )
+    if pending > YOUTUBE_DAILY_UPLOADS:
+        log(
+            f"  QUOTA WARNING: {pending} uploads pending, but the default "
+            f"YouTube API quota allows ~{YOUTUBE_DAILY_UPLOADS}/day "
+            "(resets midnight Pacific). Extra uploads will fail with "
+            "quotaExceeded — rerun the next day (state resumes) or request "
+            "a quota increase in Google Cloud Console."
+        )
     log("")
 
 
@@ -403,6 +411,39 @@ def main() -> int:
         "--force-restart",
         action="store_true",
         help="Kill stale publish_70mai / lock holder and start fresh (used by watchdog)",
+    )
+    parser.add_argument(
+        "--profile",
+        default="balanced",
+        help="Compose profile: balanced | draft | quality | hevc (default: balanced)",
+    )
+    parser.add_argument(
+        "--prune-merged",
+        choices=("off", "after-compose", "after-upload"),
+        default="after-upload",
+        help=(
+            "Delete merged files once used (default: after-upload; "
+            "after-compose = minimum disk usage)"
+        ),
+    )
+    parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=5.0,
+        metavar="GB",
+        help="Disk reserve before each compose (default: 5)",
+    )
+    parser.add_argument(
+        "--upload-chunk-mb",
+        type=int,
+        default=None,
+        metavar="MB",
+        help="YouTube upload chunk in MB (default: 256; 0 = whole file)",
+    )
+    parser.add_argument(
+        "--no-overlap",
+        action="store_true",
+        help="Disable compose/upload overlap in publish",
     )
     args = parser.parse_args()
 
@@ -571,31 +612,42 @@ def main() -> int:
 
             type_title = args.title or auto_title(type_trips)
             log(f"\n>>> Publish {record_type}: {type_pending} pending")
+            publish_cmd = [
+                python,
+                "publish_70mai.py",
+                "--source",
+                str(source),
+                "--types",
+                record_type,
+                "--video-dir",
+                str(args.video_dir),
+                "--temp-dir",
+                str(args.temp_dir),
+                "--per-trip-upload",
+                "--resume",
+                "--resume-upload",
+                "--continue-on-error",
+                "--state-on-sd" if state_on_sd else "--no-state-on-sd",
+                "--credentials",
+                str(creds),
+                "--token",
+                str(token),
+                "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
+                "--title",
+                type_title,
+                "--profile",
+                args.profile,
+                "--prune-merged",
+                args.prune_merged,
+                "--min-free-gb",
+                str(args.min_free_gb),
+            ]
+            if args.upload_chunk_mb is not None:
+                publish_cmd.extend(["--upload-chunk-mb", str(args.upload_chunk_mb)])
+            if args.no_overlap:
+                publish_cmd.append("--no-overlap")
             ec = run_step(
-                [
-                    python,
-                    "publish_70mai.py",
-                    "--source",
-                    str(source),
-                    "--types",
-                    record_type,
-                    "--video-dir",
-                    str(args.video_dir),
-                    "--temp-dir",
-                    str(args.temp_dir),
-                    "--per-trip-upload",
-                    "--resume",
-                    "--resume-upload",
-                    "--continue-on-error",
-                    "--state-on-sd" if state_on_sd else "--no-state-on-sd",
-                    "--credentials",
-                    str(creds),
-                    "--token",
-                    str(token),
-                    "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
-                    "--title",
-                    type_title,
-                ],
+                publish_cmd,
                 log_path=args.log,
                 dry_run=args.dry_run,
             )

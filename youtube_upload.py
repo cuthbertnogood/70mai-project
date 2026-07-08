@@ -17,7 +17,10 @@ from youtube_upload_diagnostics import DEFAULT_DIAG_LOG, UploadDiagnostics
 from project_env import cli_python
 HTTP_TIMEOUT_SEC = 600
 MAX_UPLOAD_RETRIES = 12
-UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024
+# Big chunks amortize the per-chunk RTT pause (334ms RTT observed); Google
+# recommends the fewest possible requests on stable connections.
+UPLOAD_CHUNK_BYTES = 256 * 1024 * 1024
+UPLOAD_STREAM_BLOCK = 4 * 1024 * 1024  # read block for whole-file streaming mode
 UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 
 DEFAULT_CREDENTIALS = Path.home() / ".config/70mai/youtube_credentials.json"
@@ -178,14 +181,15 @@ def _request_with_retries(
     url: str,
     *,
     diag: UploadDiagnostics | None = None,
+    attempts: int = MAX_UPLOAD_RETRIES,
     **kwargs,
 ):
     _, _, _, _, _, _, requests, _ = _require_google()
     last_exc = None
-    for attempt in range(MAX_UPLOAD_RETRIES):
+    for attempt in range(attempts):
         try:
             resp = session.request(method, url, timeout=HTTP_TIMEOUT_SEC, **kwargs)
-            if resp.status_code in (500, 502, 503, 504) and attempt + 1 < MAX_UPLOAD_RETRIES:
+            if resp.status_code in (500, 502, 503, 504) and attempt + 1 < attempts:
                 if diag:
                     diag.retry(
                         attempt=attempt + 1,
@@ -198,14 +202,14 @@ def _request_with_retries(
             return resp
         except requests.RequestException as exc:
             last_exc = exc
-            if diag and attempt + 1 < MAX_UPLOAD_RETRIES:
+            if diag and attempt + 1 < attempts:
                 diag.retry(
                     attempt=attempt + 1,
                     reason=str(exc),
                     method=method,
                     url_hint=url,
                 )
-            if attempt + 1 >= MAX_UPLOAD_RETRIES:
+            if attempt + 1 >= attempts:
                 break
             time.sleep(min(2 ** (attempt + 1), 60))
     raise YouTubeUploadError(f"YouTube upload request failed: {last_exc}") from last_exc
@@ -323,8 +327,13 @@ def upload_video(
     resume: bool = False,
     diag_log: Path | None = DEFAULT_DIAG_LOG,
     on_progress: Callable[[int], None] | None = None,
+    chunk_bytes: int | None = None,
 ) -> str:
-    """Upload video via resumable protocol; optional session file for cross-run resume."""
+    """Upload video via resumable protocol; optional session file for cross-run resume.
+
+    chunk_bytes: upload chunk size; 0 streams the whole file in one PUT
+    (fastest on stable connections); None uses UPLOAD_CHUNK_BYTES.
+    """
     old_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(HTTP_TIMEOUT_SEC)
     diag = UploadDiagnostics(log_path=diag_log, video_path=str(video_path)) if diag_log else None
@@ -343,6 +352,7 @@ def upload_video(
             resume=resume,
             diag=diag,
             on_progress=on_progress,
+            chunk_bytes=UPLOAD_CHUNK_BYTES if chunk_bytes is None else chunk_bytes,
         )
     except YouTubeUploadError as exc:
         if diag:
@@ -366,8 +376,10 @@ def _upload_video_inner(
     resume: bool,
     diag: UploadDiagnostics | None,
     on_progress: Callable[[int], None] | None,
+    chunk_bytes: int = UPLOAD_CHUNK_BYTES,
 ) -> str:
     session = _authorized_session(credentials_path, token_path)
+    whole_file = chunk_bytes <= 0
 
     video_path = Path(video_path).resolve()
     if not video_path.is_file():
@@ -387,7 +399,7 @@ def _upload_video_inner(
             size=size,
             title=title,
             resume=resume,
-            chunk_bytes=UPLOAD_CHUNK_BYTES,
+            chunk_bytes=chunk_bytes,
         )
 
     metadata = {
@@ -448,24 +460,78 @@ def _upload_video_inner(
             diag.session_created(str(session_path))
 
     last_logged = -1
+
+    def report(offset_now: int) -> None:
+        nonlocal last_logged
+        pct = min(99, int(offset_now * 100 / size))
+        if on_progress and pct >= last_logged + 2:
+            _call_progress(on_progress, pct, offset_now, size)
+            last_logged = pct
+
+    stream_failures = 0
     with video_path.open("rb") as fh:
         fh.seek(offset)
         while offset < size:
-            chunk = fh.read(UPLOAD_CHUNK_BYTES)
-            if not chunk:
-                break
-            end = offset + len(chunk) - 1
-            resp = _request_with_retries(
-                session,
-                "PUT",
-                upload_url,
-                diag=diag,
-                data=chunk,
-                headers={
-                    "Content-Length": str(len(chunk)),
-                    "Content-Range": f"bytes {offset}-{end}/{size}",
-                },
-            )
+            end = size - 1 if whole_file else min(offset + chunk_bytes, size) - 1
+            headers = {
+                "Content-Length": str(end - offset + 1),
+                "Content-Range": f"bytes {offset}-{end}/{size}",
+            }
+            if whole_file:
+
+                def stream(start: int = offset, stop: int = end):
+                    fh.seek(start)
+                    remaining = stop - start + 1
+                    sent = start
+                    while remaining > 0:
+                        block = fh.read(min(UPLOAD_STREAM_BLOCK, remaining))
+                        if not block:
+                            break
+                        remaining -= len(block)
+                        sent += len(block)
+                        report(sent)
+                        yield block
+
+                try:
+                    resp = _request_with_retries(
+                        session,
+                        "PUT",
+                        upload_url,
+                        diag=diag,
+                        attempts=1,
+                        data=stream(),
+                        headers=headers,
+                    )
+                except YouTubeUploadError:
+                    # Stream interrupted: ask the server where to resume from.
+                    stream_failures += 1
+                    if stream_failures >= MAX_UPLOAD_RETRIES:
+                        raise
+                    time.sleep(min(2**stream_failures, 60))
+                    offset = _query_upload_offset(
+                        session, upload_url, size, diag=diag
+                    )
+                    fh.seek(offset)
+                    if diag:
+                        diag.retry(
+                            attempt=stream_failures,
+                            reason=f"stream interrupted; resuming at {offset}",
+                            method="PUT",
+                            url_hint=upload_url,
+                        )
+                    continue
+            else:
+                chunk = fh.read(end - offset + 1)
+                if not chunk:
+                    break
+                resp = _request_with_retries(
+                    session,
+                    "PUT",
+                    upload_url,
+                    diag=diag,
+                    data=chunk,
+                    headers=headers,
+                )
             if resp.status_code in (200, 201):
                 clear_upload_session(session_path)
                 video_id = resp.json()["id"]
@@ -591,6 +657,16 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Disable diagnostic logging",
     )
+    parser.add_argument(
+        "--upload-chunk-mb",
+        type=int,
+        default=None,
+        metavar="MB",
+        help=(
+            f"Upload chunk size in MB (default: {UPLOAD_CHUNK_BYTES // (1024 * 1024)}); "
+            "0 = whole file in one streaming PUT (fastest on stable networks)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     session_path = args.session or upload_session_path_for_file(args.video)
@@ -613,6 +689,9 @@ def main(argv: list[str] | None = None) -> None:
         resume=args.resume_upload,
         diag_log=None if args.no_diag else args.diag_log,
         on_progress=progress,
+        chunk_bytes=(
+            None if args.upload_chunk_mb is None else args.upload_chunk_mb * 1024 * 1024
+        ),
     )
     reporter.finish()
     print(f"Done: https://youtu.be/{video_id}")

@@ -334,6 +334,13 @@ Existing output files are batched (`skip ×5`) instead of one line per file.
 
 Parallel **ffprobe** (8 workers) speeds up duration detection before merge. Failed or corrupt merges are **retried automatically** (up to 3 ffmpeg attempts per file, ffprobe validation); autopilot re-runs import up to 3 times if any merge still fails.
 
+**I/O acceleration (automatic, no flags):**
+
+- **Parallel merges** — 2 ffmpeg concat workers per group (concat is I/O-bound; a USB reader sustains 2 streams).
+- **Page-cache prefetch** — a background thread sequentially reads the clips of the next ~2 pending chunks so ffmpeg reads from RAM instead of the slow SD reader.
+- **ffprobe cache** — durations are stored in `video/Output/.probe_cache.json` (keyed by path+mtime+size) and shared by `plan_estimate.py`, `import_70mai.py`, and `publish_70mai.py`, so each SD clip is probed once per card instead of on every step (saves 10–20 min per autopilot run on large cards).
+- **Fast concat start** — `-probesize 1M -analyzeduration 0` on concat input (dashcam clips are uniform; deep stream analysis is unnecessary).
+
 Each line is flushed immediately:
 
 ```bash
@@ -356,13 +363,16 @@ When output is piped to a log file (`tee`), progress is printed as periodic text
 
 Use `--profile` instead of tuning flags manually:
 
-| Profile | Use case | HW encode | Bitrate | Width | FPS |
-|---------|----------|-----------|---------|-------|-----|
-| `balanced` | **Default** — archive export | yes | 6.5 Mbps | 1206 | 25 |
-| `draft` | Sync check / preview | yes | 5.0 Mbps | 960 | 20 |
-| `quality` | Higher bitrate archive | yes | 7.5 Mbps | 1206 | 25 |
+| Profile | Use case | Codec | Bitrate | Width | FPS |
+|---------|----------|-------|---------|-------|-----|
+| `balanced` | **Default** — archive export | H.264 | 6.5 Mbps | 1206 | 25 |
+| `draft` | Sync check / preview | H.264 | 5.0 Mbps | 960 | 20 |
+| `quality` | Higher bitrate archive | H.264 | 7.5 Mbps | 1206 | 25 |
+| `hevc` | Fastest upload (~1.9× smaller file) | HEVC | 3.5 Mbps | 1206 | 25 |
 
-Profiles set **hw encode + quality/resolution presets** only (same pipeline as `--hw`). They do not enable hardware decode or `scale_vt` — on tested Macs that full GPU pipeline is slower than hw-encode-only because `vstack` runs on CPU after `hwdownload`.
+All profiles use VideoToolbox hw encode with `-prio_speed 1` and enable **hardware decode** by default (fastest pipeline is tried first: hw decode + CPU scale, then hw-encode-only fallback on failure). `scale_vt` is only used with explicit `--hw-decode`.
+
+The `hevc` profile encodes with `hevc_videotoolbox` at ~3.5 Mbps — visually comparable to H.264 at 6.5 Mbps, so uploads are ~1.9× faster. If the Mac does not support HEVC hardware encode (checked automatically with a tiny probe encode), the script logs a warning and falls back to `h264_videotoolbox` at 6.5 Mbps.
 
 Default CLI: `--profile balanced` and `-d 600` (10 minutes). A minimal export:
 
@@ -386,15 +396,16 @@ python3 compose_70mai.py "video/ScreenRecording_....mp4" --profile draft
 
 | Flag | Description |
 |------|-------------|
-| `--hw` | VideoToolbox H.264 encode (CPU decode/scale) — same pipeline as default profile |
-| `--profile NAME` | Override default `balanced` with `draft` or `quality` |
-| `--hw-decode` | Experimental: opt into hw decode + optional `scale_vt` (see below) |
+| `--hw` | VideoToolbox encode (CPU decode/scale) — same pipeline as default profile |
+| `--profile NAME` | Override default `balanced` with `draft`, `quality`, or `hevc` |
+| `--codec h264\|hevc` | Override the profile codec (hevc auto-falls back to h264 if unsupported) |
+| `--hw-decode` | Also try full VT (`scale_vt`) as the first attempt (see below) |
 | `--no-vt-scale` | With `--hw-decode`, use CPU `scale=` instead of `scale_vt` |
 | `--hw-quality N` | Target bitrate `N×100` kbps (default 65 → 6.5 Mbps) |
 
-**Default:** `--profile balanced -d 600` — CPU decode/scale + VideoToolbox encode (~20 min for a 10-minute composite on tested Mac).
+**Default:** `--profile balanced -d 600` — VideoToolbox hw decode + CPU scale + hw encode; falls back to hw-encode-only automatically if hw decode fails.
 
-**Experimental `--hw-decode`:** tries progressively heavier GPU pipelines, fastest first: hw encode only → hw decode + CPU scale → full VT (`scale_vt`). Full VT is often *slower* on Apple Silicon because stacking still hits CPU after GPU frames are downloaded. Use only if you want to experiment; the script falls back automatically on failure.
+**Explicit `--hw-decode`:** additionally tries full VT (`scale_vt`) first. Full VT is often *slower* on tested Macs because stacking still hits CPU after GPU frames are downloaded; the script falls back automatically on failure.
 
 ### Benchmark
 

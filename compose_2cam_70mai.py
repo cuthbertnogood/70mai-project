@@ -20,6 +20,7 @@ from compose_70mai import (
     describe_pipeline,
     log,
     plan_segments,
+    resolve_codec,
     run_ffmpeg_with_progress,
     scan_merged_clips,
 )
@@ -106,6 +107,7 @@ def build_compose_2cam_cmd(
     hw_quality: int,
     hw_decode: bool,
     use_vt_scale: bool,
+    codec: str = "h264",
     audio_source: str,
     telemetry_path: Path | None = None,
 ) -> list[str]:
@@ -113,12 +115,12 @@ def build_compose_2cam_cmd(
 
     for seg in front_segments:
         if hw_decode:
-            append_hwaccel_args(cmd)
+            append_hwaccel_args(cmd, keep_hw_frames=use_vt_scale)
         cmd.extend(["-ss", f"{seg.ss:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(seg.path)])
 
     for seg in back_segments:
         if hw_decode:
-            append_hwaccel_args(cmd)
+            append_hwaccel_args(cmd, keep_hw_frames=use_vt_scale)
         cmd.extend(["-ss", f"{seg.ss:.3f}", "-t", f"{seg.duration:.3f}", "-i", str(seg.path)])
 
     telemetry_input: int | None = None
@@ -168,6 +170,7 @@ def build_compose_2cam_cmd(
         preset=preset,
         hw_quality=hw_quality,
         fps=fps,
+        codec=codec,
     )
     cmd.append(str(output))
     return cmd
@@ -189,6 +192,7 @@ def run_compose_2cam(
     hw_quality: int,
     hw_decode: bool,
     use_vt_scale: bool,
+    codec: str = "h264",
     audio_source: str = "front",
     telemetry: bool = False,
     gps_dir: Path | None = None,
@@ -197,6 +201,7 @@ def run_compose_2cam(
     record_type: str = "Normal",
     dry_run: bool = False,
 ) -> None:
+    codec, hw_quality = resolve_codec(codec, hw_quality, hw=hw)
     wall_end = wall_start + timedelta(seconds=duration)
 
     front_clips = scan_merged_clips(video_dir, "Front", record_type=record_type)
@@ -222,7 +227,7 @@ def run_compose_2cam(
     log(f"Front offset:  {sync_offset_front:+g} sec")
     log(f"Back offset:   {sync_offset_back:+g} sec")
     encoder = (
-        f"h264_videotoolbox ({hw_quality * 100}k)"
+        f"{'hevc' if codec == 'hevc' else 'h264'}_videotoolbox ({hw_quality * 100}k)"
         if hw
         else f"libx264 (crf {crf}, {preset})"
     )
@@ -239,11 +244,12 @@ def run_compose_2cam(
         log(f"  ss={seg.ss:.1f} t={seg.duration:.1f}  {seg.path.name}")
 
     if hw and hw_decode:
-        attempts: list[tuple[bool, bool, str]] = [
-            (False, False, "hw encode only"),
-            (True, False, "hw decode + CPU scale"),
-            (True, True, "full VT (hw decode + scale_vt)"),
-        ]
+        # Fastest pipeline first, degrade gracefully on failure.
+        attempts: list[tuple[bool, bool, str]] = []
+        if use_vt_scale:
+            attempts.append((True, True, "full VT (hw decode + scale_vt)"))
+        attempts.append((True, False, "hw decode + CPU scale"))
+        attempts.append((False, False, "hw encode only"))
     elif hw:
         attempts = [(False, False, "hw encode only")]
     else:
@@ -287,6 +293,7 @@ def run_compose_2cam(
             hw_quality=hw_quality,
             hw_decode=attempt_hw_decode,
             use_vt_scale=attempt_vt_scale,
+            codec=codec,
             audio_source=audio_source,
             telemetry_path=telemetry_path if telemetry else None,
         )
@@ -302,9 +309,7 @@ def run_compose_2cam(
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
             run_ffmpeg_with_progress(cmd, duration_sec=duration)
-            if label != describe_pipeline(
-                hw=hw, hw_decode=hw_decode, use_vt_scale=use_vt_scale
-            ):
+            if label != attempts[0][2]:
                 log(f"\nNote: fell back to {label}")
             log(f"\nDone: {output}")
             if telemetry_tmp is not None:
@@ -314,7 +319,7 @@ def run_compose_2cam(
             last_error = exc
             if output.is_file():
                 output.unlink()
-            if attempt_hw_decode or attempt_vt_scale:
+            if label != attempts[-1][2]:
                 log(f"\n{label} failed (exit {exc.returncode}), trying fallback...")
             else:
                 raise
@@ -402,6 +407,12 @@ def main() -> None:
     )
     parser.add_argument("--hw-decode", action="store_true")
     parser.add_argument("--no-vt-scale", action="store_true")
+    parser.add_argument(
+        "--codec",
+        choices=("h264", "hevc"),
+        default=None,
+        help="HW encoder codec (default: from profile)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--telemetry",
@@ -431,12 +442,15 @@ def main() -> None:
 
     args.use_vt_scale = False
     hw_decode_explicit = args.hw_decode
+    codec_explicit = args.codec
     apply_profile(args)
     if hw_decode_explicit:
         args.hw_decode = True
         args.use_vt_scale = not args.no_vt_scale
     elif args.no_vt_scale:
         args.use_vt_scale = False
+    if codec_explicit:
+        args.codec = codec_explicit
 
     if args.duration is not None:
         duration = args.duration
@@ -465,6 +479,7 @@ def main() -> None:
             hw_quality=args.hw_quality,
             hw_decode=args.hw_decode,
             use_vt_scale=args.use_vt_scale,
+            codec=args.codec,
             audio_source=args.audio,
             telemetry=telemetry_requested(args.telemetry),
             gps_dir=args.gps_dir,

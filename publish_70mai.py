@@ -9,9 +9,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from compose_2cam_70mai import run_compose_2cam
@@ -51,6 +53,102 @@ class UploadSummary:
     failed: int = 0
     freed_bytes: int = 0
     errors: list[str] = field(default_factory=list)
+
+
+MERGED_PRUNE_MARGIN = timedelta(seconds=120)  # < session gap, > clip length
+
+
+class UploadPipeline:
+    """Single-worker background uploader: compose N+1 overlaps upload N."""
+
+    def __init__(self) -> None:
+        self.pool = ThreadPoolExecutor(max_workers=1)
+        self.pending: Future | None = None
+        self.state_lock = threading.Lock()
+
+    def wait(self) -> None:
+        """Block until the in-flight upload (if any) finishes; re-raise its errors."""
+        if self.pending is not None:
+            fut, self.pending = self.pending, None
+            fut.result()
+
+    def submit(self, fn) -> None:
+        self.wait()
+        self.pending = self.pool.submit(fn)
+
+    def shutdown(self) -> None:
+        try:
+            self.wait()
+        finally:
+            self.pool.shutdown(wait=True)
+
+
+def free_disk_gb(path: Path) -> float:
+    try:
+        return shutil.disk_usage(path).free / (1024**3)
+    except OSError:
+        return float("inf")
+
+
+def prune_merged_for_trip(
+    video_dir: Path,
+    record_type: str,
+    trip_start: datetime,
+    trip_end: datetime,
+) -> int:
+    """Delete merged source files fully inside the trip range. Returns freed bytes.
+
+    Safe: source clips stay on the SD card, so merged files can be rebuilt
+    by rerunning import.
+    """
+    from compose_70mai import scan_merged_clips
+
+    lo = trip_start - MERGED_PRUNE_MARGIN
+    hi = trip_end + MERGED_PRUNE_MARGIN
+    freed = 0
+    count = 0
+    for camera in ("Front", "Back"):
+        for clip in scan_merged_clips(
+            video_dir, camera, record_type=record_type, probe=False
+        ):
+            if clip.start >= lo and clip.end <= hi:
+                try:
+                    size = clip.path.stat().st_size
+                    clip.path.unlink()
+                except OSError:
+                    continue
+                freed += size
+                count += 1
+    if freed:
+        log(
+            f"  Pruned {count} merged source file(s): freed {format_file_size(freed)}"
+        )
+    return freed
+
+
+def guard_free_disk(
+    check_path: Path,
+    min_free_gb: float,
+    pipeline: UploadPipeline | None,
+) -> None:
+    """Before compose: if disk is below reserve, wait for background upload to free space."""
+    if min_free_gb <= 0:
+        return
+    free = free_disk_gb(check_path)
+    if free >= min_free_gb:
+        return
+    if pipeline is not None and pipeline.pending is not None:
+        log(
+            f"  Disk low ({free:.1f} GB < {min_free_gb:g} GB reserve) — "
+            "waiting for background upload to free space"
+        )
+        pipeline.wait()
+        free = free_disk_gb(check_path)
+    if free < min_free_gb:
+        log(
+            f"  Warning: {free:.1f} GB free (< {min_free_gb:g} GB reserve) — "
+            "consider --prune-merged after-compose"
+        )
 
 
 def escape_concat_path(path: Path) -> str:
@@ -225,6 +323,7 @@ def upload_and_cleanup(
     keep: bool,
     playlist_id: str | None,
     playlist_title: str,
+    upload_chunk_bytes: int | None = None,
 ) -> tuple[str | None, str | None, int, float]:
     """Upload, add to playlist, delete local file. Returns (video_id, playlist_id, freed_bytes, elapsed_sec)."""
     if not path.is_file():
@@ -249,6 +348,7 @@ def upload_and_cleanup(
         resume=resume_upload,
         diag_log=diag_log,
         on_progress=progress,
+        chunk_bytes=upload_chunk_bytes,
     )
     reporter.finish()
     elapsed = time.monotonic() - started
@@ -519,12 +619,24 @@ def publish_and_upload_trips(
     summary: UploadSummary,
     queue_ctx: tuple[int, int, int, int] | None = None,
     youtube_sync: dict | None = None,
+    upload_chunk_bytes: int | None = None,
+    pipeline: UploadPipeline | None = None,
+    playlist_holder: dict | None = None,
+    prune_merged: str = "off",
+    min_free_gb: float = 0.0,
+    check_disk: Path = Path("."),
 ) -> tuple[str | None, str | None]:
-    """Compose and upload each trip separately; returns (last_video_id, playlist_id)."""
+    """Compose and upload each trip separately; returns (last_video_id, playlist_id).
+
+    With a pipeline, the upload of trip N runs in the background while trip N+1
+    composes — wall time becomes max(encode, upload) instead of the sum.
+    """
     chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
     chunk_dir.mkdir(parents=True, exist_ok=True)
     last_video_id = None
-    current_playlist = playlist_id
+    if playlist_holder is None:
+        playlist_holder = {"id": playlist_id}
+    state_lock = pipeline.state_lock if pipeline else threading.Lock()
 
     for trip_idx, trip in enumerate(chunk.trips, start=1):
         if trip_only is not None and trip_idx != trip_only:
@@ -567,6 +679,7 @@ def publish_and_upload_trips(
                 continue
             log(f"  Upload-only: {part_path.name} ({format_file_size(part_path.stat().st_size)})")
         elif not trip_part_complete(part_path, trip.duration_sec):
+            guard_free_disk(check_disk, min_free_gb, pipeline)
             run_compose_2cam(
                 video_dir,
                 part_path,
@@ -580,6 +693,8 @@ def publish_and_upload_trips(
                 dry_run=False,
                 **profile_args,
             )
+            if prune_merged == "after-compose":
+                prune_merged_for_trip(video_dir, record_type, trip.start, trip.end)
         else:
             log(f"  Skip compose (exists, {format_duration(probe_duration(part_path))})")
 
@@ -607,61 +722,80 @@ def publish_and_upload_trips(
                 f"{base_title} {record_type} — поездка {trip.index} "
                 f"({trip.start:%m-%d %H:%M})"
             )
-        try:
-            video_id, current_playlist, freed, _elapsed = upload_and_cleanup(
-                part_path,
-                trip_title,
-                privacy=privacy,
-                credentials=credentials,
-                token=token,
-                session_dir=state_store.session_dir,
-                resume_upload=resume_upload,
-                diag_log=diag_log,
-                keep=keep,
-                playlist_id=current_playlist,
-                playlist_title=playlist_title,
-            )
-        except YouTubeUploadError as exc:
-            msg = f"chunk {chunk.index} trip {trip_idx}: {exc}"
-            log(f"  Upload failed: {exc}")
-            if diag_log:
-                log(f"  Diagnostics: {diag_log}")
-                log(f"  Analyze: {cli_python()} scripts/analyze_youtube_upload.py")
-            mark_trip_state(
-                state,
-                record_type=record_type,
-                chunk_index=chunk.index,
-                trip_index=trip_idx,
-                video_id=None,
-                uploaded=False,
-                output_path=part_path,
-            )
-            state_store.save(state)
-            summary.failed += 1
-            summary.errors.append(msg)
-            if continue_on_error:
-                continue
-            raise SystemExit(1) from exc
 
-        last_video_id = video_id
-        mark_trip_state(
-            state,
-            record_type=record_type,
-            chunk_index=chunk.index,
-            trip_index=trip_idx,
-            video_id=video_id,
-            uploaded=True,
-            output_path=part_path if keep else None,
-        )
-        if current_playlist:
-            state["playlist_id"] = current_playlist
-        state_store.save(state)
-        if youtube_sync:
-            sync_card_youtube_inventory(state, state_store, **youtube_sync)
-        summary.uploaded += 1
-        summary.freed_bytes += freed
+        def do_upload(
+            part_path: Path = part_path,
+            trip=trip,
+            trip_idx: int = trip_idx,
+            trip_title: str = trip_title,
+        ) -> None:
+            nonlocal last_video_id
+            try:
+                video_id, new_playlist, freed, _elapsed = upload_and_cleanup(
+                    part_path,
+                    trip_title,
+                    privacy=privacy,
+                    credentials=credentials,
+                    token=token,
+                    session_dir=state_store.session_dir,
+                    resume_upload=resume_upload,
+                    diag_log=diag_log,
+                    keep=keep,
+                    playlist_id=playlist_holder["id"],
+                    playlist_title=playlist_title,
+                    upload_chunk_bytes=upload_chunk_bytes,
+                )
+            except YouTubeUploadError as exc:
+                msg = f"chunk {chunk.index} trip {trip_idx}: {exc}"
+                log(f"  Upload failed: {exc}")
+                if diag_log:
+                    log(f"  Diagnostics: {diag_log}")
+                    log(f"  Analyze: {cli_python()} scripts/analyze_youtube_upload.py")
+                with state_lock:
+                    mark_trip_state(
+                        state,
+                        record_type=record_type,
+                        chunk_index=chunk.index,
+                        trip_index=trip_idx,
+                        video_id=None,
+                        uploaded=False,
+                        output_path=part_path,
+                    )
+                    state_store.save(state)
+                    summary.failed += 1
+                    summary.errors.append(msg)
+                if continue_on_error:
+                    return
+                raise SystemExit(1) from exc
 
-    return last_video_id, current_playlist
+            with state_lock:
+                playlist_holder["id"] = new_playlist
+                last_video_id = video_id
+                mark_trip_state(
+                    state,
+                    record_type=record_type,
+                    chunk_index=chunk.index,
+                    trip_index=trip_idx,
+                    video_id=video_id,
+                    uploaded=True,
+                    output_path=part_path if keep else None,
+                )
+                if new_playlist:
+                    state["playlist_id"] = new_playlist
+                state_store.save(state)
+                if youtube_sync:
+                    sync_card_youtube_inventory(state, state_store, **youtube_sync)
+                summary.uploaded += 1
+                summary.freed_bytes += freed
+            if prune_merged == "after-upload":
+                prune_merged_for_trip(video_dir, record_type, trip.start, trip.end)
+
+        if pipeline is not None:
+            pipeline.submit(do_upload)
+        else:
+            do_upload()
+
+    return last_video_id, playlist_holder["id"]
 
 
 def main() -> None:
@@ -710,6 +844,12 @@ def main() -> None:
     parser.add_argument("--hw", action="store_true")
     parser.add_argument("--hw-decode", action="store_true")
     parser.add_argument("--no-vt-scale", action="store_true")
+    parser.add_argument(
+        "--codec",
+        choices=("h264", "hevc"),
+        default=None,
+        help="HW encoder codec (default: from profile)",
+    )
     parser.add_argument("--credentials", type=Path, default=DEFAULT_CREDENTIALS)
     parser.add_argument("--token", type=Path, default=DEFAULT_TOKEN)
     parser.add_argument("--estimate-only", action="store_true")
@@ -754,6 +894,34 @@ def main() -> None:
         "--continue-on-error",
         action="store_true",
         help="On upload failure, log and continue to next trip",
+    )
+    parser.add_argument(
+        "--upload-chunk-mb",
+        type=int,
+        default=None,
+        metavar="MB",
+        help="YouTube upload chunk in MB (default: 256; 0 = whole file in one PUT)",
+    )
+    parser.add_argument(
+        "--prune-merged",
+        choices=("off", "after-compose", "after-upload"),
+        default="off",
+        help=(
+            "Delete merged source files once used: after-compose (aggressive, "
+            "min disk) or after-upload (conservative). Sources stay on SD."
+        ),
+    )
+    parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=5.0,
+        metavar="GB",
+        help="Disk reserve: wait for background upload before compose if below (default: 5)",
+    )
+    parser.add_argument(
+        "--no-overlap",
+        action="store_true",
+        help="Disable compose/upload overlap (sequential like before)",
     )
     parser.add_argument(
         "--diag-log",
@@ -866,11 +1034,14 @@ def main() -> None:
         hw_decode=args.hw_decode,
         use_vt_scale=False,
         no_vt_scale=args.no_vt_scale,
+        codec="h264",
     )
     apply_profile(ns)
     if args.hw_decode:
         ns.hw_decode = True
         ns.use_vt_scale = not args.no_vt_scale
+    if args.codec:
+        ns.codec = args.codec
 
     profile_args = dict(
         width=ns.width,
@@ -881,6 +1052,7 @@ def main() -> None:
         hw_quality=ns.hw_quality,
         hw_decode=ns.hw_decode,
         use_vt_scale=ns.use_vt_scale,
+        codec=ns.codec,
     )
 
     label = "_".join(args.types)
@@ -911,6 +1083,12 @@ def main() -> None:
     playlist_id = state.get("playlist_id") if args.resume else None
     diag_log = None if args.no_diag else args.diag_log
     summary = UploadSummary()
+    upload_chunk_bytes = (
+        None if args.upload_chunk_mb is None else args.upload_chunk_mb * 1024 * 1024
+    )
+    overlap_enabled = not (
+        args.no_overlap or args.dry_run or args.compose_only or args.estimate_only
+    )
 
     youtube_sync = None
     if state_on_sd and not args.dry_run:
@@ -940,22 +1118,101 @@ def main() -> None:
             log("No trips to upload.")
             raise SystemExit(1)
 
-        last_chunk_key: tuple[int, str] | None = None
-        for overall_i, (chunk, trip_idx, _trip, record_type) in enumerate(
-            trip_tasks, start=1
-        ):
-            chunk_key = (chunk.index, record_type)
-            if chunk_key != last_chunk_key:
-                total = total_by_type[record_type]
-                log("")
-                log(
-                    f"=== Chunk {chunk.index}/{total} [{record_type}] "
-                    f"{format_duration(chunk.duration_sec)} | {chunk.trip_labels} ==="
+        pipeline = UploadPipeline() if overlap_enabled else None
+        playlist_holder = {"id": playlist_id}
+        if pipeline is not None:
+            log("Pipeline: compose of the next trip overlaps the current upload")
+
+        try:
+            last_chunk_key: tuple[int, str] | None = None
+            for overall_i, (chunk, trip_idx, _trip, record_type) in enumerate(
+                trip_tasks, start=1
+            ):
+                chunk_key = (chunk.index, record_type)
+                if chunk_key != last_chunk_key:
+                    total = total_by_type[record_type]
+                    log("")
+                    log(
+                        f"=== Chunk {chunk.index}/{total} [{record_type}] "
+                        f"{format_duration(chunk.duration_sec)} | {chunk.trip_labels} ==="
+                    )
+                    last_chunk_key = chunk_key
+
+                pl_title = args.playlist or ""
+                publish_and_upload_trips(
+                    chunk,
+                    video_dir=args.video_dir,
+                    temp_dir=args.temp_dir,
+                    ffmpeg=ffmpeg or "ffmpeg",
+                    profile_args=profile_args,
+                    audio_source=args.audio,
+                    telemetry=args.telemetry,
+                    gps_dir=args.gps_dir or args.source,
+                    telemetry_map_size=args.telemetry_map_size,
+                    dry_run=args.dry_run,
+                    trip_only=trip_idx,
+                    base_title=base_title,
+                    record_type=record_type,
+                    privacy=args.privacy,
+                    credentials=args.credentials,
+                    token=args.token,
+                    resume_upload=args.resume_upload,
+                    compose_only=args.compose_only,
+                    upload_only=args.upload_only,
+                    keep=args.keep,
+                    continue_on_error=args.continue_on_error,
+                    playlist_id=playlist_holder["id"],
+                    playlist_title=pl_title,
+                    state=state,
+                    state_store=state_store,
+                    diag_log=diag_log,
+                    summary=summary,
+                    queue_ctx=(overall_i, len(trip_tasks), trip_idx, len(chunk.trips)),
+                    youtube_sync=youtube_sync,
+                    upload_chunk_bytes=upload_chunk_bytes,
+                    pipeline=pipeline,
+                    playlist_holder=playlist_holder,
+                    prune_merged=args.prune_merged,
+                    min_free_gb=args.min_free_gb,
+                    check_disk=args.check_disk,
                 )
-                last_chunk_key = chunk_key
+        finally:
+            if pipeline is not None:
+                pipeline.shutdown()
+
+        print_upload_summary(summary)
+        if summary.failed:
+            raise SystemExit(1)
+        log("\nDone.")
+        return
+
+    pipeline = UploadPipeline() if overlap_enabled else None
+    playlist_holder = {"id": playlist_id}
+    state_lock = pipeline.state_lock if pipeline else threading.Lock()
+    if pipeline is not None:
+        log("Pipeline: compose of the next chunk overlaps the current upload")
+
+    try:
+        for chunk in chunks:
+            record_type = chunk.record_type
+            total = total_by_type[record_type]
+            if args.chunk is not None and chunk.index != args.chunk:
+                continue
+            log("")
+            log(
+                f"=== Chunk {chunk.index}/{total} [{record_type}] "
+                f"{format_duration(chunk.duration_sec)} | {chunk.trip_labels} ==="
+            )
+
+            if args.resume and chunk_uploaded(state, record_type, chunk.index):
+                log("  Skip (already uploaded per state)")
+                continue
 
             pl_title = args.playlist or ""
-            _, playlist_id = publish_and_upload_trips(
+
+            if not args.dry_run:
+                guard_free_disk(args.check_disk, args.min_free_gb, pipeline)
+            output = publish_chunk(
                 chunk,
                 video_dir=args.video_dir,
                 temp_dir=args.temp_dir,
@@ -966,96 +1223,19 @@ def main() -> None:
                 gps_dir=args.gps_dir or args.source,
                 telemetry_map_size=args.telemetry_map_size,
                 dry_run=args.dry_run,
-                trip_only=trip_idx,
-                base_title=base_title,
-                record_type=record_type,
-                privacy=args.privacy,
-                credentials=args.credentials,
-                token=args.token,
-                resume_upload=args.resume_upload,
-                compose_only=args.compose_only,
-                upload_only=args.upload_only,
-                keep=args.keep,
-                continue_on_error=args.continue_on_error,
-                playlist_id=playlist_id,
-                playlist_title=pl_title,
-                state=state,
-                state_store=state_store,
-                diag_log=diag_log,
-                summary=summary,
-                queue_ctx=(overall_i, len(trip_tasks), trip_idx, len(chunk.trips)),
-                youtube_sync=youtube_sync,
+                trip_only=args.trip,
             )
 
-        print_upload_summary(summary)
-        if summary.failed:
-            raise SystemExit(1)
-        log("\nDone.")
-        return
+            if args.dry_run:
+                continue
 
-    for chunk in chunks:
-        record_type = chunk.record_type
-        total = total_by_type[record_type]
-        if args.chunk is not None and chunk.index != args.chunk:
-            continue
-        log("")
-        log(
-            f"=== Chunk {chunk.index}/{total} [{record_type}] "
-            f"{format_duration(chunk.duration_sec)} | {chunk.trip_labels} ==="
-        )
-
-        if args.resume and chunk_uploaded(state, record_type, chunk.index):
-            log("  Skip (already uploaded per state)")
-            continue
-
-        pl_title = args.playlist or ""
-
-        output = publish_chunk(
-            chunk,
-            video_dir=args.video_dir,
-            temp_dir=args.temp_dir,
-            ffmpeg=ffmpeg or "ffmpeg",
-            profile_args=profile_args,
-            audio_source=args.audio,
-            telemetry=args.telemetry,
-            gps_dir=args.gps_dir or args.source,
-            telemetry_map_size=args.telemetry_map_size,
-            dry_run=args.dry_run,
-            trip_only=args.trip,
-        )
-
-        if args.dry_run:
-            continue
-
-        video_id = None
-        uploaded = False
-
-        if not args.compose_only:
-            part_title = f"{base_title} {record_type} — часть {chunk.index}/{total}"
-            try:
-                video_id, playlist_id, freed, _elapsed = upload_and_cleanup(
-                    output,
-                    part_title,
-                    privacy=args.privacy,
-                    credentials=args.credentials,
-                    token=args.token,
-                    session_dir=state_store.session_dir,
-                    resume_upload=args.resume_upload,
-                    diag_log=diag_log,
-                    keep=args.keep,
-                    playlist_id=playlist_id,
-                    playlist_title=pl_title,
+            if args.prune_merged == "after-compose":
+                prune_merged_for_trip(
+                    args.video_dir, record_type, chunk.start, chunk.end
                 )
-                uploaded = True
-                if playlist_id:
-                    state["playlist_id"] = playlist_id
-                summary.uploaded += 1
-                summary.freed_bytes += freed
-            except YouTubeUploadError as exc:
-                log(f"  Upload failed: {exc}")
-                if diag_log:
-                    log(f"  Diagnostics: {diag_log}")
-                    log(f"  Analyze: {cli_python()} scripts/analyze_youtube_upload.py")
+
+            if args.compose_only:
+                log(f"  Compose-only: {output}")
                 mark_chunk_state(
                     state,
                     record_type=record_type,
@@ -1065,29 +1245,86 @@ def main() -> None:
                     output_path=output,
                 )
                 state_store.save(state)
-                summary.failed += 1
-                summary.errors.append(f"chunk {chunk.index}: {exc}")
-                if args.continue_on_error:
-                    continue
-                raise SystemExit(1) from exc
-        else:
-            uploaded = False
-            log(f"  Compose-only: {output}")
+                if youtube_sync:
+                    sync_card_youtube_inventory(state, state_store, **youtube_sync)
+                if not args.keep:
+                    log(f"  Kept: {output}")
+                continue
 
-        mark_chunk_state(
-            state,
-            record_type=record_type,
-            chunk=chunk,
-            video_id=video_id,
-            uploaded=uploaded,
-            output_path=output if args.compose_only or args.keep else None,
-        )
-        state_store.save(state)
-        if youtube_sync:
-            sync_card_youtube_inventory(state, state_store, **youtube_sync)
+            part_title = f"{base_title} {record_type} — часть {chunk.index}/{total}"
 
-        if args.compose_only and not args.keep:
-            log(f"  Kept: {output}")
+            def do_upload_chunk(
+                chunk=chunk,
+                output=output,
+                record_type=record_type,
+                part_title=part_title,
+                pl_title=pl_title,
+            ) -> None:
+                try:
+                    video_id, new_playlist, freed, _elapsed = upload_and_cleanup(
+                        output,
+                        part_title,
+                        privacy=args.privacy,
+                        credentials=args.credentials,
+                        token=args.token,
+                        session_dir=state_store.session_dir,
+                        resume_upload=args.resume_upload,
+                        diag_log=diag_log,
+                        keep=args.keep,
+                        playlist_id=playlist_holder["id"],
+                        playlist_title=pl_title,
+                        upload_chunk_bytes=upload_chunk_bytes,
+                    )
+                except YouTubeUploadError as exc:
+                    log(f"  Upload failed: {exc}")
+                    if diag_log:
+                        log(f"  Diagnostics: {diag_log}")
+                        log(f"  Analyze: {cli_python()} scripts/analyze_youtube_upload.py")
+                    with state_lock:
+                        mark_chunk_state(
+                            state,
+                            record_type=record_type,
+                            chunk=chunk,
+                            video_id=None,
+                            uploaded=False,
+                            output_path=output,
+                        )
+                        state_store.save(state)
+                        summary.failed += 1
+                        summary.errors.append(f"chunk {chunk.index}: {exc}")
+                    if args.continue_on_error:
+                        return
+                    raise SystemExit(1) from exc
+
+                with state_lock:
+                    playlist_holder["id"] = new_playlist
+                    if new_playlist:
+                        state["playlist_id"] = new_playlist
+                    mark_chunk_state(
+                        state,
+                        record_type=record_type,
+                        chunk=chunk,
+                        video_id=video_id,
+                        uploaded=True,
+                        output_path=output if args.keep else None,
+                    )
+                    state_store.save(state)
+                    if youtube_sync:
+                        sync_card_youtube_inventory(state, state_store, **youtube_sync)
+                    summary.uploaded += 1
+                    summary.freed_bytes += freed
+                if args.prune_merged == "after-upload":
+                    prune_merged_for_trip(
+                        args.video_dir, record_type, chunk.start, chunk.end
+                    )
+
+            if pipeline is not None:
+                pipeline.submit(do_upload_chunk)
+            else:
+                do_upload_chunk()
+    finally:
+        if pipeline is not None:
+            pipeline.shutdown()
 
     print_upload_summary(summary)
     if summary.failed:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -191,6 +192,7 @@ class ImportStateStore:
         self.sd_path = sd_import_state_path(source, label) if state_on_sd else None
         self.inventory_path = sd_inventory_path(source) if state_on_sd else None
         self.summary_path = sd_summary_path(source) if state_on_sd else None
+        self._lock = threading.Lock()
         self._data = self._load()
 
     def _load(self) -> dict:
@@ -479,9 +481,10 @@ class ImportStateStore:
             entry["size_mb"] = round(size_mb, 1)
         if elapsed_sec is not None:
             entry["elapsed_sec"] = round(elapsed_sec, 1)
-        self._data.setdefault("files", {})[key] = entry
-        if status != "skipped":
-            self._save()
+        with self._lock:
+            self._data.setdefault("files", {})[key] = entry
+            if status != "skipped":
+                self._save()
 
     def finalize(self) -> None:
         self._save()

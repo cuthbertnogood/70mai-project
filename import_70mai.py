@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -48,6 +49,8 @@ MERGE_MAX_ATTEMPTS = 3
 MERGE_RETRY_DELAY_SEC = 3.0
 MIN_MERGE_BYTES = 10_000
 MERGE_DURATION_TOLERANCE = 0.85  # merged file must be >= 85% of source clips sum
+MERGE_WORKERS = 2  # Front + Back merged in parallel (I/O-bound concat)
+PREFETCH_BLOCK = 4 * 1024 * 1024  # sequential read block for page-cache warmup
 
 
 def format_duration(seconds: float) -> str:
@@ -82,13 +85,15 @@ class ProgressTracker:
         self.done = 0
         self.start = time.monotonic()
         self._last_logged_pct = -1
+        self._lock = threading.Lock()
         self._render(force_log=True)
 
     def adjust_total(self, total: int) -> None:
         self.total = max(total, self.done, 1)
 
     def update(self, detail: str = "") -> None:
-        self.done += 1
+        with self._lock:
+            self.done += 1
         self._render(detail=detail)
 
     def _render(self, detail: str = "", force_log: bool = False) -> None:
@@ -139,6 +144,7 @@ class PipelineProgress:
         self.group_label = ""
         self.start = time.monotonic()
         self._last_logged_pct = -1
+        self._lock = threading.Lock()
         self._render(force_log=True)
 
     @property
@@ -156,11 +162,13 @@ class PipelineProgress:
         self._render(force_log=True)
 
     def probe_step(self) -> None:
-        self.probe_done += 1
+        with self._lock:
+            self.probe_done += 1
         self._render()
 
     def merge_step(self) -> None:
-        self.merge_done += 1
+        with self._lock:
+            self.merge_done += 1
         self._render()
 
     def _render(self, force_log: bool = False) -> None:
@@ -209,6 +217,7 @@ class MergeReporter:
         self._skip_batch_mb = 0.0
         self._skip_first_name = ""
         self._last_summary_done = 0
+        self._lock = threading.RLock()
 
     def _flush_skips(self, *, force: bool = False) -> None:
         if self._skip_batch == 0:
@@ -247,14 +256,15 @@ class MergeReporter:
         size_mb: float,
         pipeline: PipelineProgress | None,
     ) -> None:
-        self.done += 1
-        self.skipped += 1
-        if self._skip_batch == 0:
-            self._skip_first_name = name
-        self._skip_batch += 1
-        self._skip_batch_mb += size_mb
-        self._flush_skips()
-        self._summary()
+        with self._lock:
+            self.done += 1
+            self.skipped += 1
+            if self._skip_batch == 0:
+                self._skip_first_name = name
+            self._skip_batch += 1
+            self._skip_batch_mb += size_mb
+            self._flush_skips()
+            self._summary()
         if pipeline:
             pipeline.merge_step()
 
@@ -266,19 +276,20 @@ class MergeReporter:
         chunk: list[Clip],
         output_name: str,
     ) -> None:
-        self._flush_skips(force=True)
-        total_duration = sum(c.duration or 0.0 for c in chunk)
-        first_ts = chunk[0].timestamp.strftime("%Y-%m-%d %H:%M")
-        last_ts = chunk[-1].timestamp.strftime("%H:%M")
-        log(
-            f"  [{self.done + 1}/{self.total}] session {session_idx}/{session_total} "
-            f"| {len(chunk)} clips, {total_duration / 60:.1f} min | {first_ts}→{last_ts}"
-        )
-        log(f"       → {output_name}")
-        if len(chunk) <= 3:
-            log(f"       clips: {', '.join(c.path.name for c in chunk)}")
-        else:
-            log(f"       clips: {chunk[0].path.name} … {chunk[-1].path.name}")
+        with self._lock:
+            self._flush_skips(force=True)
+            total_duration = sum(c.duration or 0.0 for c in chunk)
+            first_ts = chunk[0].timestamp.strftime("%Y-%m-%d %H:%M")
+            last_ts = chunk[-1].timestamp.strftime("%H:%M")
+            log(
+                f"  [{self.done + 1}/{self.total}] session {session_idx}/{session_total} "
+                f"| {len(chunk)} clips, {total_duration / 60:.1f} min | {first_ts}→{last_ts}"
+            )
+            log(f"       → {output_name}")
+            if len(chunk) <= 3:
+                log(f"       clips: {', '.join(c.path.name for c in chunk)}")
+            else:
+                log(f"       clips: {chunk[0].path.name} … {chunk[-1].path.name}")
 
     def finish_merge(
         self,
@@ -289,23 +300,25 @@ class MergeReporter:
         failed: bool = False,
         dry_run: bool = False,
     ) -> None:
-        self.done += 1
-        if failed:
-            self.failed += 1
-            log("       ✗ merge failed")
-        elif dry_run:
-            self.planned += 1
-            log("       (dry-run — planned)")
-        else:
-            self.merged += 1
-            log(f"       ✓ {size_mb:.0f} MB in {format_duration(elapsed)}")
-        self._summary(force=True)
+        with self._lock:
+            self.done += 1
+            if failed:
+                self.failed += 1
+                log("       ✗ merge failed")
+            elif dry_run:
+                self.planned += 1
+                log("       (dry-run — planned)")
+            else:
+                self.merged += 1
+                log(f"       ✓ {size_mb:.0f} MB in {format_duration(elapsed)}")
+            self._summary(force=True)
         if pipeline:
             pipeline.merge_step()
 
     def finish(self) -> None:
-        self._flush_skips(force=True)
-        self._summary(force=True)
+        with self._lock:
+            self._flush_skips(force=True)
+            self._summary(force=True)
 
 
 @dataclass(frozen=True)
@@ -929,7 +942,7 @@ def split_sessions(clips: list[Clip], gap_seconds: float) -> list[list[Clip]]:
     return sessions
 
 
-def probe_duration(path: Path, ffprobe: str) -> float:
+def _probe_duration_uncached(path: Path, ffprobe: str) -> float:
     result = subprocess.run(
         [
             ffprobe,
@@ -948,6 +961,14 @@ def probe_duration(path: Path, ffprobe: str) -> float:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"ffprobe failed for {path}")
     return float(result.stdout.strip())
+
+
+def probe_duration(path: Path, ffprobe: str) -> float:
+    from probe_cache import cached_probe_duration
+
+    return cached_probe_duration(
+        path, lambda p: _probe_duration_uncached(p, ffprobe)
+    )
 
 
 def probe_duration_safe(path: Path, ffprobe: str) -> float | None:
@@ -1088,6 +1109,25 @@ def escape_concat_path(path: Path) -> str:
     return str(path.resolve()).replace("'", "'\\''")
 
 
+def _prefetch_files(paths: list[Path]) -> None:
+    """Sequentially read files to warm the OS page cache (slow SD readers)."""
+    for path in paths:
+        try:
+            with open(path, "rb", buffering=0) as handle:
+                while handle.read(PREFETCH_BLOCK):
+                    pass
+        except OSError:
+            return
+
+
+def start_prefetch(paths: list[Path]) -> threading.Thread:
+    thread = threading.Thread(
+        target=_prefetch_files, args=(list(paths),), daemon=True
+    )
+    thread.start()
+    return thread
+
+
 def merge_clips(
     chunk: list[Clip],
     output_path: Path,
@@ -1211,6 +1251,11 @@ def merge_clips(
                     "-f",
                     "concat",
                     "-safe",
+                    "0",
+                    # Uniform dashcam clips: skip deep stream analysis for faster start
+                    "-probesize",
+                    "1M",
+                    "-analyzeduration",
                     "0",
                     "-i",
                     str(list_path),
@@ -1458,6 +1503,7 @@ def process_group(
         f"{total_chunk_files} output file(s) | {session_span} ==="
     )
 
+    merge_jobs: list[tuple[int, list[Clip], Path]] = []
     for session_idx, session_with_duration, chunks in session_chunks:
         session_duration = sum(c.duration or 0.0 for c in session_with_duration)
         log(
@@ -1468,7 +1514,34 @@ def process_group(
         )
         for chunk in chunks:
             out_path = output_dir / record_type / camera / output_name(chunk)
-            status = merge_clips(
+            merge_jobs.append((session_idx, chunk, out_path))
+
+    # Warm the page cache at most ~2 chunks ahead of the mergers so ffmpeg
+    # reads from RAM instead of the slow SD reader (bounded by a semaphore
+    # to avoid evicting data before it is consumed).
+    prefetch_sem: threading.Semaphore | None = None
+    if not dry_run and len(merge_jobs) > 1:
+        pending_batches = [
+            [c.path for c in chunk]
+            for _, chunk, out_path in merge_jobs
+            if not out_path.exists()
+        ]
+        if pending_batches:
+            prefetch_sem = threading.Semaphore(2)
+
+            def _prefetch_loop(
+                batches=pending_batches, sem=prefetch_sem
+            ) -> None:
+                for batch in batches:
+                    sem.acquire()
+                    _prefetch_files(batch)
+
+            threading.Thread(target=_prefetch_loop, daemon=True).start()
+
+    def run_job(job: tuple[int, list[Clip], Path]) -> str:
+        session_idx, chunk, out_path = job
+        try:
+            return merge_clips(
                 chunk,
                 out_path,
                 ffmpeg,
@@ -1482,14 +1555,26 @@ def process_group(
                 session_idx=session_idx,
                 session_total=len(sessions),
             )
-            if status == "merged":
-                merged += 1
-            elif status == "skipped":
-                skipped += 1
-            elif status == "planned":
-                planned += 1
-            else:
-                failed += 1
+        finally:
+            if prefetch_sem is not None:
+                prefetch_sem.release()
+
+    if dry_run or MERGE_WORKERS <= 1 or len(merge_jobs) <= 1:
+        statuses = [run_job(job) for job in merge_jobs]
+    else:
+        log(f"  merging with {MERGE_WORKERS} parallel workers")
+        with ThreadPoolExecutor(max_workers=MERGE_WORKERS) as pool:
+            statuses = list(pool.map(run_job, merge_jobs))
+
+    for status in statuses:
+        if status == "merged":
+            merged += 1
+        elif status == "skipped":
+            skipped += 1
+        elif status == "planned":
+            planned += 1
+        else:
+            failed += 1
 
     log(
         f"--- {record_type}/{camera} done: {merged} merged, {skipped} skipped"
