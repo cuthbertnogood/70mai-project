@@ -423,6 +423,7 @@ def main() -> int:
                 trips=trips,
                 chunks=chunks,
                 dur_by_type=dur_by_type,
+                publish_state=state,
             )
             inventory_summary = sd_summary_path(source)
 

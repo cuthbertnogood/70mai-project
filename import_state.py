@@ -9,7 +9,11 @@ from pathlib import Path
 
 from import_70mai import Clip, format_duration, log, output_name, split_chunks, split_sessions
 from plan_estimate import Trip, build_plan
-from publish_state import ensure_sd_readme
+from publish_state import (
+    build_clip_youtube_catalog,
+    build_global_trip_upload_map,
+    ensure_sd_readme,
+)
 
 SD_IMPORT_DIR = ".70mai/import"
 INVENTORY_FILENAME = "card_inventory.json"
@@ -45,8 +49,8 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _trip_dict(trip: Trip) -> dict:
-    return {
+def _trip_dict(trip: Trip, upload: dict | None = None) -> dict:
+    data = {
         "index": trip.index,
         "record_type": trip.record_type,
         "start": trip.start.strftime("%Y-%m-%d %H:%M:%S"),
@@ -55,6 +59,12 @@ def _trip_dict(trip: Trip) -> dict:
         "duration_sec": round(trip.duration_sec, 1),
         "duration": format_duration(trip.duration_sec),
     }
+    if upload:
+        if upload.get("video_id"):
+            data["video_id"] = upload["video_id"]
+        if upload.get("youtube_url"):
+            data["youtube_url"] = upload["youtube_url"]
+    return data
 
 
 def _merge_key(record_type: str, camera: str, filename: str) -> str:
@@ -110,10 +120,27 @@ def render_card_summary(data: dict) -> str:
             lines.append("Trips:")
             for trip in trips:
                 dur_s = trip.get("duration") or "?"
-                lines.append(
+                line = (
                     f"  {trip['index']:2d}. {trip['start']} -> {trip['end']}  "
                     f"({dur_s}, {trip.get('clip_count', '?')} clips)"
                 )
+                if trip.get("youtube_url"):
+                    line += f"  -> {trip['youtube_url']}"
+                lines.append(line)
+            lines.append("")
+
+        clip_youtube = block.get("clip_youtube", {})
+        uploaded_clips = sum(
+            1
+            for cam in clip_youtube.values()
+            for info in cam.values()
+            if info.get("youtube_url")
+        )
+        total_indexed = sum(len(cam) for cam in clip_youtube.values())
+        if total_indexed:
+            lines.append(
+                f"YouTube links: {uploaded_clips}/{total_indexed} clip(s) mapped to uploads"
+            )
             lines.append("")
 
         merge_plan = block.get("merge_outputs", {})
@@ -243,10 +270,28 @@ class ImportStateStore:
         trips: list[Trip],
         chunks: list,
         dur_by_type: dict[str, float],
+        publish_state: dict | None = None,
     ) -> None:
         """Write card inventory from build_plan result (no extra ffprobe)."""
         if not self.state_on_sd or self.inventory_path is None:
             return
+
+        trip_uploads = (
+            build_global_trip_upload_map(publish_state, chunks)
+            if publish_state and chunks
+            else {}
+        )
+        clip_catalog = (
+            build_clip_youtube_catalog(
+                self.source,
+                types,
+                session_gap=self.gap_seconds,
+                publish_state=publish_state or {},
+                chunks=chunks,
+            )
+            if publish_state and chunks
+            else {}
+        )
 
         inventory: dict = {
             "updated_at": _utc_now(),
@@ -278,13 +323,35 @@ class ImportStateStore:
                 "trip_count": len(type_trips),
                 "duration_2cam": format_duration(dur_by_type.get(record_type, 0.0)),
                 "publish_chunks": len(type_chunks),
-                "trips": [_trip_dict(t) for t in type_trips],
+                "trips": [
+                    _trip_dict(t, trip_uploads.get((record_type, t.index)))
+                    for t in type_trips
+                ],
+                "clip_youtube": clip_catalog.get(record_type, {}),
                 "merge_outputs": {},
             }
 
         self._write_inventory(inventory)
         log(f"Card inventory: {self.inventory_path}")
         log(f"Card summary:   {self.summary_path}")
+
+    def sync_youtube_links(
+        self,
+        *,
+        types: list[str],
+        trips: list[Trip],
+        chunks: list,
+        dur_by_type: dict[str, float],
+        publish_state: dict,
+    ) -> None:
+        """Refresh trip + per-clip YouTube URLs on SD after upload."""
+        self.save_inventory_from_plan(
+            types=types,
+            trips=trips,
+            chunks=chunks,
+            dur_by_type=dur_by_type,
+            publish_state=publish_state,
+        )
 
     def _scan_type_camera(self, record_type: str, camera: str) -> list[Clip]:
         from import_70mai import scan_clips

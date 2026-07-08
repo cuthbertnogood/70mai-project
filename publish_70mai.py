@@ -27,7 +27,7 @@ from plan_estimate import (
     print_stdout_summary,
     render_markdown,
 )
-from publish_state import AuthStore, StateStore
+from publish_state import AuthStore, StateStore, youtube_watch_url
 from project_env import cli_python
 from youtube_upload import (
     DEFAULT_CREDENTIALS,
@@ -308,6 +308,7 @@ def mark_trip_state(
         "chunk_index": chunk_index,
         "trip_index": trip_index,
         "video_id": video_id,
+        "youtube_url": youtube_watch_url(video_id),
         "uploaded": uploaded,
         "output_path": str(output_path) if output_path else None,
     }
@@ -342,6 +343,7 @@ def mark_chunk_state(
         "wall_start": chunk.start.isoformat(),
         "trip_indices": [t.index for t in chunk.trips],
         "video_id": video_id,
+        "youtube_url": youtube_watch_url(video_id),
         "uploaded": uploaded,
         "output_path": str(output_path) if output_path else None,
     }
@@ -451,6 +453,41 @@ def publish_chunk(
     return output
 
 
+def sync_card_youtube_inventory(
+    publish_state: dict,
+    state_store: StateStore,
+    *,
+    source: Path,
+    types: list[str],
+    session_gap: float,
+    trips: list,
+    chunks: list,
+    dur_by_type: dict[str, float],
+    label: str,
+    temp_dir: Path,
+) -> None:
+    """Update SD card_inventory with per-clip YouTube URLs after upload."""
+    if not state_store.state_on_sd:
+        return
+    from import_state import ImportStateStore
+
+    store = ImportStateStore(
+        source,
+        label,
+        state_on_sd=True,
+        local_dir=temp_dir,
+        chunk_minutes=10.0,
+        gap_seconds=session_gap,
+    )
+    store.sync_youtube_links(
+        types=types,
+        trips=trips,
+        chunks=chunks,
+        dur_by_type=dur_by_type,
+        publish_state=publish_state,
+    )
+
+
 def publish_and_upload_trips(
     chunk: ChunkPlan,
     *,
@@ -481,6 +518,7 @@ def publish_and_upload_trips(
     diag_log: Path | None,
     summary: UploadSummary,
     queue_ctx: tuple[int, int, int, int] | None = None,
+    youtube_sync: dict | None = None,
 ) -> tuple[str | None, str | None]:
     """Compose and upload each trip separately; returns (last_video_id, playlist_id)."""
     chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
@@ -611,6 +649,8 @@ def publish_and_upload_trips(
         if current_playlist:
             state["playlist_id"] = current_playlist
         state_store.save(state)
+        if youtube_sync:
+            sync_card_youtube_inventory(state, state_store, **youtube_sync)
         summary.uploaded += 1
         summary.freed_bytes += freed
 
@@ -865,6 +905,19 @@ def main() -> None:
     diag_log = None if args.no_diag else args.diag_log
     summary = UploadSummary()
 
+    youtube_sync = None
+    if state_on_sd and not args.dry_run:
+        youtube_sync = {
+            "source": args.source,
+            "types": args.types,
+            "session_gap": args.session_gap,
+            "trips": trips,
+            "chunks": chunks,
+            "dur_by_type": dur_by_type,
+            "label": label,
+            "temp_dir": args.temp_dir,
+        }
+
     record_type_for_marks = args.types[0] if len(args.types) == 1 else None
     if args.mark_uploaded:
         if record_type_for_marks is None:
@@ -924,6 +977,7 @@ def main() -> None:
                 diag_log=diag_log,
                 summary=summary,
                 queue_ctx=(overall_i, len(trip_tasks), trip_idx, len(chunk.trips)),
+                youtube_sync=youtube_sync,
             )
 
         print_upload_summary(summary)
@@ -1022,6 +1076,8 @@ def main() -> None:
             output_path=output if args.compose_only or args.keep else None,
         )
         state_store.save(state)
+        if youtube_sync:
+            sync_card_youtube_inventory(state, state_store, **youtube_sync)
 
         if args.compose_only and not args.keep:
             log(f"  Kept: {output}")

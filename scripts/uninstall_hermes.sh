@@ -278,6 +278,15 @@ cleanup_extra_artifacts() {
   remove_path "$HOME_DIR/.local/state/hermes" || true
   remove_path "$HOME_DIR/Library/Caches/ms-playwright" || true
 
+  local npx_dir
+  shopt -s nullglob
+  for npx_dir in "$HOME_DIR/.npm/_npx"/*/; do
+    if [[ -f "${npx_dir}package.json" ]] && grep -q '"playwright"' "${npx_dir}package.json" 2>/dev/null; then
+      remove_path "$npx_dir" || true
+    fi
+  done
+  shopt -u nullglob
+
   local cache_dir
   shopt -s nullglob
   for cache_dir in /var/folders/*/*/*/C/com.nousresearch.hermes /var/folders/*/*/*/C/com.nousresearch.hermes.helper; do
@@ -299,6 +308,12 @@ cleanup_uv_python() {
       remove_path "$entry" || true
     done
     shopt -u nullglob
+    if [[ -d "$uv_python_dir" ]] && [[ -z "$(find "$uv_python_dir" -mindepth 1 -maxdepth 1 ! -name '.gitignore' ! -name '.lock' ! -name '.temp' -print -quit 2>/dev/null)" ]]; then
+      remove_path "$uv_python_dir" || true
+    fi
+  fi
+  if [[ -d "$HOME_DIR/.local/share/uv" ]] && [[ -z "$(find "$HOME_DIR/.local/share/uv" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+    remove_path "$HOME_DIR/.local/share/uv" || true
   fi
 }
 

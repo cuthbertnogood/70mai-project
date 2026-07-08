@@ -667,7 +667,7 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 /Volumes/Untitled/.70mai/
   auth/youtube_credentials.json   # OAuth Desktop client (~1 KB)
   auth/youtube_token.json         # refresh token after browser login (~1 KB)
-  import/card_inventory.json      # trips, dates, merge plan (machine-readable)
+  import/card_inventory.json      # trips, dates, merge plan, per-clip YouTube links
   import/CARD_SUMMARY.txt         # what's on the card (human-readable)
   import/import_Normal.state.json # merge status per output file
   publish/publish_Normal.state.json
@@ -679,7 +679,7 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 
 **Brand-new SD card (never uploaded):** autopilot detects missing `.70mai/`, creates the folder tree on the card, copies `youtube_credentials.json` from `~/.config/70mai/` (or `youtube_credentials.json` in the project root), opens the browser for YouTube OAuth if there is no token yet, initializes empty `publish_*.state.json`, then runs import → compose → upload. One-time host setup: save the Google Cloud Desktop OAuth JSON to `~/.config/70mai/youtube_credentials.json`.
 
-**Card inventory on SD:** each autopilot/import run updates `/.70mai/import/CARD_SUMMARY.txt` (trips, date range, clip counts, merge status) and `card_inventory.json`. Open the summary on any Mac to see what's recorded on the card without scanning clips.
+**Card inventory on SD:** each autopilot/import run updates `/.70mai/import/CARD_SUMMARY.txt` (trips, date range, clip counts, merge status, YouTube URLs per trip) and `card_inventory.json`. After upload, `clip_youtube` maps each SD clip filename (`Front` / `Back`) to `youtube_url`, `video_id`, and `trip_index` — all clips in one trip share the same URL. Inventory refreshes automatically after each successful YouTube upload when state is on SD.
 
 | Flag | Description |
 |------|-------------|

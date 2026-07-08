@@ -29,10 +29,10 @@ SD_README = """70mai portable data (auto-generated)
 auth/youtube_credentials.json  — OAuth Desktop client from Google Cloud (~1 KB)
 auth/youtube_token.json        — YouTube refresh token after browser login (~1 KB)
 
-publish/publish_*.state.json   — uploaded trips + YouTube video_id
+publish/publish_*.state.json   — uploaded trips + YouTube video_id / URL
 publish/sessions/*.upload.json — resume interrupted uploads (~few KB each)
 
-import/card_inventory.json     — trips, date range, clip counts (read CARD_SUMMARY.txt)
+import/card_inventory.json     — trips, date range, per-clip YouTube links
 import/import_*.state.json     — per-file merge status (host video/Output/)
 import/CARD_SUMMARY.txt        — human-readable card overview
 
@@ -121,6 +121,8 @@ def _merge_parts(
             by_key[key] = part
         elif part.get("uploaded") and existing.get("uploaded"):
             if part.get("video_id") and not existing.get("video_id"):
+                by_key[key] = part
+            elif part.get("youtube_url") and not existing.get("youtube_url"):
                 by_key[key] = part
     return list(by_key.values())
 
@@ -414,3 +416,92 @@ class StateStore:
             load_state_file(self.local_path),
         )
         return sum(1 for p in data.get("trip_parts", []) if p.get("uploaded"))
+
+
+def youtube_watch_url(video_id: str | None) -> str | None:
+    if not video_id:
+        return None
+    return f"https://youtu.be/{video_id}"
+
+
+def build_global_trip_upload_map(
+    publish_state: dict,
+    chunks: list,
+) -> dict[tuple[str, int], dict]:
+    """Map (record_type, global_trip_index) -> upload metadata from publish state."""
+    result: dict[tuple[str, int], dict] = {}
+    for chunk in chunks:
+        record_type = chunk.record_type
+        for trip_idx, trip in enumerate(chunk.trips, start=1):
+            entry = None
+            for part in publish_state.get("trip_parts", []):
+                if (
+                    part.get("record_type") == record_type
+                    and part.get("chunk_index") == chunk.index
+                    and part.get("trip_index") == trip_idx
+                ):
+                    entry = part
+                    break
+            if not entry or not entry.get("uploaded"):
+                continue
+            video_id = entry.get("video_id")
+            result[(record_type, trip.index)] = {
+                "video_id": video_id,
+                "youtube_url": entry.get("youtube_url")
+                or youtube_watch_url(video_id),
+                "chunk_index": chunk.index,
+                "trip_index_in_chunk": trip_idx,
+            }
+    return result
+
+
+def build_clip_youtube_catalog(
+    source: Path,
+    record_types: list[str],
+    *,
+    session_gap: float,
+    publish_state: dict,
+    chunks: list,
+) -> dict[str, dict[str, dict[str, dict]]]:
+    """Per SD clip filename -> YouTube link (same URL for all clips in one trip)."""
+    from import_70mai import scan_clips, split_sessions
+
+    trip_map = build_global_trip_upload_map(publish_state, chunks)
+    catalog: dict[str, dict[str, dict[str, dict]]] = {}
+
+    def trip_index_for_clip(clip, front_sessions: list[list]) -> int | None:
+        ts = clip.timestamp
+        for trip_idx, session in enumerate(front_sessions, start=1):
+            if session[0].timestamp <= ts <= session[-1].timestamp:
+                return trip_idx
+        return None
+
+    for record_type in record_types:
+        catalog[record_type] = {}
+        front_clips = scan_clips(source, [record_type], ["Front"], warn=False)
+        if not front_clips:
+            continue
+        front_sessions = split_sessions(front_clips, session_gap)
+
+        for camera in ("Front", "Back"):
+            clips = (
+                front_clips
+                if camera == "Front"
+                else scan_clips(source, [record_type], ["Back"], warn=False)
+            )
+            if not clips:
+                continue
+            by_name: dict[str, dict] = {}
+            for clip in clips:
+                trip_idx = trip_index_for_clip(clip, front_sessions)
+                upload = trip_map.get((record_type, trip_idx), {}) if trip_idx else {}
+                by_name[clip.path.name] = {
+                    "trip_index": trip_idx,
+                    "camera": camera,
+                    "timestamp": clip.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                    "video_id": upload.get("video_id"),
+                    "youtube_url": upload.get("youtube_url"),
+                    "chunk_index": upload.get("chunk_index"),
+                }
+            catalog[record_type][camera] = by_name
+    return catalog
