@@ -599,8 +599,8 @@ def publish_and_upload_trips(
 
         if record_type == "Event":
             trip_title = (
-                f"{base_title} Event — событие {trip.index} "
-                f"({trip.start:%m-%d %H:%M})"
+                f"{base_title} Event — все события "
+                f"({trip.clip_count} клипов, {trip.start:%Y-%m-%d})"
             )
         else:
             trip_title = (

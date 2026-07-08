@@ -1220,6 +1220,7 @@ def merge_clips(
 def process_event_group(
     clips: list[Clip],
     output_dir: Path,
+    ffmpeg: str,
     dry_run: bool,
     ffprobe: str,
     duration_cache: dict[Path, float],
@@ -1229,7 +1230,7 @@ def process_event_group(
     import_store: object | None = None,
     assume_seconds: float | None = None,
 ) -> tuple[int, int, int, int]:
-    """Export each Event clip as a separate file (lossless copy, no merge)."""
+    """Merge all Event clips into one file per camera (lossless concat)."""
     if not clips:
         return 0, 0, 0, 0
 
@@ -1257,68 +1258,52 @@ def process_event_group(
     )
 
     if pipeline:
-        pipeline.set_phase("exporting", f"{record_type}/{camera}")
+        pipeline.set_phase("merging", f"{record_type}/{camera}")
+
+    chunk = [
+        Clip(
+            path=clip.path,
+            record_type=clip.record_type,
+            camera=clip.camera,
+            timestamp=clip.timestamp,
+            sequence=clip.sequence,
+            duration=duration_cache[clip.path],
+        )
+        for clip in sorted_clips
+    ]
+    out_path = output_dir / record_type / camera / output_name(chunk)
+    total_duration = sum(c.duration or 0.0 for c in chunk)
 
     log(
-        f"=== Exporting {record_type}/{camera}: "
-        f"{len(sorted_clips)} event clip(s) (one file per event) ==="
+        f"=== Merging {record_type}/{camera}: {len(chunk)} event clip(s) "
+        f"-> 1 file ({format_duration(total_duration)}) ==="
     )
 
-    exported = 0
-    skipped = 0
-    failed = 0
-    planned = 0
+    status = merge_clips(
+        chunk,
+        out_path,
+        ffmpeg,
+        dry_run,
+        merge_reporter,
+        pipeline=pipeline,
+        import_store=import_store,
+        record_type=record_type,
+        camera=camera,
+        session_idx=1,
+        session_total=1,
+    )
 
-    for clip in sorted_clips:
-        out_path = output_dir / record_type / camera / event_output_name(clip)
-        if merge_reporter:
-            merge_reporter.begin_merge(
-                session_idx=1,
-                session_total=1,
-                chunk=[clip],
-                output_name=out_path.name,
-            )
-        status = export_event_clip(clip, out_path, dry_run, progress=None)
-        if status == "exported":
-            exported += 1
-            size_mb = out_path.stat().st_size / 1_000_000 if out_path.is_file() else 0
-            if import_store is not None:
-                import_store.record_merge(
-                    record_type=record_type,
-                    camera=camera,
-                    filename=out_path.name,
-                    status="merged",
-                    session_idx=1,
-                    clip_count=1,
-                    size_mb=size_mb,
-                )
-            if merge_reporter:
-                merge_reporter.finish_merge(size_mb=size_mb, elapsed=0.0, pipeline=pipeline)
-            elif pipeline:
-                pipeline.merge_step()
-        elif status == "skipped":
-            skipped += 1
-            if merge_reporter:
-                merge_reporter.skip(out_path.name, 0, pipeline)
-            elif pipeline:
-                pipeline.merge_step()
-        elif status == "planned":
-            planned += 1
-            if pipeline:
-                pipeline.merge_step()
-        else:
-            failed += 1
-            if merge_reporter:
-                merge_reporter.finish_merge(pipeline=pipeline, failed=True)
-            elif pipeline:
-                pipeline.merge_step()
+    merged = 1 if status == "merged" else 0
+    skipped = 1 if status == "skipped" else 0
+    failed = 1 if status == "failed" else 0
+    planned = 1 if status == "planned" else 0
 
     log(
-        f"--- {record_type}/{camera} done: {exported} exported, {skipped} skipped"
+        f"--- {record_type}/{camera} done: {merged} merged, {skipped} skipped"
         + (f", {planned} planned" if dry_run else "")
         + (f", {failed} failed" if failed else "")
     )
-    return exported, skipped, failed, planned
+    return merged, skipped, failed, planned
 
 
 def process_group(
@@ -1816,6 +1801,7 @@ def main() -> int:
             merged, skipped, failed, planned = process_event_group(
                 clips,
                 args.output,
+                ffmpeg,
                 args.dry_run,
                 ffprobe,
                 duration_cache,

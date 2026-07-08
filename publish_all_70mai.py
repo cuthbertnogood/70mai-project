@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Autopilot: SD card → import → compose 2-cam → YouTube → delete local MP4.
 
+Default types: Normal (trips) + Event (all events → one 2-cam YouTube video).
+
 Run outside Cursor — one command after inserting the dashcam SD card:
 
   ./scripts/publish_all_70mai.sh --wait
@@ -322,18 +324,24 @@ def print_plan_summary(
     *,
     total_trips: int,
     pending: int,
-    state_path: Path,
+    state_paths: list[Path],
     inventory_summary: Path | None = None,
 ) -> None:
     log("")
     log("=== Autopilot plan ===")
-    log(f"  State: {state_path}")
+    if state_paths:
+        names = ", ".join(p.name for p in state_paths)
+        log(f"  State: {names}")
     if inventory_summary is not None:
         log(f"  Card inventory: {inventory_summary}")
-    log(f"  Trips: {total_trips} total, {pending} pending upload")
+    log(f"  Trips/events: {total_trips} total, {pending} pending upload")
     for chunk in chunks:
+        if chunk.record_type == "Event":
+            label = "all events → 1 video"
+        else:
+            label = chunk.trip_labels
         log(
-            f"  Chunk {chunk.index}: {chunk.trip_labels} "
+            f"  [{chunk.record_type}] chunk {chunk.index}: {label} "
             f"({chunk.duration_sec / 60:.0f} min, ~{chunk.est_mb:.0f} MB est.)"
         )
     log("")
@@ -363,6 +371,8 @@ def main() -> int:
         nargs="+",
         default=DEFAULT_TYPES,
         choices=["Normal", "Event", "Parking"],
+        metavar="TYPE",
+        help="Record types to process (default: Normal Event — Event = one merged YouTube video)",
     )
     parser.add_argument("--title", default="", help="YouTube base title (auto from SD date)")
     parser.add_argument("--video-dir", type=Path, default=DEFAULT_VIDEO_DIR)
@@ -428,6 +438,10 @@ def main() -> int:
         auth_label = "_".join(args.types)
         state_on_sd = not args.no_state_on_sd
         auth_on_sd = not args.no_auth_on_sd
+        log(
+            f"Autopilot: types={', '.join(args.types)} "
+            "(Event = merge all → one YouTube upload)"
+        )
         try:
             creds, token = AuthStore.ensure_ready(
                 source,
@@ -482,14 +496,15 @@ def main() -> int:
             )
             inventory_summary = sd_summary_path(source)
 
-        st_path = StateStore(
-            source, args.temp_dir, args.types[0], state_on_sd=state_on_sd
-        ).primary_path
+        state_paths = [
+            StateStore(source, args.temp_dir, rt, state_on_sd=state_on_sd).primary_path
+            for rt in args.types
+        ]
         print_plan_summary(
             chunks,
             total_trips=total,
             pending=pending,
-            state_path=st_path,
+            state_paths=state_paths,
             inventory_summary=inventory_summary,
         )
 

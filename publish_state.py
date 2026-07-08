@@ -277,30 +277,34 @@ class AuthStore:
         creds, token = AuthStore.resolve(source, auth_on_sd=auth_on_sd)
 
         if state_on_sd:
-            sd_path = sd_state_path(source, label)
-            if dry_run:
-                if not sd_path.is_file():
-                    log(f"Dry-run: would initialize publish state on SD: {sd_path}")
-            else:
-                try:
-                    sd_publish_dir(source).mkdir(parents=True, exist_ok=True)
-                    sd_session_dir(source).mkdir(parents=True, exist_ok=True)
-                    ensure_sd_readme(source)
+            try:
+                sd_publish_dir(source).mkdir(parents=True, exist_ok=True)
+                sd_session_dir(source).mkdir(parents=True, exist_ok=True)
+                ensure_sd_readme(source)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Cannot create SD publish dir: {sd_publish_dir(source)} ({exc})"
+                ) from exc
+
+            for record_type in types:
+                sd_path = sd_state_path(source, record_type)
+                if dry_run:
                     if not sd_path.is_file():
-                        save_state_file(
-                            sd_path,
-                            {
-                                "source": str(source.resolve()),
-                                "types": types,
-                                "trip_parts": [],
-                                "parts": [],
-                            },
+                        log(
+                            f"Dry-run: would initialize publish state on SD: {sd_path}"
                         )
-                        log(f"Initialized publish state on SD: {sd_path}")
-                except OSError as exc:
-                    raise RuntimeError(
-                        f"Cannot create SD publish dir: {sd_publish_dir(source)} ({exc})"
-                    ) from exc
+                    continue
+                if not sd_path.is_file():
+                    save_state_file(
+                        sd_path,
+                        {
+                            "source": str(source.resolve()),
+                            "types": [record_type],
+                            "trip_parts": [],
+                            "parts": [],
+                        },
+                    )
+                    log(f"Initialized publish state on SD: {sd_path}")
 
         needs_oauth = not dry_run and not token.is_file()
         if new_card or needs_oauth:
@@ -483,13 +487,8 @@ def build_clip_youtube_catalog(
             continue
 
         if record_type == "Event":
-            front_sorted = sorted(
-                front_clips, key=lambda c: (c.timestamp, c.sequence)
-            )
-            trip_by_ts = {c.timestamp: idx for idx, c in enumerate(front_sorted, start=1)}
-
-            def trip_index_fn(clip, _map=trip_by_ts):
-                return _map.get(clip.timestamp)
+            def trip_index_fn(_clip):
+                return 1
 
         else:
             front_sessions = split_sessions(front_clips, session_gap)

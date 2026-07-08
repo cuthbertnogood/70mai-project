@@ -26,6 +26,10 @@ EVENT_EXPORT_RE = re.compile(
     r"^EV_(\d{8})-(\d{6})_([FB])\.mp4$",
     re.IGNORECASE,
 )
+EVENT_MERGED_RE = re.compile(
+    r"^EV_(\d{8})-(\d{6})_(\d{6})_([FB])\.mp4$",
+    re.IGNORECASE,
+)
 
 DEFAULT_PROFILE = "balanced"
 DEFAULT_DURATION = 600.0  # 10 minutes
@@ -227,6 +231,13 @@ def parse_merged_file(path: Path) -> MergedClip | None:
 
 
 def parse_event_export_file(path: Path) -> MergedClip | None:
+    match = EVENT_MERGED_RE.match(path.name)
+    if match:
+        date_part, start_part, end_part, cam_suffix = match.groups()
+        start = datetime.strptime(date_part + start_part, "%Y%m%d%H%M%S")
+        end = datetime.strptime(date_part + end_part, "%Y%m%d%H%M%S")
+        camera = "Front" if cam_suffix.upper() == "F" else "Back"
+        return MergedClip(path=path, start=start, end=end, camera=camera)
     match = EVENT_EXPORT_RE.match(path.name)
     if not match:
         return None

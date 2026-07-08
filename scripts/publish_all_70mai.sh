@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Full autopilot: insert SD card → import → compose → YouTube → delete.
 #
+# Default: Normal (trips) + Event (all events merged → one 2-cam YouTube video).
+#
 #   ./scripts/publish_all_70mai.sh --wait          # wait for SD, then run
 #   ./scripts/publish_all_70mai.sh                 # run now if SD mounted
 #   ./scripts/publish_all_70mai.sh --wait --loop   # daemon: re-run after each card session

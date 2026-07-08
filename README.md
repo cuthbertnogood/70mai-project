@@ -128,7 +128,7 @@ Use the ranges from `--scan` to pick `--date` / `--from-time` / `--to-time` for 
 
 ### Export events (one file per event)
 
-Events are short clips — each event is exported as a separate file (lossless copy, no merge). Autopilot does this automatically when `Event` is in `--types` (default: `Normal` + `Event`).
+Events are short clips — with autopilot (`Event` in `--types`, default) all events are **merged into one file per camera**, then composed as a single 2-cam video and uploaded to YouTube once. For separate files per event, use `--export-events`:
 
 ```bash
 # All events, both cameras (manual)
@@ -145,7 +145,7 @@ python3 import_70mai.py --export-events \
   --cameras Front
 ```
 
-Output: `video/Output/Event/Front/EV_20260427-084748_F.mp4` (lossless copy from SD card). With autopilot, each event is then composed into a vertical 2-cam clip and uploaded to YouTube as a separate video (`publish_Event.state.json` tracks progress).
+Output (autopilot): `video/Output/Event/Front/EV_20260427-084748_153012_F.mp4` — all events concat into one file; one YouTube upload (`publish_Event.state.json`). `--export-events` still copies each event separately.
 
 Respects the same `--date`, `--from`/`--to`, and `--cameras` filters as normal export. Does not require ffmpeg.
 
@@ -656,8 +656,8 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 |------|------|-------|
 | Detect SD | auto | `/Volumes/Untitled` or scan `/Volumes/*` for 70mai layout |
 | **New card setup** | autopilot | Creates `.70mai/` on SD, copies OAuth from host/project, browser login if needed |
-| Import | `import_70mai.py` | Normal → merge; Event → one file per event (copy) |
-| Compose + upload | `publish_70mai.py` | `--per-trip-upload` — one YouTube video per trip (Normal) or per event (Event) |
+| Import | `import_70mai.py` | Normal → merge by session; Event → **all clips → one file** per camera |
+| Compose + upload | `publish_70mai.py` | Normal: one video per trip; Event: **one video for all events** |
 | Skip done | state file | `publish_Normal.state.json`, `publish_Event.state.json` on SD + local cache |
 | Portable | SD `.70mai/` | State + OAuth + import inventory on card |
 
@@ -692,7 +692,7 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 | `--no-auth-on-sd` | Keep OAuth only on host (`~/.config/70mai/`) |
 | `--title` | YouTube title (default: date from first trip) |
 
-Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog. Types: **`Normal` + `Event`** — each collision/manual event becomes one 2-cam YouTube upload.
+Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog. Types: **`Normal` + `Event`** — all collision/manual events on the card become **one** 2-cam YouTube video.
 
 Master log: `video/Output/.publish_tmp/publish_all.log`. Lock file (`.publish_all.lock`) prevents duplicate autopilot runs.
 

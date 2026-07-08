@@ -163,49 +163,43 @@ def pack_trips_to_chunks(trips: list[Trip], target_sec: float) -> list[ChunkPlan
     return chunks
 
 
-def event_trips_from_clips(
+def event_trip_from_all_clips(
     record_type: str,
     front: list[Clip],
     back: list[Clip],
 ) -> list[Trip]:
-    """One trip per event clip (Front timestamp); pair with matching Back clip."""
-    back_by_ts: dict[datetime, Clip] = {}
-    for clip in back:
-        back_by_ts.setdefault(clip.timestamp, clip)
+    """Single trip/chunk for all Event clips (one 2-cam YouTube video)."""
+    if not front:
+        return []
 
-    trips: list[Trip] = []
-    for idx, fclip in enumerate(
-        sorted(front, key=lambda c: (c.timestamp, c.sequence)), start=1
-    ):
-        bclip = back_by_ts.get(fclip.timestamp)
-        f_dur = fclip.duration or 0.0
-        b_dur = bclip.duration if bclip else 0.0
-        duration = max(f_dur, b_dur) if bclip else f_dur
-        if duration <= 0:
-            duration = 15.0
-        end_ts = fclip.timestamp + timedelta(seconds=duration)
-        trips.append(
-            Trip(
-                record_type=record_type,
-                index=idx,
-                start=fclip.timestamp,
-                end=end_ts,
-                clip_count=1 + (1 if bclip else 0),
-                duration_sec=duration,
-            )
+    sorted_front = sorted(front, key=lambda c: (c.timestamp, c.sequence))
+    front_dur = sum(c.duration or 0.0 for c in sorted_front)
+    back_dur = sum(c.duration or 0.0 for c in back) if back else 0.0
+    duration = min(front_dur, back_dur) if back else front_dur
+    if duration <= 0:
+        duration = max(front_dur, back_dur, 15.0)
+
+    start = sorted_front[0].timestamp
+    end = start + timedelta(seconds=duration)
+    clip_count = len(sorted_front) + (len(back) if back else 0)
+    return [
+        Trip(
+            record_type=record_type,
+            index=1,
+            start=start,
+            end=end,
+            clip_count=clip_count,
+            duration_sec=duration,
         )
-    return trips
+    ]
 
 
 def pack_event_trips_to_chunks(trips: list[Trip]) -> list[ChunkPlan]:
-    """Each event is its own upload chunk (one short 2-cam video per event)."""
+    """All events in one upload chunk."""
     if not trips:
         return []
     record_type = trips[0].record_type
-    return [
-        ChunkPlan(record_type=record_type, index=idx, trips=(trip,))
-        for idx, trip in enumerate(trips, start=1)
-    ]
+    return [ChunkPlan(record_type=record_type, index=1, trips=tuple(trips))]
 
 
 def build_plan(
@@ -234,19 +228,18 @@ def build_plan(
         back = probe_clips(back_raw, ffprobe) if back_raw else []
 
         if record_type == "Event":
-            event_trips = event_trips_from_clips(record_type, front, back)
+            event_trips = event_trip_from_all_clips(record_type, front, back)
             if not event_trips:
                 continue
-            pair_dur = sum(t.duration_sec for t in event_trips)
+            pair_dur = event_trips[0].duration_sec
             dur_by_type[record_type] = pair_dur
             chunks = pack_event_trips_to_chunks(event_trips)
             all_trips.extend(event_trips)
             all_chunks.extend(chunks)
             log(
-                f"  Event: {len(event_trips)} event(s), "
-                f"{format_duration(pair_dur)} total (2-cam)"
+                f"  Event: {len(front)} front + {len(back)} back clip(s), "
+                f"{format_duration(pair_dur)} (2-cam) -> 1 upload"
             )
-            log(f"  -> {len(chunks)} upload(s), one per event")
             continue
 
         front_dur = sum(c.duration or 0.0 for c in front)

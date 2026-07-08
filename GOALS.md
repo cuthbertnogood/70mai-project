@@ -58,7 +58,7 @@ Target chunk: **2 ч по поездкам** (короткие поездки с
 | 4 | 9–10 | 6008 | compose → upload → delete |
 | 3 | 8 | 7729 | compose → upload → delete (самый долгий) |
 
-**Оставшиеся chunks (2–5):** autopilot (`publish_all_70mai.sh`) обрабатывает все pending trips сам — compose → upload → delete, с `--resume` и state на SD. По умолчанию: **Normal** (поездки) + **Event** (каждое событие — отдельный 2-cam ролик на YouTube). Для долгой сессии с auto-restart: `watch_publish_all_70mai.sh --skip-import`.
+**Оставшиеся chunks (2–5):** autopilot (`publish_all_70mai.sh`) обрабатывает все pending trips сам — compose → upload → delete, с `--resume` и state на SD. По умолчанию: **Normal** (поездки) + **Event** (все события на карте — **один** 2-cam ролик на YouTube). Для долгой сессии с auto-restart: `watch_publish_all_70mai.sh --skip-import`.
 
 YouTube quota ~6 видео/день — при 429/errors продолжить на следующий день с `--resume`.
 
