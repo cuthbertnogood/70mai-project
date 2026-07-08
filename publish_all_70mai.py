@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -33,6 +35,8 @@ DEFAULT_LOG = DEFAULT_TEMP_DIR / "publish_all.log"
 LOCK_FILE = DEFAULT_TEMP_DIR / ".publish_all.lock"
 SD_POLL_SEC = 15
 PUBLISH_WAIT_SEC = 30
+PUBLISH_WAIT_MAX_SEC = 90
+_PUBLISH_CMD_RE = re.compile(r"(?:^|[\s/])publish_70mai\.py(?:\s|$)")
 
 # Directories that indicate a 70mai SD card layout.
 SD_MARKERS = (
@@ -75,30 +79,126 @@ def wait_for_sd(*, poll_sec: int = SD_POLL_SEC) -> Path:
         time.sleep(poll_sec)
 
 
-def wait_for_other_publish(*, poll_sec: int = PUBLISH_WAIT_SEC) -> None:
-    while _publish_running():
-        log("Another publish_70mai.py is running — waiting...")
-        time.sleep(poll_sec)
-
-
-def _publish_running() -> bool:
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
     try:
-        out = subprocess.run(
-            ["pgrep", "-f", "publish_70mai\\.py"],
-            capture_output=True,
-            text=True,
-        )
-        return out.returncode == 0
+        os.kill(pid, 0)
     except OSError:
         return False
+    return True
 
 
-def acquire_lock() -> None:
+def _is_publish_70mai_cmd(cmd: str) -> bool:
+    if "publish_all_70mai" in cmd:
+        return False
+    if not _PUBLISH_CMD_RE.search(cmd):
+        return False
+    # Ignore shell one-liners that merely mention the script name (pgrep, tail, etc.).
+    return "python" in cmd.lower()
+
+
+def _publish_pids() -> list[int]:
+    """PIDs running publish_70mai.py (not publish_all_70mai.py or shell wrappers)."""
+    try:
+        out = subprocess.run(
+            ["ps", "ax", "-o", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    pids: list[int] = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid_s, cmd = parts
+        if not _is_publish_70mai_cmd(cmd):
+            continue
+        try:
+            pids.append(int(pid_s))
+        except ValueError:
+            continue
+    return pids
+
+
+def _kill_pids(pids: list[int], *, label: str) -> None:
+    targets = [p for p in pids if p != os.getpid()]
+    if not targets:
+        return
+    log(f"Sending SIGTERM to {label}: {targets}")
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    time.sleep(3)
+    survivors = [p for p in targets if _pid_alive(p)]
+    if survivors:
+        log(f"Sending SIGKILL to {label}: {survivors}")
+        for pid in survivors:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        time.sleep(1)
+
+
+def ensure_publish_slot(
+    *,
+    wait_sec: int = PUBLISH_WAIT_SEC,
+    max_wait_sec: int = PUBLISH_WAIT_MAX_SEC,
+    force: bool = False,
+) -> None:
+    """Wait for publish_70mai.py to finish; kill stale/orphan processes on timeout or --force-restart."""
+    if force:
+        pids = _publish_pids()
+        if pids:
+            _kill_pids(pids, label="publish_70mai.py")
+        return
+
+    waited = 0
+    while True:
+        pids = _publish_pids()
+        if not pids:
+            return
+        if waited >= max_wait_sec:
+            log(
+                f"publish_70mai.py still running after {waited}s (pids {pids}) — killing stale process(es)"
+            )
+            _kill_pids(pids, label="publish_70mai.py")
+            if _publish_pids():
+                log("ERROR: publish_70mai.py did not stop after SIGKILL")
+                raise SystemExit(1)
+            return
+        log(f"Another publish_70mai.py is running (pids {pids}) — waiting {wait_sec}s...")
+        time.sleep(wait_sec)
+        waited += wait_sec
+
+
+def acquire_lock(*, force: bool = False) -> None:
     DEFAULT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
     if LOCK_FILE.is_file():
-        pid = LOCK_FILE.read_text(encoding="utf-8").strip()
-        log(f"ERROR: another publish_all may be running (lock {LOCK_FILE}, pid {pid})")
-        raise SystemExit(1)
+        raw = LOCK_FILE.read_text(encoding="utf-8").strip()
+        try:
+            pid = int(raw)
+        except ValueError:
+            pid = 0
+        if pid and pid != os.getpid() and _pid_alive(pid):
+            if force:
+                log(f"Force-restart: killing autopilot pid {pid} (lock {LOCK_FILE})")
+                _kill_pids([pid], label="publish_all_70mai.py")
+            else:
+                log(f"ERROR: another publish_all may be running (lock {LOCK_FILE}, pid {pid})")
+                raise SystemExit(1)
+        elif pid and not _pid_alive(pid):
+            log(f"Removing stale autopilot lock (pid {pid} not running)")
+        LOCK_FILE.unlink(missing_ok=True)
     LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
 
@@ -229,6 +329,11 @@ def main() -> int:
         default=DEFAULT_LOG,
         help="Master log file (append)",
     )
+    parser.add_argument(
+        "--force-restart",
+        action="store_true",
+        help="Kill stale publish_70mai / lock holder and start fresh (used by watchdog)",
+    )
     args = parser.parse_args()
 
     from project_env import ensure_venv_python
@@ -290,7 +395,7 @@ def main() -> int:
             state_path=st_path,
         )
 
-        wait_for_other_publish()
+        ensure_publish_slot(force=args.force_restart)
 
         append_log(args.log, f"publish_all start source={source} pending={pending}")
         failed = 0
@@ -357,7 +462,7 @@ def main() -> int:
             log(f"State: {uploaded} trip(s) marked uploaded in {st_path.name}")
         return failed
 
-    acquire_lock()
+    acquire_lock(force=args.force_restart)
     try:
         if args.loop:
             while True:

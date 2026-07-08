@@ -689,12 +689,13 @@ pgrep -fl publish_70mai
 | `--continue-on-error` | On one trip failure, continue to the next |
 | `--wait` | Block until SD card appears |
 | `--loop` | After a full run, wait for SD again and start next session (not crash recovery) |
-| Lock file | Refuses a second autopilot instance |
+| Lock file | Refuses a second autopilot instance (unless `--force-restart`) |
 
-Autopilot does **not** auto-restart if `publish_70mai.py` crashes or an upload stalls with no progress. After a kill/crash, rerun manually — pending trips and in-progress uploads resume from SD:
+On crash or hang, rerun manually or use the upload watchdog (below) — pending trips and in-progress uploads resume from SD:
 
 ```bash
 ./scripts/publish_all_70mai.sh --skip-import   # MP4s already on host
+./scripts/publish_all_70mai.sh --skip-import --force-restart   # kill stale publish_70mai first
 ```
 
 **Switch mid-upload to autopilot:** copy the active session to SD before stopping the old process, or the trip restarts from 0%:
@@ -714,7 +715,7 @@ MONITOR_CHUNK=1 MONITOR_STALL_SEC=900 ./scripts/monitor_compose.sh
 # log: video/Output/.publish_tmp/monitor_chunk1.log
 ```
 
-**Upload watchdog:** `scripts/watch_publish_all_70mai.sh` restarts autopilot after a crash; exits when autopilot finishes cleanly (default). Clears stale lock files if the previous run was killed.
+**Upload watchdog:** `scripts/watch_publish_all_70mai.sh` restarts autopilot after a crash or stall. On each attempt it kills stale `publish_70mai.py` / hung autopilot (lock takeover), passes `--force-restart`, and exits when autopilot finishes cleanly (default).
 
 ```bash
 # Long upload session — restart on crash, stop when all trips uploaded
@@ -732,6 +733,11 @@ WATCH_ONCE=1 ./scripts/watch_publish_all_70mai.sh --skip-import
 | `WATCH_RESTART_SEC` | `60` | Sleep before restart after failure |
 | `WATCH_STOP_ON_SUCCESS` | `1` | Exit watchdog when autopilot returns 0 |
 | `WATCH_ONCE` | `0` | One autopilot run, then exit |
+| `WATCH_STALL_SEC` | `1800` | Kill autopilot if `publish_all.log` has no new bytes for this long |
+
+| Flag | Description |
+|------|-------------|
+| `--force-restart` | Kill stale `publish_70mai.py` and lock holder, then start (autopilot / watchdog) |
 
 Watchdog log: `video/Output/.publish_tmp/publish_all_watchdog.log`. Do not run two watchdogs at once (separate lock file).
 
