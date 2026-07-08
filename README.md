@@ -314,7 +314,23 @@ TOTAL: [████████░░░░░░░░░░░░░░░░
 Probe: [██████████████████░░░░░░░░░░░░░░░░] 854/1906 (44.8%) | 7m 18s elapsed | ETA 9m 02s
 ```
 
-When output is piped to a log file (`tee`), bars are printed as periodic text lines instead.
+When output is piped to a log file (`tee`, autopilot), bars are printed as periodic text lines instead.
+
+**Merge phase** (in log files):
+
+```
+=== Merging Normal/Front: 11 sessions, 104 output file(s) | 2026-04-25 13:01 – 2026-04-27 08:56 ===
+  session 8/11: 18 file(s), 172.3 min raw | 2026-04-26 15:33 – 08:43
+  skip ×5 (11240 MB total) — e.g. NO_20260425-130119_131019_F.mp4
+  [18/104] session 8/11 | 10 clips, 10.0 min | 2026-04-26 15:33→15:42
+       → NO_20260426-153356_154256_F.mp4
+       clips: NO20260426-153356F.MP4 … NO20260426-154256F.MP4
+       ffmpeg concat -c copy …
+       ✓ 2325 MB in 1m 59s
+Merge [██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 18/104 (17.3%) | new 3 skip 14 fail 0 | 2m 41s elapsed, ETA 12m 52s
+```
+
+Existing output files are batched (`skip ×5`) instead of one line per file.
 
 Parallel **ffprobe** (8 workers) speeds up duration detection before merge.
 
@@ -745,6 +761,26 @@ WATCH_ONCE=1 ./scripts/watch_publish_all_70mai.sh --skip-import
 | `--force-restart` | Kill stale `publish_70mai.py` and lock holder, then start (autopilot / watchdog) |
 
 Watchdog log: `video/Output/.publish_tmp/publish_all_watchdog.log`. Do not run two watchdogs at once (separate lock file).
+
+## Hermes Agent uninstall (macOS)
+
+Utility script to fully remove [Hermes Agent](https://hermes-agent.nousresearch.com/) if it was installed on the host (CLI, gateway, desktop app, `~/.hermes`, uv Python). Does **not** remove Homebrew `ripgrep` or other shared tools.
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | List paths that would be removed; no changes |
+| `--yes` / `-y` | Skip confirmation prompt |
+
+```bash
+# Preview
+./scripts/uninstall_hermes.sh --dry-run
+
+# Remove everything
+./scripts/uninstall_hermes.sh --yes
+
+# Reload shell after uninstall
+source ~/.zshrc
+```
 
 ## Notes
 

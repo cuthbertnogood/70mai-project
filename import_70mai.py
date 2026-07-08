@@ -1222,6 +1222,7 @@ def process_group(
     if pipeline:
         pipeline.set_phase("merging", f"{record_type}/{camera}")
 
+    session_chunks: list[tuple[int, list[Clip], list[list[Clip]]]] = []
     for session_idx, session in enumerate(sessions, start=1):
         session_with_duration = [
             Clip(
@@ -1235,7 +1236,28 @@ def process_group(
             for clip in session
         ]
         chunks = split_chunks(session_with_duration, chunk_seconds)
-        log(f"  session {session_idx}/{len(sessions)} -> {len(chunks)} output file(s)")
+        session_chunks.append((session_idx, session_with_duration, chunks))
+
+    total_chunk_files = sum(len(chunks) for _, _, chunks in session_chunks)
+    session_span = (
+        f"{sessions[0][0].timestamp:%Y-%m-%d %H:%M} – "
+        f"{sessions[-1][-1].timestamp:%Y-%m-%d %H:%M}"
+        if sessions
+        else "—"
+    )
+    log(
+        f"=== Merging {record_type}/{camera}: {len(sessions)} sessions, "
+        f"{total_chunk_files} output file(s) | {session_span} ==="
+    )
+
+    for session_idx, session_with_duration, chunks in session_chunks:
+        session_duration = sum(c.duration or 0.0 for c in session_with_duration)
+        log(
+            f"  session {session_idx}/{len(sessions)}: {len(chunks)} file(s), "
+            f"{session_duration / 60:.1f} min raw | "
+            f"{session_with_duration[0].timestamp:%Y-%m-%d %H:%M} – "
+            f"{session_with_duration[-1].timestamp:%H:%M}"
+        )
         for chunk in chunks:
             out_path = output_dir / record_type / camera / output_name(chunk)
             status = merge_clips(
@@ -1243,8 +1265,10 @@ def process_group(
                 out_path,
                 ffmpeg,
                 dry_run,
-                merge_progress,
-                pipeline,
+                merge_reporter,
+                pipeline=pipeline,
+                session_idx=session_idx,
+                session_total=len(sessions),
             )
             if status == "merged":
                 merged += 1
@@ -1254,6 +1278,12 @@ def process_group(
                 planned += 1
             else:
                 failed += 1
+
+    log(
+        f"--- {record_type}/{camera} done: {merged} merged, {skipped} skipped"
+        + (f", {planned} planned" if dry_run else "")
+        + (f", {failed} failed" if failed else "")
+    )
     return merged, skipped, failed, planned
 
 
@@ -1585,7 +1615,7 @@ def main() -> int:
     probe_progress = (
         None if assume_seconds is not None else ProgressTracker(total_clips, "Probe")
     )
-    merge_progress = ProgressTracker(max(total_outputs, 1), "Merge")
+    merge_reporter = MergeReporter(max(total_outputs, 1))
     pipeline = PipelineProgress(total_clips, max(total_outputs, 1))
 
     duration_cache: dict[Path, float] = {}
@@ -1606,7 +1636,7 @@ def main() -> int:
             args.dry_run,
             duration_cache,
             probe_progress,
-            merge_progress,
+            merge_reporter,
             pipeline,
             assume_seconds=assume_seconds,
         )
@@ -1617,7 +1647,7 @@ def main() -> int:
 
     if probe_progress:
         probe_progress.finish()
-    merge_progress.finish()
+    merge_reporter.finish()
     pipeline.finish()
 
     elapsed = time.monotonic() - run_start
