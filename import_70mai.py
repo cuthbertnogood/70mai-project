@@ -52,6 +52,18 @@ MERGE_DURATION_TOLERANCE = 0.85  # merged file must be >= 85% of source clips su
 MERGE_WORKERS = 2  # Front + Back merged in parallel (I/O-bound concat)
 MERGE_HEARTBEAT_SEC = 30.0  # log while ffmpeg concat is silent
 PREFETCH_BLOCK = 4 * 1024 * 1024  # sequential read block for page-cache warmup
+LOG_TIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+def format_log_line(msg: str) -> str:
+    """Prefix a log message with a wall-clock timestamp (empty lines unchanged)."""
+    if not msg:
+        return ""
+    return f"{datetime.now().strftime(LOG_TIME_FMT)} {msg}"
+
+
+def log(msg: str) -> None:
+    print(format_log_line(msg), flush=True)
 
 
 def format_duration(seconds: float) -> str:
@@ -63,10 +75,6 @@ def format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes}m {secs:02d}s"
     return f"{secs}s"
-
-
-def log(msg: str) -> None:
-    print(msg, flush=True)
 
 
 def run_quiet_subprocess(

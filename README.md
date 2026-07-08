@@ -342,7 +342,7 @@ Parallel **ffprobe** (8 workers) speeds up duration detection before merge. Fail
 - **ffprobe cache** — durations are stored in `video/Output/.probe_cache.json` (keyed by path+mtime+size) and shared by `plan_estimate.py`, `import_70mai.py`, and `publish_70mai.py`, so each SD clip is probed once per card instead of on every step (saves 10–20 min per autopilot run on large cards).
 - **Fast concat start** — `-probesize 1M -analyzeduration 0` on concat input (dashcam clips are uniform; deep stream analysis is unnecessary).
 
-Each line is flushed immediately:
+Each line is flushed immediately (prefix `YYYY-MM-DD HH:MM:SS` on non-empty lines):
 
 ```bash
 python3 import_70mai.py 2>&1 | tee import.log

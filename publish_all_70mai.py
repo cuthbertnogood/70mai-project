@@ -25,7 +25,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from import_70mai import log as _console_log
+from import_70mai import format_log_line, log as _console_log
 from plan_estimate import DEFAULT_SESSION_GAP, YOUTUBE_DAILY_UPLOADS, build_plan
 from publish_70mai import trip_uploaded
 from publish_state import AuthStore, StateStore
@@ -37,7 +37,7 @@ def log(msg: str) -> None:
     """Print to terminal and mirror to publish_all.log when tee is active."""
     _console_log(msg)
     if _log_sink is not None:
-        _log_sink.write(msg + "\n")
+        _log_sink.write(format_log_line(msg) + "\n")
         _log_sink.flush()
 
 

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from import_70mai import log
+
 SCREEN_RE = re.compile(
     r"^ScreenRecording_(\d{2}-\d{2}-\d{4}) (\d{2}-\d{2}-\d{2})",
     re.IGNORECASE,
@@ -85,10 +87,6 @@ class MergedClip:
     end: datetime
     camera: str  # "Front" or "Back"
     duration: float | None = None
-
-
-def log(msg: str) -> None:
-    print(msg, flush=True)
 
 
 def format_duration(seconds: float) -> str:
