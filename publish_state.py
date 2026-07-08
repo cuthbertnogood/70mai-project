@@ -9,6 +9,12 @@ from pathlib import Path
 
 from import_70mai import log
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_CREDENTIALS_CANDIDATES = (
+    PROJECT_ROOT / "youtube_credentials.json",
+    PROJECT_ROOT / "config" / "youtube_credentials.json",
+)
+
 SD_ROOT_DIR = ".70mai"
 SD_PUBLISH_DIR = ".70mai/publish"
 SD_AUTH_DIR = ".70mai/auth"
@@ -29,6 +35,7 @@ publish/sessions/*.upload.json — resume interrupted uploads (~few KB each)
 Insert this SD card on any Mac with the project + run:
   ./scripts/publish_all_70mai.sh --wait
 
+Autopilot creates this folder on first use (OAuth from ~/.config/70mai/ or project).
 Raw clips stay on the card; composed MP4s are temporary on the host and deleted after upload.
 
 SECURITY: auth/youtube_token.json grants upload access to your YouTube account.
@@ -150,12 +157,70 @@ def save_state_file(path: Path, data: dict) -> None:
 
 def ensure_sd_readme(source: Path) -> None:
     readme = sd_root_dir(source) / "README.txt"
-    if not readme.is_file():
-        try:
-            readme.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        readme.parent.mkdir(parents=True, exist_ok=True)
+        if not readme.is_file():
             readme.write_text(SD_README, encoding="utf-8")
-        except OSError:
-            pass
+    except OSError:
+        pass
+
+
+def sd_is_new_card(source: Path) -> bool:
+    """True when .70mai/ has never been created on this card."""
+    return not sd_root_dir(source).is_dir()
+
+
+def _credentials_search_paths() -> list[Path]:
+    paths = [local_credentials_path(), *PROJECT_CREDENTIALS_CANDIDATES]
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        key = str(path.resolve()) if path.is_file() else str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _copy_credentials_to_sd(source: Path) -> Path | None:
+    """Copy OAuth client JSON onto SD from host or project. Returns SD path if ready."""
+    sd_creds = sd_credentials_path(source)
+    if sd_creds.is_file():
+        return sd_creds
+    for candidate in _credentials_search_paths():
+        if not candidate.is_file():
+            continue
+        try:
+            sd_auth_dir(source).mkdir(parents=True, exist_ok=True)
+            shutil.copy2(candidate, sd_creds)
+            log(f"Migrating credentials → SD: {sd_creds} (from {candidate})")
+            return sd_creds
+        except OSError as exc:
+            raise RuntimeError(f"Cannot copy credentials to SD: {sd_creds} ({exc})") from exc
+    return None
+
+
+def _credentials_missing_message(sd_creds: Path) -> str:
+    lines = [
+        "OAuth credentials not found on SD or host.",
+        f"  SD: {sd_creds}",
+        "  Searched:",
+    ]
+    for path in _credentials_search_paths():
+        lines.append(f"    {path}")
+    lines.extend(
+        [
+            "",
+            "One-time setup:",
+            "  1. Google Cloud Console → enable YouTube Data API v3",
+            "  2. OAuth consent screen → add your Google account as test user",
+            "  3. Credentials → OAuth client ID → Desktop app → download JSON",
+            f"  4. Save as {local_credentials_path()}",
+            "     (autopilot will copy it to the SD card on next run)",
+        ]
+    )
+    return "\n".join(lines)
 
 
 class AuthStore:
@@ -167,6 +232,8 @@ class AuthStore:
         local_token = local_token_path()
         if not auth_on_sd:
             log(f"OAuth (local): {LOCAL_CONFIG_DIR}")
+            if not local_creds.is_file():
+                raise FileNotFoundError(_credentials_missing_message(local_creds))
             return local_creds, local_token
 
         sd_creds = sd_credentials_path(source)
@@ -178,17 +245,9 @@ class AuthStore:
             raise RuntimeError(f"Cannot create SD auth dir: {sd_auth_dir(source)} ({exc})") from exc
 
         if not sd_creds.is_file():
-            if local_creds.is_file():
-                shutil.copy2(local_creds, sd_creds)
-                log(f"Migrating credentials → SD: {sd_creds}")
-            else:
-                raise FileNotFoundError(
-                    f"OAuth credentials not found on SD or host.\n"
-                    f"  SD: {sd_creds}\n"
-                    f"  Local: {local_creds}\n"
-                    "Download Desktop OAuth JSON from Google Cloud Console "
-                    "(YouTube Data API v3) and save to either path."
-                )
+            copied = _copy_credentials_to_sd(source)
+            if copied is None:
+                raise FileNotFoundError(_credentials_missing_message(sd_creds))
 
         if not sd_token.is_file() and local_token.is_file():
             shutil.copy2(local_token, sd_token)
@@ -196,6 +255,65 @@ class AuthStore:
 
         log(f"OAuth (SD): {sd_auth_dir(source)}")
         return sd_creds, sd_token
+
+    @staticmethod
+    def ensure_ready(
+        source: Path,
+        label: str,
+        *,
+        auth_on_sd: bool,
+        state_on_sd: bool,
+        types: list[str],
+        dry_run: bool = False,
+    ) -> tuple[Path, Path]:
+        """Bootstrap a fresh SD card: .70mai layout, OAuth, empty publish state."""
+        new_card = sd_is_new_card(source)
+        creds, token = AuthStore.resolve(source, auth_on_sd=auth_on_sd)
+
+        if state_on_sd:
+            try:
+                sd_publish_dir(source).mkdir(parents=True, exist_ok=True)
+                sd_session_dir(source).mkdir(parents=True, exist_ok=True)
+                ensure_sd_readme(source)
+                sd_path = sd_state_path(source, label)
+                if not sd_path.is_file():
+                    save_state_file(
+                        sd_path,
+                        {
+                            "source": str(source.resolve()),
+                            "types": types,
+                            "trip_parts": [],
+                            "parts": [],
+                        },
+                    )
+                    log(f"Initialized publish state on SD: {sd_path}")
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Cannot create SD publish dir: {sd_publish_dir(source)} ({exc})"
+                ) from exc
+
+        needs_oauth = not dry_run and not token.is_file()
+        if new_card or needs_oauth:
+            log("")
+            if new_card:
+                log("=== New SD card — first-time setup ===")
+                log(f"  Card: {source}")
+                log("  Creating .70mai/ (OAuth + publish state on card)")
+            if needs_oauth:
+                log("YouTube OAuth: browser login required (one-time per card/account)")
+            elif new_card:
+                log("YouTube OAuth: token copied from host")
+
+        if needs_oauth:
+            from youtube_upload import load_credentials
+
+            load_credentials(creds, token)
+            log(f"OAuth ready: {token}")
+        elif new_card:
+            log("SD card ready for autopilot")
+            log("")
+
+        return creds, token
 
     @staticmethod
     def sync_token(primary: Path) -> None:

@@ -340,8 +340,10 @@ def main() -> int:
 
     ensure_venv_python()
     python = sys.executable
+    last_sd_source: Path | None = None
 
     def run_once() -> int:
+        nonlocal last_sd_source
         if args.wait or args.source is None:
             if args.wait:
                 source = wait_for_sd()
@@ -356,6 +358,10 @@ def main() -> int:
                 log(f"Source not found: {source}")
                 return 1
 
+        if last_sd_source is not None and source != last_sd_source:
+            log(f"SD card changed: {last_sd_source} → {source}")
+        last_sd_source = source
+
         ffprobe = shutil.which("ffprobe")
         if not ffprobe and not args.dry_run:
             log("ffprobe not found")
@@ -365,7 +371,14 @@ def main() -> int:
         state_on_sd = not args.no_state_on_sd
         auth_on_sd = not args.no_auth_on_sd
         try:
-            creds, token = AuthStore.resolve(source, auth_on_sd=auth_on_sd)
+            creds, token = AuthStore.ensure_ready(
+                source,
+                label,
+                auth_on_sd=auth_on_sd,
+                state_on_sd=state_on_sd,
+                types=args.types,
+                dry_run=args.dry_run,
+            )
         except (FileNotFoundError, RuntimeError) as exc:
             log(str(exc))
             return 1
