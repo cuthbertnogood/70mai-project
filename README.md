@@ -44,6 +44,8 @@ python3 import_70mai.py --scan --source /Volumes/Untitled
 
 `video/` and all `.mp4` files stay local — import/compose recreate them under `video/Output/`.
 
+**New SD card:** autopilot auto-creates `.70mai/` on the card (OAuth + state) before the first upload — see [Autopilot](#autopilot-sd-card--youtube-zero-manual-steps).
+
 **Autopilot** (SD → compose → YouTube, resume-safe):
 
 ```bash
@@ -637,6 +639,7 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 | Step | Tool | Notes |
 |------|------|-------|
 | Detect SD | auto | `/Volumes/Untitled` or scan `/Volumes/*` for 70mai layout |
+| **New card setup** | autopilot | Creates `.70mai/` on SD, copies OAuth from host/project, browser login if needed |
 | Import | `import_70mai.py` | Merge new clips into `video/Output/` |
 | Compose + upload | `publish_70mai.py` | `--per-trip-upload --resume --continue-on-error` |
 | Skip done | state file | `publish_Normal.state.json` on SD + local cache |
@@ -654,6 +657,8 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 ```
 
 On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh --wait` — no separate OAuth setup if the token on the card is still valid. Merged clips on host (`video/Output/`) are rebuilt by import if missing.
+
+**Brand-new SD card (never uploaded):** autopilot detects missing `.70mai/`, creates the folder tree on the card, copies `youtube_credentials.json` from `~/.config/70mai/` (or `youtube_credentials.json` in the project root), opens the browser for YouTube OAuth if there is no token yet, initializes empty `publish_*.state.json`, then runs import → compose → upload. One-time host setup: save the Google Cloud Desktop OAuth JSON to `~/.config/70mai/youtube_credentials.json`.
 
 | Flag | Description |
 |------|-------------|

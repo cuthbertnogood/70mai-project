@@ -271,26 +271,30 @@ class AuthStore:
         creds, token = AuthStore.resolve(source, auth_on_sd=auth_on_sd)
 
         if state_on_sd:
-            try:
-                sd_publish_dir(source).mkdir(parents=True, exist_ok=True)
-                sd_session_dir(source).mkdir(parents=True, exist_ok=True)
-                ensure_sd_readme(source)
-                sd_path = sd_state_path(source, label)
+            sd_path = sd_state_path(source, label)
+            if dry_run:
                 if not sd_path.is_file():
-                    save_state_file(
-                        sd_path,
-                        {
-                            "source": str(source.resolve()),
-                            "types": types,
-                            "trip_parts": [],
-                            "parts": [],
-                        },
-                    )
-                    log(f"Initialized publish state on SD: {sd_path}")
-            except OSError as exc:
-                raise RuntimeError(
-                    f"Cannot create SD publish dir: {sd_publish_dir(source)} ({exc})"
-                ) from exc
+                    log(f"Dry-run: would initialize publish state on SD: {sd_path}")
+            else:
+                try:
+                    sd_publish_dir(source).mkdir(parents=True, exist_ok=True)
+                    sd_session_dir(source).mkdir(parents=True, exist_ok=True)
+                    ensure_sd_readme(source)
+                    if not sd_path.is_file():
+                        save_state_file(
+                            sd_path,
+                            {
+                                "source": str(source.resolve()),
+                                "types": types,
+                                "trip_parts": [],
+                                "parts": [],
+                            },
+                        )
+                        log(f"Initialized publish state on SD: {sd_path}")
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Cannot create SD publish dir: {sd_publish_dir(source)} ({exc})"
+                    ) from exc
 
         needs_oauth = not dry_run and not token.is_file()
         if new_card or needs_oauth:
