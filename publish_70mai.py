@@ -576,6 +576,7 @@ def publish_and_upload_trips(
                 telemetry=telemetry,
                 gps_dir=gps_dir,
                 telemetry_map_size=telemetry_map_size,
+                record_type=record_type,
                 dry_run=False,
                 **profile_args,
             )
@@ -596,10 +597,16 @@ def publish_and_upload_trips(
             state_store.save(state)
             continue
 
-        trip_title = (
-            f"{base_title} {record_type} — поездка {trip.index} "
-            f"({trip.start:%m-%d %H:%M})"
-        )
+        if record_type == "Event":
+            trip_title = (
+                f"{base_title} Event — событие {trip.index} "
+                f"({trip.start:%m-%d %H:%M})"
+            )
+        else:
+            trip_title = (
+                f"{base_title} {record_type} — поездка {trip.index} "
+                f"({trip.start:%m-%d %H:%M})"
+            )
         try:
             video_id, current_playlist, freed, _elapsed = upload_and_cleanup(
                 part_path,

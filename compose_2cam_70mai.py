@@ -194,16 +194,21 @@ def run_compose_2cam(
     gps_dir: Path | None = None,
     telemetry_map_size: int = 280,
     gps_offset_sec: float | None = None,
+    record_type: str = "Normal",
     dry_run: bool = False,
 ) -> None:
     wall_end = wall_start + timedelta(seconds=duration)
 
-    front_clips = scan_merged_clips(video_dir, "Front")
-    back_clips = scan_merged_clips(video_dir, "Back")
+    front_clips = scan_merged_clips(video_dir, "Front", record_type=record_type)
+    back_clips = scan_merged_clips(video_dir, "Back", record_type=record_type)
     if not front_clips:
-        raise SystemExit(f"No Front merged clips in {video_dir / 'Normal' / 'Front'}")
+        raise SystemExit(
+            f"No Front merged clips in {video_dir / record_type / 'Front'}"
+        )
     if not back_clips:
-        raise SystemExit(f"No Back merged clips in {video_dir / 'Normal' / 'Back'}")
+        raise SystemExit(
+            f"No Back merged clips in {video_dir / record_type / 'Back'}"
+        )
 
     front_segments = plan_segments(
         front_clips, wall_start, duration, sync_offset_front

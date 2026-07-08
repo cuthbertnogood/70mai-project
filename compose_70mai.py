@@ -22,6 +22,10 @@ MERGED_RE = re.compile(
     r"^NO_(\d{8})-(\d{6})_(\d{6})_([FB])\.mp4$",
     re.IGNORECASE,
 )
+EVENT_EXPORT_RE = re.compile(
+    r"^EV_(\d{8})-(\d{6})_([FB])\.mp4$",
+    re.IGNORECASE,
+)
 
 DEFAULT_PROFILE = "balanced"
 DEFAULT_DURATION = 600.0  # 10 minutes
@@ -222,20 +226,43 @@ def parse_merged_file(path: Path) -> MergedClip | None:
     return MergedClip(path=path, start=start, end=end, camera=camera)
 
 
-def scan_merged_clips(video_dir: Path, camera: str, *, probe: bool = True) -> list[MergedClip]:
-    folder = video_dir / "Normal" / camera
+def parse_event_export_file(path: Path) -> MergedClip | None:
+    match = EVENT_EXPORT_RE.match(path.name)
+    if not match:
+        return None
+    date_part, time_part, cam_suffix = match.groups()
+    start = datetime.strptime(date_part + time_part, "%Y%m%d%H%M%S")
+    camera = "Front" if cam_suffix.upper() == "F" else "Back"
+    return MergedClip(path=path, start=start, end=start, camera=camera)
+
+
+def scan_merged_clips(
+    video_dir: Path,
+    camera: str,
+    *,
+    record_type: str = "Normal",
+    probe: bool = True,
+) -> list[MergedClip]:
+    folder = video_dir / record_type / camera
     if not folder.is_dir():
         return []
+    if record_type == "Event":
+        glob_pattern = "EV_*.mp4"
+        parse_fn = parse_event_export_file
+    else:
+        glob_pattern = "NO_*.mp4"
+        parse_fn = parse_merged_file
     clips: list[MergedClip] = []
-    for path in sorted(folder.glob("NO_*.mp4")):
-        parsed = parse_merged_file(path)
+    for path in sorted(folder.glob(glob_pattern)):
+        parsed = parse_fn(path)
         if parsed:
             duration = probe_duration(path) if probe else None
+            end = parsed.start + timedelta(seconds=duration) if duration else parsed.end
             clips.append(
                 MergedClip(
                     path=parsed.path,
                     start=parsed.start,
-                    end=parsed.end,
+                    end=end,
                     camera=parsed.camera,
                     duration=duration,
                 )

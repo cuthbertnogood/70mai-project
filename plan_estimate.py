@@ -8,7 +8,7 @@ import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from import_70mai import (
@@ -163,6 +163,51 @@ def pack_trips_to_chunks(trips: list[Trip], target_sec: float) -> list[ChunkPlan
     return chunks
 
 
+def event_trips_from_clips(
+    record_type: str,
+    front: list[Clip],
+    back: list[Clip],
+) -> list[Trip]:
+    """One trip per event clip (Front timestamp); pair with matching Back clip."""
+    back_by_ts: dict[datetime, Clip] = {}
+    for clip in back:
+        back_by_ts.setdefault(clip.timestamp, clip)
+
+    trips: list[Trip] = []
+    for idx, fclip in enumerate(
+        sorted(front, key=lambda c: (c.timestamp, c.sequence)), start=1
+    ):
+        bclip = back_by_ts.get(fclip.timestamp)
+        f_dur = fclip.duration or 0.0
+        b_dur = bclip.duration if bclip else 0.0
+        duration = max(f_dur, b_dur) if bclip else f_dur
+        if duration <= 0:
+            duration = 15.0
+        end_ts = fclip.timestamp + timedelta(seconds=duration)
+        trips.append(
+            Trip(
+                record_type=record_type,
+                index=idx,
+                start=fclip.timestamp,
+                end=end_ts,
+                clip_count=1 + (1 if bclip else 0),
+                duration_sec=duration,
+            )
+        )
+    return trips
+
+
+def pack_event_trips_to_chunks(trips: list[Trip]) -> list[ChunkPlan]:
+    """Each event is its own upload chunk (one short 2-cam video per event)."""
+    if not trips:
+        return []
+    record_type = trips[0].record_type
+    return [
+        ChunkPlan(record_type=record_type, index=idx, trips=(trip,))
+        for idx, trip in enumerate(trips, start=1)
+    ]
+
+
 def build_plan(
     source: Path,
     record_types: list[str],
@@ -187,6 +232,22 @@ def build_plan(
         log(f"Probing {record_type}/Front ({len(front_raw)} clips)...")
         front = probe_clips(front_raw, ffprobe)
         back = probe_clips(back_raw, ffprobe) if back_raw else []
+
+        if record_type == "Event":
+            event_trips = event_trips_from_clips(record_type, front, back)
+            if not event_trips:
+                continue
+            pair_dur = sum(t.duration_sec for t in event_trips)
+            dur_by_type[record_type] = pair_dur
+            chunks = pack_event_trips_to_chunks(event_trips)
+            all_trips.extend(event_trips)
+            all_chunks.extend(chunks)
+            log(
+                f"  Event: {len(event_trips)} event(s), "
+                f"{format_duration(pair_dur)} total (2-cam)"
+            )
+            log(f"  -> {len(chunks)} upload(s), one per event")
+            continue
 
         front_dur = sum(c.duration or 0.0 for c in front)
         back_dur = sum(c.duration or 0.0 for c in back)

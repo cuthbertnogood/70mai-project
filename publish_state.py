@@ -481,7 +481,21 @@ def build_clip_youtube_catalog(
         front_clips = scan_clips(source, [record_type], ["Front"], warn=False)
         if not front_clips:
             continue
-        front_sessions = split_sessions(front_clips, session_gap)
+
+        if record_type == "Event":
+            front_sorted = sorted(
+                front_clips, key=lambda c: (c.timestamp, c.sequence)
+            )
+            trip_by_ts = {c.timestamp: idx for idx, c in enumerate(front_sorted, start=1)}
+
+            def trip_index_fn(clip, _map=trip_by_ts):
+                return _map.get(clip.timestamp)
+
+        else:
+            front_sessions = split_sessions(front_clips, session_gap)
+
+            def trip_index_fn(clip, _sessions=front_sessions):
+                return trip_index_for_clip(clip, _sessions)
 
         for camera in ("Front", "Back"):
             clips = (
@@ -493,7 +507,7 @@ def build_clip_youtube_catalog(
                 continue
             by_name: dict[str, dict] = {}
             for clip in clips:
-                trip_idx = trip_index_for_clip(clip, front_sessions)
+                trip_idx = trip_index_fn(clip)
                 upload = trip_map.get((record_type, trip_idx), {}) if trip_idx else {}
                 by_name[clip.path.name] = {
                     "trip_index": trip_idx,

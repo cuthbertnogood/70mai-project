@@ -29,7 +29,7 @@ from publish_70mai import trip_uploaded
 from publish_state import AuthStore, StateStore
 
 DEFAULT_SOURCE = Path("/Volumes/Untitled")
-DEFAULT_TYPES = ["Normal"]
+DEFAULT_TYPES = ["Normal", "Event"]
 DEFAULT_VIDEO_DIR = Path("video/Output")
 DEFAULT_TEMP_DIR = Path("video/Output/.publish_tmp")
 DEFAULT_LOG = DEFAULT_TEMP_DIR / "publish_all.log"
@@ -232,6 +232,59 @@ def run_step(
     return proc.returncode
 
 
+def load_merged_publish_state(
+    source: Path,
+    types: list[str],
+    temp_dir: Path,
+    *,
+    state_on_sd: bool,
+) -> dict:
+    """Combine trip_parts from per-type publish state files."""
+    merged: dict = {"trip_parts": [], "parts": []}
+    for record_type in types:
+        store = StateStore(source, temp_dir, record_type, state_on_sd=state_on_sd)
+        state = store.load(resume=True)
+        merged["trip_parts"].extend(state.get("trip_parts", []))
+        merged["parts"].extend(state.get("parts", []))
+        if state.get("playlist_id") and not merged.get("playlist_id"):
+            merged["playlist_id"] = state["playlist_id"]
+    return merged
+
+
+def aggregate_plan(
+    source: Path,
+    types: list[str],
+    temp_dir: Path,
+    *,
+    state_on_sd: bool,
+    ffprobe: str,
+    chunk_minutes: float,
+    session_gap: float,
+) -> tuple[list, list, dict[str, float], int, int]:
+    all_trips: list = []
+    all_chunks: list = []
+    dur_by_type: dict[str, float] = {}
+    total = 0
+    pending = 0
+    for record_type in types:
+        store = StateStore(source, temp_dir, record_type, state_on_sd=state_on_sd)
+        state = store.load(resume=True)
+        trips, chunks, dur, type_total, type_pending = pending_trips(
+            source,
+            [record_type],
+            state,
+            ffprobe=ffprobe,
+            chunk_minutes=chunk_minutes,
+            session_gap=session_gap,
+        )
+        all_trips.extend(trips)
+        all_chunks.extend(chunks)
+        dur_by_type.update(dur)
+        total += type_total
+        pending += type_pending
+    return all_trips, all_chunks, dur_by_type, total, pending
+
+
 def pending_trips(
     source: Path,
     types: list[str],
@@ -372,13 +425,13 @@ def main() -> int:
             log("ffprobe not found")
             return 1
 
-        label = "_".join(args.types)
+        auth_label = "_".join(args.types)
         state_on_sd = not args.no_state_on_sd
         auth_on_sd = not args.no_auth_on_sd
         try:
             creds, token = AuthStore.ensure_ready(
                 source,
-                label,
+                auth_label,
                 auth_on_sd=auth_on_sd,
                 state_on_sd=state_on_sd,
                 types=args.types,
@@ -387,22 +440,19 @@ def main() -> int:
         except (FileNotFoundError, RuntimeError) as exc:
             log(str(exc))
             return 1
-        state_store = StateStore(
-            source, args.temp_dir, label, state_on_sd=state_on_sd
-        )
-        st_path = state_store.primary_path
-        state = state_store.load(resume=True)
 
-        trips, chunks, dur_by_type, total, pending = pending_trips(
+        import_label = "_".join(args.types)
+        trips, chunks, dur_by_type, total, pending = aggregate_plan(
             source,
             args.types,
-            state,
+            args.temp_dir,
+            state_on_sd=state_on_sd,
             ffprobe=ffprobe or "ffprobe",
             chunk_minutes=args.chunk_minutes,
             session_gap=args.session_gap,
         )
         if pending == 0:
-            log("All trips already uploaded — nothing to do.")
+            log("All trips/events already uploaded — nothing to do.")
             return 0
 
         import_store = None
@@ -412,7 +462,7 @@ def main() -> int:
 
             import_store = ImportStateStore(
                 source,
-                label,
+                import_label,
                 state_on_sd=True,
                 local_dir=args.temp_dir,
                 chunk_minutes=IMPORT_CHUNK_MINUTES,
@@ -423,11 +473,18 @@ def main() -> int:
                 trips=trips,
                 chunks=chunks,
                 dur_by_type=dur_by_type,
-                publish_state=state,
+                publish_state=load_merged_publish_state(
+                    source,
+                    args.types,
+                    args.temp_dir,
+                    state_on_sd=state_on_sd,
+                ),
             )
             inventory_summary = sd_summary_path(source)
 
-        title = args.title or auto_title(trips)
+        st_path = StateStore(
+            source, args.temp_dir, args.types[0], state_on_sd=state_on_sd
+        ).primary_path
         print_plan_summary(
             chunks,
             total_trips=total,
@@ -467,47 +524,77 @@ def main() -> int:
                 log(f"Import failed (exit {ec}) — see {args.log}")
                 return ec
 
-        ec = run_step(
-            [
-                python,
-                "publish_70mai.py",
-                "--source",
-                str(source),
-                "--types",
-                *args.types,
-                "--video-dir",
-                str(args.video_dir),
-                "--temp-dir",
-                str(args.temp_dir),
-                "--per-trip-upload",
-                "--resume",
-                "--resume-upload",
-                "--continue-on-error",
-                "--state-on-sd" if state_on_sd else "--no-state-on-sd",
-                "--credentials",
-                str(creds),
-                "--token",
-                str(token),
-                "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
-                "--title",
-                title,
-            ],
-            log_path=args.log,
-            dry_run=args.dry_run,
-        )
-        if ec != 0:
-            failed = 1
-            log(f"Publish finished with errors (exit {ec}) — see {args.log}")
+        for record_type in args.types:
+            type_store = StateStore(
+                source, args.temp_dir, record_type, state_on_sd=state_on_sd
+            )
+            type_state = type_store.load(resume=True)
+            type_trips, type_chunks, _, _, type_pending = pending_trips(
+                source,
+                [record_type],
+                type_state,
+                ffprobe=ffprobe or "ffprobe",
+                chunk_minutes=args.chunk_minutes,
+                session_gap=args.session_gap,
+            )
+            if type_pending == 0:
+                log(f"{record_type}: all uploaded, skipping publish")
+                continue
+
+            type_title = args.title or auto_title(type_trips)
+            log(f"\n>>> Publish {record_type}: {type_pending} pending")
+            ec = run_step(
+                [
+                    python,
+                    "publish_70mai.py",
+                    "--source",
+                    str(source),
+                    "--types",
+                    record_type,
+                    "--video-dir",
+                    str(args.video_dir),
+                    "--temp-dir",
+                    str(args.temp_dir),
+                    "--per-trip-upload",
+                    "--resume",
+                    "--resume-upload",
+                    "--continue-on-error",
+                    "--state-on-sd" if state_on_sd else "--no-state-on-sd",
+                    "--credentials",
+                    str(creds),
+                    "--token",
+                    str(token),
+                    "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
+                    "--title",
+                    type_title,
+                ],
+                log_path=args.log,
+                dry_run=args.dry_run,
+            )
+            if ec != 0:
+                failed = 1
+                log(
+                    f"Publish [{record_type}] finished with errors "
+                    f"(exit {ec}) — see {args.log}"
+                )
 
         log("")
         log(f"Autopilot done. Log: {args.log}")
-        if st_path.is_file():
-            uploaded = sum(
-                1
-                for p in json.loads(st_path.read_text()).get("trip_parts", [])
-                if p.get("uploaded")
+        for record_type in args.types:
+            type_store = StateStore(
+                source, args.temp_dir, record_type, state_on_sd=state_on_sd
             )
-            log(f"State: {uploaded} trip(s) marked uploaded in {st_path.name}")
+            type_path = type_store.primary_path
+            if type_path.is_file():
+                uploaded = sum(
+                    1
+                    for p in json.loads(type_path.read_text()).get("trip_parts", [])
+                    if p.get("uploaded")
+                )
+                log(
+                    f"State [{record_type}]: {uploaded} trip(s) uploaded "
+                    f"in {type_path.name}"
+                )
         return failed
 
     acquire_lock(force=args.force_restart)
