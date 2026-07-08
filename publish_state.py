@@ -23,24 +23,37 @@ CREDENTIALS_FILENAME = "youtube_credentials.json"
 TOKEN_FILENAME = "youtube_token.json"
 LOCAL_CONFIG_DIR = Path.home() / ".config/70mai"
 
-SD_README = """70mai portable data (auto-generated)
-=====================================
+SD_README = """70mai portable data (auto-generated, refreshed on every run)
+=============================================================
 
-auth/youtube_credentials.json  — OAuth Desktop client from Google Cloud (~1 KB)
-auth/youtube_token.json        — YouTube refresh token after browser login (~1 KB)
+auth/youtube_credentials.json      — OAuth Desktop client from Google Cloud (~1 KB)
+auth/youtube_token.json            — YouTube refresh token after browser login (~1 KB)
 
-publish/publish_*.state.json   — uploaded trips + YouTube video_id / URL
-publish/sessions/*.upload.json — resume interrupted uploads (~few KB each)
+publish/publish_Normal.state.json  — uploaded trips + YouTube video_id / URL
+publish/publish_Event.state.json   — same for the merged Event video
+publish/sessions/*.upload.json     — resume interrupted uploads (~few KB each)
 
-import/card_inventory.json     — trips, date range, per-clip YouTube links
-import/import_*.state.json     — per-file merge status (host video/Output/)
-import/CARD_SUMMARY.txt        — human-readable card overview
+import/card_inventory.json         — trips, date range, per-clip YouTube links
+import/import_*.state.json         — per-file merge status (host video/Output/)
+import/CARD_SUMMARY.txt            — human-readable card overview + YouTube URLs
 
 Insert this SD card on any Mac with the project + run:
   ./scripts/publish_all_70mai.sh --wait
 
+What autopilot does:
+  Normal — merge clips into trips, compose 2-cam (Front over Back), one
+           YouTube video per trip; Event — ALL events on the card become
+           ONE merged 2-cam YouTube video.
+  Already-uploaded trips are skipped (state above); interrupted uploads
+  resume mid-file. YouTube API quota is ~6 uploads/day — extra trips are
+  picked up automatically on the next day's run.
+
 Autopilot creates this folder on first use (OAuth from ~/.config/70mai/ or project).
-Raw clips stay on the card; composed MP4s are temporary on the host and deleted after upload.
+Raw clips stay on the card and are never modified; merged/composed MP4s are
+temporary on the host and deleted after upload.
+
+Every YouTube link for every clip: see import/CARD_SUMMARY.txt or the
+clip_youtube map in import/card_inventory.json.
 
 SECURITY: auth/youtube_token.json grants upload access to your YouTube account.
 Keep the card private; revoke access at https://myaccount.google.com/permissions if lost.
@@ -162,11 +175,15 @@ def save_state_file(path: Path, data: dict) -> None:
 
 
 def ensure_sd_readme(source: Path) -> None:
+    """Write /.70mai/README.txt; refresh it when the project text changes."""
     readme = sd_root_dir(source) / "README.txt"
     try:
         readme.parent.mkdir(parents=True, exist_ok=True)
-        if not readme.is_file():
+        current = readme.read_text(encoding="utf-8") if readme.is_file() else None
+        if current != SD_README:
             readme.write_text(SD_README, encoding="utf-8")
+            if current is not None:
+                log(f"Refreshed SD README: {readme}")
     except OSError:
         pass
 

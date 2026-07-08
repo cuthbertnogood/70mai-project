@@ -694,8 +694,10 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
   publish/publish_Normal.state.json
   publish/publish_Event.state.json
   publish/sessions/trip_03.upload.json
-  README.txt
+  README.txt                      # what the folder is, what autopilot does, security notes
 ```
+
+`README.txt` on the card is **auto-refreshed on every run**: whenever the template in the project changes (new behavior, new files in `.70mai/`), the next import/publish/autopilot run rewrites it on the card, so the card always carries current instructions.
 
 On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh --wait` — no separate OAuth setup if the token on the card is still valid. Merged clips on host (`video/Output/`) are rebuilt by import if missing.
 
