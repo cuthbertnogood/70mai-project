@@ -23,6 +23,35 @@ Alternative launcher:
 ./run publish_70mai.py --source /Volumes/Untitled --estimate-only
 ```
 
+## Quick start on a new Mac
+
+```bash
+brew install python@3.12 ffmpeg
+git clone https://github.com/cuthbertnogood/70mai-project.git
+cd 70mai-project
+scripts/setup-venv.sh
+python3 import_70mai.py --scan --source /Volumes/Untitled
+```
+
+**Not in git** (copy separately or recreate on the new host):
+
+| Item | Purpose |
+|------|---------|
+| SD card with 70mai clips | source media |
+| `~/.config/70mai/youtube_credentials.json` | YouTube OAuth client (one-time) |
+| `~/.config/70mai/youtube_token.json` | refresh token after browser login |
+| `/.70mai/auth/` on SD | portable OAuth — autopilot picks it up with `--auth-on-sd` (default) |
+
+`video/` and all `.mp4` files stay local — import/compose recreate them under `video/Output/`.
+
+**Autopilot** (SD → compose → YouTube, resume-safe):
+
+```bash
+./scripts/publish_all_70mai.sh --wait
+```
+
+See [Publish](#publish-trip-chunks--youtube) and [Autopilot](#autopilot-sd-card--youtube-zero-manual-steps) for OAuth setup and flags.
+
 ## SD Card Layout
 
 The script reads from a mounted 70mai card:
