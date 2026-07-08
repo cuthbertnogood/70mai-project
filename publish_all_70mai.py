@@ -36,6 +36,8 @@ DEFAULT_VIDEO_DIR = Path("video/Output")
 DEFAULT_TEMP_DIR = Path("video/Output/.publish_tmp")
 DEFAULT_LOG = DEFAULT_TEMP_DIR / "publish_all.log"
 IMPORT_CHUNK_MINUTES = 10.0
+IMPORT_MERGE_RETRY_MAX = 3
+IMPORT_MERGE_RETRY_DELAY_SEC = 15
 LOCK_FILE = DEFAULT_TEMP_DIR / ".publish_all.lock"
 SD_POLL_SEC = 15
 PUBLISH_WAIT_SEC = 30
@@ -530,11 +532,22 @@ def main() -> int:
             ]
             if state_on_sd:
                 import_cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
-            ec = run_step(
-                import_cmd,
-                log_path=args.log,
-                dry_run=args.dry_run,
-            )
+            ec = 0
+            for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
+                ec = run_step(
+                    import_cmd,
+                    log_path=args.log,
+                    dry_run=args.dry_run,
+                )
+                if ec == 0:
+                    break
+                if import_attempt < IMPORT_MERGE_RETRY_MAX:
+                    log(
+                        f"Import had merge failure(s) — auto-retry "
+                        f"{import_attempt + 1}/{IMPORT_MERGE_RETRY_MAX} "
+                        f"in {IMPORT_MERGE_RETRY_DELAY_SEC}s…"
+                    )
+                    time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
             if ec != 0:
                 log(f"Import failed (exit {ec}) — see {args.log}")
                 return ec

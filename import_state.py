@@ -449,6 +449,13 @@ class ImportStateStore:
                 block["merge_outputs"] = cameras
             self._write_inventory(inventory)
 
+    def count_failed_merges(self) -> int:
+        return sum(
+            1
+            for entry in self._data.get("files", {}).values()
+            if entry.get("status") == "failed"
+        )
+
     def record_merge(
         self,
         *,

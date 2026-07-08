@@ -44,6 +44,10 @@ MIN_GPS_TIMESTAMP = 1577836800  # 2020-01-01 — ignore zero/invalid points
 BAR_WIDTH = 36
 PROBE_WORKERS = 8
 SKIP_BATCH_LOG = 5  # batch "skip (exists)" lines in log files
+MERGE_MAX_ATTEMPTS = 3
+MERGE_RETRY_DELAY_SEC = 3.0
+MIN_MERGE_BYTES = 10_000
+MERGE_DURATION_TOLERANCE = 0.85  # merged file must be >= 85% of source clips sum
 
 
 def format_duration(seconds: float) -> str:
@@ -946,6 +950,39 @@ def probe_duration(path: Path, ffprobe: str) -> float:
     return float(result.stdout.strip())
 
 
+def probe_duration_safe(path: Path, ffprobe: str) -> float | None:
+    try:
+        return probe_duration(path, ffprobe)
+    except (RuntimeError, ValueError, OSError):
+        return None
+
+
+def is_valid_merge_output(
+    path: Path,
+    ffprobe: str,
+    expected_duration_sec: float,
+) -> bool:
+    """True when output exists, is non-trivial size, and ffprobe duration looks sane."""
+    if not path.is_file():
+        return False
+    try:
+        if path.stat().st_size < MIN_MERGE_BYTES:
+            return False
+    except OSError:
+        return False
+    duration = probe_duration_safe(path, ffprobe)
+    if duration is None or duration < 0.5:
+        return False
+    if expected_duration_sec > 0 and duration < expected_duration_sec * MERGE_DURATION_TOLERANCE:
+        return False
+    return True
+
+
+def _ffmpeg_merge_error(result: subprocess.CompletedProcess[str]) -> str:
+    err = result.stderr.strip() or result.stdout.strip()
+    return err or f"ffmpeg exit {result.returncode}"
+
+
 def prefetch_durations(
     paths: list[Path],
     ffprobe: str,
@@ -1055,6 +1092,7 @@ def merge_clips(
     chunk: list[Clip],
     output_path: Path,
     ffmpeg: str,
+    ffprobe: str,
     dry_run: bool,
     reporter: MergeReporter | None = None,
     merge_progress: ProgressTracker | None = None,
@@ -1066,27 +1104,43 @@ def merge_clips(
     session_idx: int = 0,
     session_total: int = 0,
 ) -> str:
+    expected_duration = sum(c.duration or 0.0 for c in chunk)
+
     if output_path.exists():
-        size_mb = output_path.stat().st_size / 1_000_000
+        if is_valid_merge_output(output_path, ffprobe, expected_duration):
+            size_mb = output_path.stat().st_size / 1_000_000
+            if import_store is not None:
+                import_store.record_merge(
+                    record_type=record_type,
+                    camera=camera,
+                    filename=output_path.name,
+                    status="skipped",
+                    session_idx=session_idx,
+                    clip_count=len(chunk),
+                    size_mb=size_mb,
+                )
+            if reporter:
+                reporter.skip(output_path.name, size_mb, pipeline)
+            else:
+                log(f"  skip (exists, {size_mb:.0f} MB): {output_path.name}")
+                if merge_progress:
+                    merge_progress.update("skipped")
+                if pipeline:
+                    pipeline.merge_step()
+            return "skipped"
+        log(
+            f"  invalid or incomplete merge output, rebuilding: {output_path.name}"
+        )
+        output_path.unlink(missing_ok=True)
         if import_store is not None:
             import_store.record_merge(
                 record_type=record_type,
                 camera=camera,
                 filename=output_path.name,
-                status="skipped",
+                status="pending",
                 session_idx=session_idx,
                 clip_count=len(chunk),
-                size_mb=size_mb,
             )
-        if reporter:
-            reporter.skip(output_path.name, size_mb, pipeline)
-        else:
-            log(f"  skip (exists, {size_mb:.0f} MB): {output_path.name}")
-            if merge_progress:
-                merge_progress.update("skipped")
-            if pipeline:
-                pipeline.merge_step()
-        return "skipped"
 
     if reporter:
         reporter.begin_merge(
@@ -1138,81 +1192,101 @@ def merge_clips(
         list_path = Path(list_file.name)
 
     try:
-        result = subprocess.run(
-            [
-                ffmpeg,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(list_path),
-                "-c",
-                "copy",
-                str(output_path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            log(f"       ERROR: {result.stderr.strip()}")
-            if output_path.exists():
-                output_path.unlink()
+        last_error = ""
+        for attempt in range(1, MERGE_MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                log(
+                    f"       retry {attempt}/{MERGE_MAX_ATTEMPTS} "
+                    f"({last_error or 'previous attempt failed'})"
+                )
+                time.sleep(MERGE_RETRY_DELAY_SEC)
+
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(list_path),
+                    "-c",
+                    "copy",
+                    str(output_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                last_error = _ffmpeg_merge_error(result)
+                log(f"       ERROR: {last_error}")
+                output_path.unlink(missing_ok=True)
+                continue
+
+            if not is_valid_merge_output(output_path, ffprobe, expected_duration):
+                last_error = "output failed ffprobe validation"
+                log(f"       ERROR: {last_error}")
+                output_path.unlink(missing_ok=True)
+                continue
+
+            size_mb = output_path.stat().st_size / 1_000_000
+            elapsed = time.monotonic() - merge_start
             if import_store is not None:
                 import_store.record_merge(
                     record_type=record_type,
                     camera=camera,
                     filename=output_path.name,
-                    status="failed",
+                    status="merged",
                     session_idx=session_idx,
                     clip_count=len(chunk),
-                    elapsed_sec=time.monotonic() - merge_start,
+                    size_mb=size_mb,
+                    elapsed_sec=elapsed,
                 )
             if reporter:
                 reporter.finish_merge(
-                    size_mb=0.0,
-                    elapsed=time.monotonic() - merge_start,
+                    size_mb=size_mb,
+                    elapsed=elapsed,
                     pipeline=pipeline,
-                    failed=True,
                 )
             elif merge_progress:
-                merge_progress.update("failed")
+                merge_progress.update(
+                    f"done {size_mb:.0f} MB in {format_duration(elapsed)}"
+                )
                 if pipeline:
                     pipeline.merge_step()
-            return "failed"
-        size_mb = output_path.stat().st_size / 1_000_000
-        elapsed = time.monotonic() - merge_start
+            else:
+                log(f"  done: {size_mb:.0f} MB in {format_duration(elapsed)}")
+                if pipeline:
+                    pipeline.merge_step()
+            return "merged"
+
         if import_store is not None:
             import_store.record_merge(
                 record_type=record_type,
                 camera=camera,
                 filename=output_path.name,
-                status="merged",
+                status="failed",
                 session_idx=session_idx,
                 clip_count=len(chunk),
-                size_mb=size_mb,
-                elapsed_sec=elapsed,
+                elapsed_sec=time.monotonic() - merge_start,
             )
         if reporter:
             reporter.finish_merge(
-                size_mb=size_mb,
-                elapsed=elapsed,
+                size_mb=0.0,
+                elapsed=time.monotonic() - merge_start,
                 pipeline=pipeline,
+                failed=True,
             )
         elif merge_progress:
-            merge_progress.update(f"done {size_mb:.0f} MB in {format_duration(elapsed)}")
+            merge_progress.update("failed")
             if pipeline:
                 pipeline.merge_step()
-        else:
-            log(f"  done: {size_mb:.0f} MB in {format_duration(elapsed)}")
-            if pipeline:
-                pipeline.merge_step()
-        return "merged"
+        return "failed"
     finally:
         list_path.unlink(missing_ok=True)
 
@@ -1283,6 +1357,7 @@ def process_event_group(
         chunk,
         out_path,
         ffmpeg,
+        ffprobe,
         dry_run,
         merge_reporter,
         pipeline=pipeline,
@@ -1397,6 +1472,7 @@ def process_group(
                 chunk,
                 out_path,
                 ffmpeg,
+                ffprobe,
                 dry_run,
                 merge_reporter,
                 pipeline=pipeline,
@@ -1801,6 +1877,12 @@ def main() -> int:
             import_store.refresh_inventory(
                 types=record_types,
                 ffprobe=ffprobe,
+            )
+        failed_prev = import_store.count_failed_merges()
+        if failed_prev:
+            log(
+                f"Merge retry: {failed_prev} previously failed output(s) "
+                "will be rebuilt if still missing"
             )
 
     duration_cache: dict[Path, float] = {}

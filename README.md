@@ -332,7 +332,7 @@ Merge [██████░░░░░░░░░░░░░░░░░░�
 
 Existing output files are batched (`skip ×5`) instead of one line per file.
 
-Parallel **ffprobe** (8 workers) speeds up duration detection before merge.
+Parallel **ffprobe** (8 workers) speeds up duration detection before merge. Failed or corrupt merges are **retried automatically** (up to 3 ffmpeg attempts per file, ffprobe validation); autopilot re-runs import up to 3 times if any merge still fails.
 
 Each line is flushed immediately:
 
