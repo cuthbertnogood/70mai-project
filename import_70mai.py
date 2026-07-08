@@ -1059,12 +1059,25 @@ def merge_clips(
     reporter: MergeReporter | None = None,
     merge_progress: ProgressTracker | None = None,
     pipeline: PipelineProgress | None = None,
+    import_store: object | None = None,
     *,
+    record_type: str = "",
+    camera: str = "",
     session_idx: int = 0,
     session_total: int = 0,
 ) -> str:
     if output_path.exists():
         size_mb = output_path.stat().st_size / 1_000_000
+        if import_store is not None:
+            import_store.record_merge(
+                record_type=record_type,
+                camera=camera,
+                filename=output_path.name,
+                status="skipped",
+                session_idx=session_idx,
+                clip_count=len(chunk),
+                size_mb=size_mb,
+            )
         if reporter:
             reporter.skip(output_path.name, size_mb, pipeline)
         else:
@@ -1089,6 +1102,15 @@ def merge_clips(
             f"-> {output_path.name}"
         )
     if dry_run:
+        if import_store is not None:
+            import_store.record_merge(
+                record_type=record_type,
+                camera=camera,
+                filename=output_path.name,
+                status="planned",
+                session_idx=session_idx,
+                clip_count=len(chunk),
+            )
         if reporter:
             reporter.finish_merge(
                 size_mb=0.0,
@@ -1141,6 +1163,16 @@ def merge_clips(
             log(f"       ERROR: {result.stderr.strip()}")
             if output_path.exists():
                 output_path.unlink()
+            if import_store is not None:
+                import_store.record_merge(
+                    record_type=record_type,
+                    camera=camera,
+                    filename=output_path.name,
+                    status="failed",
+                    session_idx=session_idx,
+                    clip_count=len(chunk),
+                    elapsed_sec=time.monotonic() - merge_start,
+                )
             if reporter:
                 reporter.finish_merge(
                     size_mb=0.0,
@@ -1155,6 +1187,17 @@ def merge_clips(
             return "failed"
         size_mb = output_path.stat().st_size / 1_000_000
         elapsed = time.monotonic() - merge_start
+        if import_store is not None:
+            import_store.record_merge(
+                record_type=record_type,
+                camera=camera,
+                filename=output_path.name,
+                status="merged",
+                session_idx=session_idx,
+                clip_count=len(chunk),
+                size_mb=size_mb,
+                elapsed_sec=elapsed,
+            )
         if reporter:
             reporter.finish_merge(
                 size_mb=size_mb,
@@ -1186,6 +1229,7 @@ def process_group(
     probe_progress: ProgressTracker | None,
     merge_reporter: MergeReporter | None,
     pipeline: PipelineProgress | None,
+    import_store: object | None = None,
     assume_seconds: float | None = None,
 ) -> tuple[int, int, int, int]:
     if not clips:
@@ -1267,6 +1311,9 @@ def process_group(
                 dry_run,
                 merge_reporter,
                 pipeline=pipeline,
+                import_store=import_store,
+                record_type=record_type,
+                camera=camera,
                 session_idx=session_idx,
                 session_total=len(sessions),
             )
@@ -1492,6 +1539,21 @@ def main() -> int:
         metavar="HH:MM",
         help="Range end time on --date (exclusive), e.g. 09:00",
     )
+    parser.add_argument(
+        "--state-on-sd",
+        action="store_true",
+        help="Write import merge state + card inventory to SD /.70mai/import/",
+    )
+    parser.add_argument(
+        "--no-state-on-sd",
+        action="store_true",
+        help="Do not write import state to SD (host cache only)",
+    )
+    parser.add_argument(
+        "--skip-inventory-refresh",
+        action="store_true",
+        help="Skip card inventory build (autopilot already wrote CARD_SUMMARY.txt)",
+    )
     args = parser.parse_args()
 
     range_start = args.range_from
@@ -1618,6 +1680,26 @@ def main() -> int:
     merge_reporter = MergeReporter(max(total_outputs, 1))
     pipeline = PipelineProgress(total_clips, max(total_outputs, 1))
 
+    label = "_".join(record_types)
+    state_on_sd = args.state_on_sd and not args.no_state_on_sd
+    import_store = None
+    if state_on_sd and not args.dry_run:
+        from import_state import ImportStateStore
+
+        import_store = ImportStateStore(
+            args.source,
+            label,
+            state_on_sd=True,
+            local_dir=args.output / ".import_tmp",
+            chunk_minutes=args.chunk_minutes,
+            gap_seconds=args.gap_seconds,
+        )
+        if not args.skip_inventory_refresh:
+            import_store.refresh_inventory(
+                types=record_types,
+                ffprobe=ffprobe,
+            )
+
     duration_cache: dict[Path, float] = {}
     total_merged = 0
     total_skipped = 0
@@ -1638,12 +1720,17 @@ def main() -> int:
             probe_progress,
             merge_reporter,
             pipeline,
+            import_store,
             assume_seconds=assume_seconds,
         )
         total_merged += merged
         total_skipped += skipped
         total_failed += failed
         total_planned += planned
+
+    if import_store is not None:
+        import_store.update_merge_plan(groups, duration_cache)
+        import_store.finalize()
 
     if probe_progress:
         probe_progress.finish()

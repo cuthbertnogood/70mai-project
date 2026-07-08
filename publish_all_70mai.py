@@ -5,7 +5,8 @@ Run outside Cursor — one command after inserting the dashcam SD card:
 
   ./scripts/publish_all_70mai.sh --wait
 
-Skips trips already uploaded (state on SD card `.70mai/publish/` + local cache).
+Portable on SD (default): OAuth, publish state, import inventory + merge status
+under `/.70mai/`. Skips trips already uploaded (state on SD + local cache).
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ DEFAULT_TYPES = ["Normal"]
 DEFAULT_VIDEO_DIR = Path("video/Output")
 DEFAULT_TEMP_DIR = Path("video/Output/.publish_tmp")
 DEFAULT_LOG = DEFAULT_TEMP_DIR / "publish_all.log"
+IMPORT_CHUNK_MINUTES = 10.0
 LOCK_FILE = DEFAULT_TEMP_DIR / ".publish_all.lock"
 SD_POLL_SEC = 15
 PUBLISH_WAIT_SEC = 30
@@ -238,8 +240,8 @@ def pending_trips(
     ffprobe: str,
     chunk_minutes: float,
     session_gap: float,
-) -> tuple[list, list, int, int]:
-    trips, chunks, _ = build_plan(
+) -> tuple[list, list, dict[str, float], int, int]:
+    trips, chunks, dur_by_type = build_plan(
         source,
         types,
         chunk_minutes=chunk_minutes,
@@ -253,7 +255,7 @@ def pending_trips(
         for trip_idx, _trip in enumerate(chunk.trips, start=1):
             if not trip_uploaded(state, chunk.record_type, chunk.index, trip_idx):
                 pending += 1
-    return trips, chunks, total, pending
+    return trips, chunks, dur_by_type, total, pending
 
 
 def auto_title(trips: list) -> str:
@@ -268,10 +270,13 @@ def print_plan_summary(
     total_trips: int,
     pending: int,
     state_path: Path,
+    inventory_summary: Path | None = None,
 ) -> None:
     log("")
     log("=== Autopilot plan ===")
     log(f"  State: {state_path}")
+    if inventory_summary is not None:
+        log(f"  Card inventory: {inventory_summary}")
     log(f"  Trips: {total_trips} total, {pending} pending upload")
     for chunk in chunks:
         log(
@@ -388,7 +393,7 @@ def main() -> int:
         st_path = state_store.primary_path
         state = state_store.load(resume=True)
 
-        trips, chunks, total, pending = pending_trips(
+        trips, chunks, dur_by_type, total, pending = pending_trips(
             source,
             args.types,
             state,
@@ -400,12 +405,34 @@ def main() -> int:
             log("All trips already uploaded — nothing to do.")
             return 0
 
+        import_store = None
+        inventory_summary = None
+        if state_on_sd and not args.dry_run:
+            from import_state import ImportStateStore, sd_summary_path
+
+            import_store = ImportStateStore(
+                source,
+                label,
+                state_on_sd=True,
+                local_dir=args.temp_dir,
+                chunk_minutes=IMPORT_CHUNK_MINUTES,
+                gap_seconds=args.session_gap,
+            )
+            import_store.save_inventory_from_plan(
+                types=args.types,
+                trips=trips,
+                chunks=chunks,
+                dur_by_type=dur_by_type,
+            )
+            inventory_summary = sd_summary_path(source)
+
         title = args.title or auto_title(trips)
         print_plan_summary(
             chunks,
             total_trips=total,
             pending=pending,
             state_path=st_path,
+            inventory_summary=inventory_summary,
         )
 
         ensure_publish_slot(force=args.force_restart)
@@ -414,17 +441,24 @@ def main() -> int:
         failed = 0
 
         if not args.skip_import:
+            import_cmd = [
+                python,
+                "import_70mai.py",
+                "--source",
+                str(source),
+                "--types",
+                *args.types,
+                "--output",
+                str(args.video_dir),
+                "--gap-seconds",
+                str(args.session_gap),
+                "--chunk-minutes",
+                str(IMPORT_CHUNK_MINUTES),
+            ]
+            if state_on_sd:
+                import_cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
             ec = run_step(
-                [
-                    python,
-                    "import_70mai.py",
-                    "--source",
-                    str(source),
-                    "--types",
-                    *args.types,
-                    "--output",
-                    str(args.video_dir),
-                ],
+                import_cmd,
                 log_path=args.log,
                 dry_run=args.dry_run,
             )

@@ -74,6 +74,7 @@ YouTube quota ~6 видео/день — при 429/errors продолжить 
 - **Статус загрузки на флешке:** `/.70mai/publish/publish_Normal.state.json` + `sessions/*.upload.json` (resume)
 - **OAuth на флешке (по умолчанию):** `/.70mai/auth/` — переносимая авторизация; отключение: `--no-auth-on-sd`
 - **Новая флешка:** автопилот сам создаёт `.70mai/` (OAuth с хоста + browser login + пустой state), затем import → compose → upload
+- **Инвентарь на флешке:** `/.70mai/import/CARD_SUMMARY.txt` — поездки, даты, статус склейки; переносим между Mac
 - При повторном запуске или на **другом Mac** — продолжает с места остановки (`--resume` автоматически)
 - Локально — только кэш state и временные MP4 (удаляются после upload)
 - Лог: `video/Output/.publish_tmp/publish_all.log` (`tail -f …`)

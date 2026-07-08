@@ -9,7 +9,7 @@ from pathlib import Path
 
 from import_70mai import Clip, format_duration, log, output_name, split_chunks, split_sessions
 from plan_estimate import Trip, build_plan
-from publish_state import ensure_sd_readme, sd_root_dir
+from publish_state import ensure_sd_readme
 
 SD_IMPORT_DIR = ".70mai/import"
 INVENTORY_FILENAME = "card_inventory.json"
@@ -54,18 +54,6 @@ def _trip_dict(trip: Trip) -> dict:
         "clip_count": trip.clip_count,
         "duration_sec": round(trip.duration_sec, 1),
         "duration": format_duration(trip.duration_sec),
-    }
-
-
-def _trip_dict_fast(record_type: str, index: int, session: list[Clip]) -> dict:
-    return {
-        "index": index,
-        "record_type": record_type,
-        "start": session[0].timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-        "end": session[-1].timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-        "clip_count": len(session),
-        "duration_sec": None,
-        "duration": None,
     }
 
 
@@ -177,7 +165,6 @@ class ImportStateStore:
         self.inventory_path = sd_inventory_path(source) if state_on_sd else None
         self.summary_path = sd_summary_path(source) if state_on_sd else None
         self._data = self._load()
-        self._merge_stats = {"merged": 0, "skipped": 0, "failed": 0, "planned": 0}
 
     def _load(self) -> dict:
         for path in (self.sd_path, self.local_path):
@@ -242,6 +229,24 @@ class ImportStateStore:
             session_gap=self.gap_seconds,
             ffprobe=ffprobe,
         )
+        self.save_inventory_from_plan(
+            types=types,
+            trips=trips,
+            chunks=chunks,
+            dur_by_type=dur_by_type,
+        )
+
+    def save_inventory_from_plan(
+        self,
+        *,
+        types: list[str],
+        trips: list[Trip],
+        chunks: list,
+        dur_by_type: dict[str, float],
+    ) -> None:
+        """Write card inventory from build_plan result (no extra ffprobe)."""
+        if not self.state_on_sd or self.inventory_path is None:
+            return
 
         inventory: dict = {
             "updated_at": _utc_now(),
@@ -254,10 +259,7 @@ class ImportStateStore:
         for record_type in types:
             type_trips = [t for t in trips if t.record_type == record_type]
             type_chunks = [c for c in chunks if c.record_type == record_type]
-            front_clips = [
-                c
-                for c in self._scan_type_camera(record_type, "Front")
-            ]
+            front_clips = self._scan_type_camera(record_type, "Front")
             back_clips = self._scan_type_camera(record_type, "Back")
             period_from = None
             period_to = None
@@ -270,24 +272,6 @@ class ImportStateStore:
                     "%Y-%m-%d %H:%M:%S"
                 )
 
-            merge_outputs: dict[str, dict[str, dict]] = {"Front": {}, "Back": {}}
-            for camera, cam_clips in (("Front", front_clips), ("Back", back_clips)):
-                if not cam_clips:
-                    continue
-                sessions = split_sessions(cam_clips, self.gap_seconds)
-                chunk_seconds = self.chunk_minutes * 60.0
-                for session_idx, session in enumerate(sessions, start=1):
-                    # Estimate durations for planned output names (filenames only).
-                    est_chunks = split_chunks(session, chunk_seconds)
-                    for chunk in est_chunks:
-                        name = output_name(chunk)
-                        key = _merge_key(record_type, camera, name)
-                        existing = self._data.get("files", {}).get(key, {})
-                        merge_outputs[camera][name] = {
-                            "status": existing.get("status", "pending"),
-                            "session_index": session_idx,
-                        }
-
             inventory["record_types"][record_type] = {
                 "clips": {"Front": len(front_clips), "Back": len(back_clips)},
                 "period": {"from": period_from, "to": period_to},
@@ -295,7 +279,7 @@ class ImportStateStore:
                 "duration_2cam": format_duration(dur_by_type.get(record_type, 0.0)),
                 "publish_chunks": len(type_chunks),
                 "trips": [_trip_dict(t) for t in type_trips],
-                "merge_outputs": merge_outputs,
+                "merge_outputs": {},
             }
 
         self._write_inventory(inventory)
@@ -346,6 +330,58 @@ class ImportStateStore:
         inventory["updated_at"] = _utc_now()
         self._write_inventory(inventory)
 
+    def update_merge_plan(
+        self,
+        groups: list[tuple[str, str, list[Clip]]],
+        duration_cache: dict[Path, float],
+    ) -> None:
+        """Register expected merge output files (after ffprobe)."""
+        chunk_seconds = self.chunk_minutes * 60.0
+        merge_by_type: dict[str, dict[str, dict[str, dict]]] = {}
+
+        for record_type, camera, clips in groups:
+            sessions = split_sessions(clips, self.gap_seconds)
+            cam_merge: dict[str, dict] = {}
+            for session_idx, session in enumerate(sessions, start=1):
+                session_with_duration = [
+                    Clip(
+                        path=c.path,
+                        record_type=c.record_type,
+                        camera=c.camera,
+                        timestamp=c.timestamp,
+                        sequence=c.sequence,
+                        duration=duration_cache.get(c.path, 60.0),
+                    )
+                    for c in session
+                ]
+                for chunk in split_chunks(session_with_duration, chunk_seconds):
+                    name = output_name(chunk)
+                    key = _merge_key(record_type, camera, name)
+                    existing = self._data.setdefault("files", {}).get(key, {})
+                    cam_merge[name] = {
+                        "status": existing.get("status", "pending"),
+                        "session_index": session_idx,
+                        "clip_count": len(chunk),
+                    }
+                    if key not in self._data["files"]:
+                        self._data["files"][key] = {
+                            "status": "pending",
+                            "session_index": session_idx,
+                            "clip_count": len(chunk),
+                            "updated_at": _utc_now(),
+                        }
+            merge_by_type.setdefault(record_type, {})[camera] = cam_merge
+
+        if self.inventory_path and self.inventory_path.is_file():
+            try:
+                inventory = json.loads(self.inventory_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                inventory = {"record_types": {}}
+            for record_type, cameras in merge_by_type.items():
+                block = inventory.setdefault("record_types", {}).setdefault(record_type, {})
+                block["merge_outputs"] = cameras
+            self._write_inventory(inventory)
+
     def record_merge(
         self,
         *,
@@ -370,18 +406,11 @@ class ImportStateStore:
         if elapsed_sec is not None:
             entry["elapsed_sec"] = round(elapsed_sec, 1)
         self._data.setdefault("files", {})[key] = entry
-        if status == "merged":
-            self._merge_stats["merged"] += 1
-        elif status == "skipped":
-            self._merge_stats["skipped"] += 1
-        elif status == "failed":
-            self._merge_stats["failed"] += 1
-        elif status == "planned":
-            self._merge_stats["planned"] += 1
-        self._save()
+        if status != "skipped":
+            self._save()
 
     def finalize(self) -> None:
-        self.sync_inventory_merge_status()
         self._save()
+        self.sync_inventory_merge_status()
         if self.state_on_sd and self.summary_path and self.summary_path.is_file():
             log(f"Import state on SD: {self.sd_path}")

@@ -6,6 +6,7 @@
 #   ./scripts/publish_all_70mai.sh --wait --loop   # daemon: re-run after each card session
 #   ./scripts/watch_publish_all_70mai.sh --skip-import  # restart on crash (see script header)
 #
+# SD card: .70mai/import/CARD_SUMMARY.txt (trips + merge status), .70mai/publish/ (YouTube)
 # Log: video/Output/.publish_tmp/publish_all.log
 
 set -euo pipefail

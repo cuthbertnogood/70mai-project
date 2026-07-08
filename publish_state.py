@@ -32,6 +32,10 @@ auth/youtube_token.json        — YouTube refresh token after browser login (~1
 publish/publish_*.state.json   — uploaded trips + YouTube video_id
 publish/sessions/*.upload.json — resume interrupted uploads (~few KB each)
 
+import/card_inventory.json     — trips, date range, clip counts (read CARD_SUMMARY.txt)
+import/import_*.state.json     — per-file merge status (host video/Output/)
+import/CARD_SUMMARY.txt        — human-readable card overview
+
 Insert this SD card on any Mac with the project + run:
   ./scripts/publish_all_70mai.sh --wait
 

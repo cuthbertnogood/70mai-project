@@ -659,7 +659,7 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 | Import | `import_70mai.py` | Merge new clips into `video/Output/` |
 | Compose + upload | `publish_70mai.py` | `--per-trip-upload --resume --continue-on-error` |
 | Skip done | state file | `publish_Normal.state.json` on SD + local cache |
-| Portable | SD `.70mai/` | State + OAuth on card; move to another Mac and run same script |
+| Portable | SD `.70mai/` | State + OAuth + import inventory on card |
 
 **Data on SD card** (autopilot default, ~few KB total):
 
@@ -667,6 +667,9 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 /Volumes/Untitled/.70mai/
   auth/youtube_credentials.json   # OAuth Desktop client (~1 KB)
   auth/youtube_token.json         # refresh token after browser login (~1 KB)
+  import/card_inventory.json      # trips, dates, merge plan (machine-readable)
+  import/CARD_SUMMARY.txt         # what's on the card (human-readable)
+  import/import_Normal.state.json # merge status per output file
   publish/publish_Normal.state.json
   publish/sessions/trip_03.upload.json
   README.txt
@@ -675,6 +678,8 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh --wait` — no separate OAuth setup if the token on the card is still valid. Merged clips on host (`video/Output/`) are rebuilt by import if missing.
 
 **Brand-new SD card (never uploaded):** autopilot detects missing `.70mai/`, creates the folder tree on the card, copies `youtube_credentials.json` from `~/.config/70mai/` (or `youtube_credentials.json` in the project root), opens the browser for YouTube OAuth if there is no token yet, initializes empty `publish_*.state.json`, then runs import → compose → upload. One-time host setup: save the Google Cloud Desktop OAuth JSON to `~/.config/70mai/youtube_credentials.json`.
+
+**Card inventory on SD:** each autopilot/import run updates `/.70mai/import/CARD_SUMMARY.txt` (trips, date range, clip counts, merge status) and `card_inventory.json`. Open the summary on any Mac to see what's recorded on the card without scanning clips.
 
 | Flag | Description |
 |------|-------------|
@@ -685,6 +690,8 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 | `--no-state-on-sd` | Keep upload state only on host (not portable) |
 | `--no-auth-on-sd` | Keep OAuth only on host (`~/.config/70mai/`) |
 | `--title` | YouTube title (default: date from first trip) |
+
+Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog.
 
 Master log: `video/Output/.publish_tmp/publish_all.log`. Lock file (`.publish_all.lock`) prevents duplicate autopilot runs.
 
@@ -764,7 +771,7 @@ Watchdog log: `video/Output/.publish_tmp/publish_all_watchdog.log`. Do not run t
 
 ## Hermes Agent uninstall (macOS)
 
-Utility script to fully remove [Hermes Agent](https://hermes-agent.nousresearch.com/) if it was installed on the host (CLI, gateway, desktop app, `~/.hermes`, uv Python). Does **not** remove Homebrew `ripgrep` or other shared tools.
+Utility script to fully remove [Hermes Agent](https://hermes-agent.nousresearch.com/) if it was installed on the host (CLI via `curl … | bash`, gateway, desktop app, `~/.hermes`, uv Python, Playwright cache). Does **not** remove Homebrew `ripgrep` or other shared tools.
 
 | Flag | Description |
 |------|-------------|

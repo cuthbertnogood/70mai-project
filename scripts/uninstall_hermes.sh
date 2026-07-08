@@ -272,6 +272,20 @@ manual_cleanup() {
   clean_shell_configs
 }
 
+cleanup_extra_artifacts() {
+  log "Removing extra install.sh artifacts (state, caches)..."
+
+  remove_path "$HOME_DIR/.local/state/hermes" || true
+  remove_path "$HOME_DIR/Library/Caches/ms-playwright" || true
+
+  local cache_dir
+  shopt -s nullglob
+  for cache_dir in /var/folders/*/*/*/C/com.nousresearch.hermes /var/folders/*/*/*/C/com.nousresearch.hermes.helper; do
+    remove_path "$cache_dir" || true
+  done
+  shopt -u nullglob
+}
+
 cleanup_uv_python() {
   log "Removing Hermes-managed uv Python (if present)..."
 
@@ -299,6 +313,8 @@ collect_remaining() {
     "$HOME_DIR/Library/Preferences/com.nousresearch.hermes.plist"
     "$HOME_DIR/Library/Saved Application State/com.nousresearch.hermes.savedState"
     "$HOME_DIR/Downloads/Hermes-Setup.dmg"
+    "$HOME_DIR/.local/state/hermes"
+    "$HOME_DIR/Library/Caches/ms-playwright"
   )
   local path
   for path in "${checks[@]}"; do
@@ -378,6 +394,7 @@ main() {
   stop_processes
   run_official_uninstall
   manual_cleanup
+  cleanup_extra_artifacts
   cleanup_uv_python
   verify_and_report
 }
