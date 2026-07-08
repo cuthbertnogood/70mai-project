@@ -43,6 +43,7 @@ RECORD_TYPE_INFO: dict[str, tuple[str, str, str]] = {
 MIN_GPS_TIMESTAMP = 1577836800  # 2020-01-01 — ignore zero/invalid points
 BAR_WIDTH = 36
 PROBE_WORKERS = 8
+SKIP_BATCH_LOG = 5  # batch "skip (exists)" lines in log files
 
 
 def format_duration(seconds: float) -> str:
@@ -187,6 +188,120 @@ class PipelineProgress:
         if is_tty():
             sys.stderr.write("\n")
             sys.stderr.flush()
+
+
+class MergeReporter:
+    """Merge-phase logging: batched skips, per-file detail, running totals."""
+
+    def __init__(self, total: int) -> None:
+        self.total = max(total, 1)
+        self.done = 0
+        self.merged = 0
+        self.skipped = 0
+        self.failed = 0
+        self.planned = 0
+        self.start = time.monotonic()
+        self._skip_batch = 0
+        self._skip_batch_mb = 0.0
+        self._skip_first_name = ""
+        self._last_summary_done = 0
+
+    def _flush_skips(self, *, force: bool = False) -> None:
+        if self._skip_batch == 0:
+            return
+        if not force and self._skip_batch < SKIP_BATCH_LOG:
+            return
+        if self._skip_batch == 1:
+            log(f"  skip: {self._skip_first_name} ({self._skip_batch_mb:.0f} MB)")
+        else:
+            log(
+                f"  skip ×{self._skip_batch} ({self._skip_batch_mb:.0f} MB total)"
+                f" — e.g. {self._skip_first_name}"
+            )
+        self._skip_batch = 0
+        self._skip_batch_mb = 0.0
+        self._skip_first_name = ""
+
+    def _summary(self, *, force: bool = False) -> None:
+        if not force and self.done - self._last_summary_done < 10 and self.done != self.total:
+            return
+        self._last_summary_done = self.done
+        elapsed = time.monotonic() - self.start
+        pct = 100 * self.done / self.total
+        rate = self.done / elapsed if elapsed > 0 else 0.0
+        eta = (self.total - self.done) / rate if rate > 0 else 0.0
+        bar = format_bar(self.done / self.total)
+        log(
+            f"Merge [{bar}] {self.done}/{self.total} ({pct:.1f}%) "
+            f"| new {self.merged} skip {self.skipped} fail {self.failed} "
+            f"| {format_duration(elapsed)} elapsed, ETA {format_duration(eta)}"
+        )
+
+    def skip(
+        self,
+        name: str,
+        size_mb: float,
+        pipeline: PipelineProgress | None,
+    ) -> None:
+        self.done += 1
+        self.skipped += 1
+        if self._skip_batch == 0:
+            self._skip_first_name = name
+        self._skip_batch += 1
+        self._skip_batch_mb += size_mb
+        self._flush_skips()
+        self._summary()
+        if pipeline:
+            pipeline.merge_step()
+
+    def begin_merge(
+        self,
+        *,
+        session_idx: int,
+        session_total: int,
+        chunk: list[Clip],
+        output_name: str,
+    ) -> None:
+        self._flush_skips(force=True)
+        total_duration = sum(c.duration or 0.0 for c in chunk)
+        first_ts = chunk[0].timestamp.strftime("%Y-%m-%d %H:%M")
+        last_ts = chunk[-1].timestamp.strftime("%H:%M")
+        log(
+            f"  [{self.done + 1}/{self.total}] session {session_idx}/{session_total} "
+            f"| {len(chunk)} clips, {total_duration / 60:.1f} min | {first_ts}→{last_ts}"
+        )
+        log(f"       → {output_name}")
+        if len(chunk) <= 3:
+            log(f"       clips: {', '.join(c.path.name for c in chunk)}")
+        else:
+            log(f"       clips: {chunk[0].path.name} … {chunk[-1].path.name}")
+
+    def finish_merge(
+        self,
+        *,
+        size_mb: float,
+        elapsed: float,
+        pipeline: PipelineProgress | None,
+        failed: bool = False,
+        dry_run: bool = False,
+    ) -> None:
+        self.done += 1
+        if failed:
+            self.failed += 1
+            log("       ✗ merge failed")
+        elif dry_run:
+            self.planned += 1
+            log("       (dry-run — planned)")
+        else:
+            self.merged += 1
+            log(f"       ✓ {size_mb:.0f} MB in {format_duration(elapsed)}")
+        self._summary(force=True)
+        if pipeline:
+            pipeline.merge_step()
+
+    def finish(self) -> None:
+        self._flush_skips(force=True)
+        self._summary(force=True)
 
 
 @dataclass(frozen=True)
@@ -941,32 +1056,55 @@ def merge_clips(
     output_path: Path,
     ffmpeg: str,
     dry_run: bool,
+    reporter: MergeReporter | None = None,
     merge_progress: ProgressTracker | None = None,
     pipeline: PipelineProgress | None = None,
+    *,
+    session_idx: int = 0,
+    session_total: int = 0,
 ) -> str:
     if output_path.exists():
         size_mb = output_path.stat().st_size / 1_000_000
-        log(f"  skip (exists, {size_mb:.0f} MB): {output_path.name}")
-        if merge_progress:
-            merge_progress.update("skipped")
-        if pipeline:
-            pipeline.merge_step()
+        if reporter:
+            reporter.skip(output_path.name, size_mb, pipeline)
+        else:
+            log(f"  skip (exists, {size_mb:.0f} MB): {output_path.name}")
+            if merge_progress:
+                merge_progress.update("skipped")
+            if pipeline:
+                pipeline.merge_step()
         return "skipped"
 
-    total_duration = sum(c.duration or 0.0 for c in chunk)
-    log(
-        f"  merging {len(chunk)} clips ({total_duration / 60:.1f} min) "
-        f"-> {output_path.name}"
-    )
+    if reporter:
+        reporter.begin_merge(
+            session_idx=session_idx,
+            session_total=session_total,
+            chunk=chunk,
+            output_name=output_path.name,
+        )
+    else:
+        total_duration = sum(c.duration or 0.0 for c in chunk)
+        log(
+            f"  merging {len(chunk)} clips ({total_duration / 60:.1f} min) "
+            f"-> {output_path.name}"
+        )
     if dry_run:
-        if merge_progress:
+        if reporter:
+            reporter.finish_merge(
+                size_mb=0.0,
+                elapsed=0.0,
+                pipeline=pipeline,
+                dry_run=True,
+            )
+        elif merge_progress:
             merge_progress.update("planned")
-        if pipeline:
-            pipeline.merge_step()
+            if pipeline:
+                pipeline.merge_step()
         return "planned"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     merge_start = time.monotonic()
+    log("       ffmpeg concat -c copy …")
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".txt",
@@ -1000,22 +1138,37 @@ def merge_clips(
             check=False,
         )
         if result.returncode != 0:
-            log(f"  ERROR: {result.stderr.strip()}")
+            log(f"       ERROR: {result.stderr.strip()}")
             if output_path.exists():
                 output_path.unlink()
-            if merge_progress:
+            if reporter:
+                reporter.finish_merge(
+                    size_mb=0.0,
+                    elapsed=time.monotonic() - merge_start,
+                    pipeline=pipeline,
+                    failed=True,
+                )
+            elif merge_progress:
                 merge_progress.update("failed")
-            if pipeline:
-                pipeline.merge_step()
+                if pipeline:
+                    pipeline.merge_step()
             return "failed"
         size_mb = output_path.stat().st_size / 1_000_000
         elapsed = time.monotonic() - merge_start
-        if merge_progress:
+        if reporter:
+            reporter.finish_merge(
+                size_mb=size_mb,
+                elapsed=elapsed,
+                pipeline=pipeline,
+            )
+        elif merge_progress:
             merge_progress.update(f"done {size_mb:.0f} MB in {format_duration(elapsed)}")
+            if pipeline:
+                pipeline.merge_step()
         else:
             log(f"  done: {size_mb:.0f} MB in {format_duration(elapsed)}")
-        if pipeline:
-            pipeline.merge_step()
+            if pipeline:
+                pipeline.merge_step()
         return "merged"
     finally:
         list_path.unlink(missing_ok=True)
@@ -1031,7 +1184,7 @@ def process_group(
     dry_run: bool,
     duration_cache: dict[Path, float],
     probe_progress: ProgressTracker | None,
-    merge_progress: ProgressTracker,
+    merge_reporter: MergeReporter | None,
     pipeline: PipelineProgress | None,
     assume_seconds: float | None = None,
 ) -> tuple[int, int, int, int]:
