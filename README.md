@@ -588,6 +588,10 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 | `--no-diag` | off | Disable diagnostic JSONL |
 | `--chunk` | all | Only chunk N (1-based) |
 | `--keep` | off | Keep MP4 after upload (debug only) |
+| `--upload-chunk-mb MB` | `256` | YouTube upload chunk size; `0` = whole file in one streaming PUT |
+| `--prune-merged MODE` | `off` | Delete merged source files: `after-compose` (min disk) or `after-upload` |
+| `--min-free-gb GB` | `5` | Disk reserve: wait for background upload before compose if below |
+| `--no-overlap` | off | Disable compose/upload pipeline (sequential like before) |
 | `--state-on-sd` | off | Write/read upload state on SD `/.70mai/publish/` (portable) |
 | `--no-state-on-sd` | off | Disable SD state even if `--state-on-sd` |
 | `--auth-on-sd` | off | Store YouTube OAuth on SD `/.70mai/auth/` (portable; used by autopilot) |
@@ -607,7 +611,13 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 
 **Security:** `youtube_token.json` is a refresh token — anyone with the file can upload to your YouTube account. Keep the SD card private; if lost, revoke access at [Google Account → Third-party access](https://myaccount.google.com/permissions). Do not publish the OAuth client JSON either.
 
-Large uploads use the resumable protocol via `requests` (64 MB chunks, 600 s timeout). System proxy env vars are ignored to avoid VPN/proxy redirect errors.
+Large uploads use the resumable protocol via `requests` (default **256 MB** chunks, 600 s timeout). Bigger chunks amortize the per-chunk RTT pause on latent networks; on a stable connection `--upload-chunk-mb 0` streams the whole file in one PUT (Google-recommended fastest mode — resume still works: on interruption the client queries the server offset and continues). System proxy env vars are ignored to avoid VPN/proxy redirect errors.
+
+**Compose/upload pipeline (default on):** while trip N uploads in a background thread, trip N+1 composes in parallel — wall time becomes max(encode, upload) instead of the sum (−35–45% on typical cards). Before each compose a **disk guard** checks `--min-free-gb` (default 5 GB) and waits for the in-flight upload to free space if needed. Disable with `--no-overlap`.
+
+**Disk lifecycle:** composed videos are always deleted right after successful upload (unless `--keep`). Merged 10-min source files accumulate by default; `--prune-merged after-upload` deletes a trip's merged files after its YouTube upload confirms, `--prune-merged after-compose` deletes them as soon as the trip's composed file is ready (peak disk ≈ one trip instead of the whole card). Source clips stay on SD, so merged files can always be rebuilt by rerunning import.
+
+**YouTube API quota:** a default Google Cloud project gets 10 000 units/day; each upload costs 1 600 → **~6 uploads/day** (resets midnight Pacific). The autopilot plan summary warns when pending uploads exceed the quota; extra uploads fail with `quotaExceeded` and resume the next day. For more, request a quota increase in Google Cloud Console (free, form review takes days).
 
 **Upload progress:** during transfer, stdout/stderr shows a bar with MB uploaded, speed, and ETA, e.g.  
 `Upload trip_02.mp4: [████░░░░] 512.00 MB/2.12 GB (24%) | 3.2 MB/s | ETA 8m 24s`
@@ -702,8 +712,21 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 | `--no-state-on-sd` | Keep upload state only on host (not portable) |
 | `--no-auth-on-sd` | Keep OAuth only on host (`~/.config/70mai/`) |
 | `--title` | YouTube title (default: date from first trip) |
+| `--profile` | Compose profile: `balanced` (default), `draft`, `quality`, `hevc` (≈2× faster upload) |
+| `--prune-merged` | `after-upload` (default), `after-compose` (min disk), `off` |
+| `--min-free-gb` | Disk reserve before each compose (default: 5) |
+| `--upload-chunk-mb` | YouTube upload chunk MB (default 256; `0` = whole file) |
+| `--no-overlap` | Disable compose/upload pipeline in publish |
 
-Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog. Types: **`Normal` + `Event`** — all collision/manual events on the card become **one** 2-cam YouTube video.
+Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-upload`** (merged files deleted after their YouTube upload confirms), compose/upload **pipeline overlap on**. Types: **`Normal` + `Event`** — all collision/manual events on the card become **one** 2-cam YouTube video.
+
+The plan summary includes a **quota warning** when pending uploads exceed ~6/day (default YouTube API quota); the run continues and the remaining trips resume on the next day's run.
+
+Fastest configuration for slow uplinks:
+
+```bash
+./scripts/publish_all_70mai.sh --wait --profile hevc --prune-merged after-compose
+```
 
 Master log: `video/Output/.publish_tmp/publish_all.log`. Lock file (`.publish_all.lock`) prevents duplicate autopilot runs.
 
@@ -780,6 +803,43 @@ WATCH_ONCE=1 ./scripts/watch_publish_all_70mai.sh --skip-import
 | `--force-restart` | Kill stale `publish_70mai.py` and lock holder, then start (autopilot / watchdog) |
 
 Watchdog log: `video/Output/.publish_tmp/publish_all_watchdog.log`. Do not run two watchdogs at once (separate lock file).
+
+## Disk cleanup — uploaded merged sources
+
+After YouTube upload, merged source MP4s in `video/Output/` can be deleted (raw clips stay on SD; import can rebuild).
+
+| Flag | Description |
+|------|-------------|
+| *(default)* | Dry-run: list files and total size |
+| `--apply` | Delete matched files |
+| `--source` | SD mount (default: auto-detect `/Volumes/Untitled`) |
+| `--types` | Record types (default: `Normal Event`) |
+
+```bash
+# Preview (~GB to free)
+./run scripts/cleanup_uploaded_sources.py --types Normal
+
+# Delete merged files for uploaded trips only
+./run scripts/cleanup_uploaded_sources.py --types Normal --apply
+```
+
+Autopilot also supports `--prune-merged after-upload` (default) to prune per trip during publish.
+
+## macOS optimization (MacBook Air 2018, 8 GB)
+
+Helper: [`scripts/macos_optimize.sh`](scripts/macos_optimize.sh) — Spotlight exclude for `video/`, remove Google updater agents, print manual steps.
+
+| Issue | Fix |
+|-------|-----|
+| Disk &lt;15% free | Run `cleanup_uploaded_sources.py --apply`; clear `~/Downloads` |
+| mdworker on video | `video/.metadata_never_index` (created by optimize script) |
+| 8 GB RAM + swap | Chrome Memory Saver; fewer tabs during compose; restart Cursor periodically |
+| Slow compose | Default `--profile balanced` uses **VideoToolbox HW encode** (T2); optional `--profile hevc` for faster uploads |
+| UI lag | System Settings → Accessibility → Display → Reduce motion / transparency |
+
+```bash
+./scripts/macos_optimize.sh
+```
 
 ## Hermes Agent uninstall (macOS)
 

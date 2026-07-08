@@ -42,7 +42,7 @@
 - **`plan_estimate.py`** — pre-flight: поездки, куски, `publish_plan.md`
 - **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
 - **`publish_70mai.py`** — trip chunks → compose → YouTube → delete; `--per-trip-upload`, `--upload-only`, `--resume-upload`, `--mark-uploaded`
-- **`youtube_upload.py`** — OAuth + resumable upload (64 MB chunks, `.upload.json` resume) + playlist
+- **`youtube_upload.py`** — OAuth + resumable upload (256 MB chunks по умолчанию, `--upload-chunk-mb 0` = один PUT, `.upload.json` resume) + playlist
 - **`youtube_upload_diagnostics.py`** + **`scripts/analyze_youtube_upload.py`** — JSONL diag log + failure analysis
 - По умолчанию загрузка **private** (не public/unlisted)
 
@@ -60,7 +60,13 @@ Target chunk: **2 ч по поездкам** (короткие поездки с
 
 **Оставшиеся chunks (2–5):** autopilot (`publish_all_70mai.sh`) обрабатывает все pending trips сам — compose → upload → delete, с `--resume` и state на SD. По умолчанию: **Normal** (поездки) + **Event** (все события на карте — **один** 2-cam ролик на YouTube). Для долгой сессии с auto-restart: `watch_publish_all_70mai.sh --skip-import`.
 
-YouTube quota ~6 видео/день — при 429/errors продолжить на следующий день с `--resume`.
+YouTube quota ~6 видео/день — при 429/errors продолжить на следующий день с `--resume`. Автопилот предупреждает о превышении квоты в plan summary.
+
+### Ускорение пайплайна (Jul 2026)
+
+- **Import:** 2 параллельных ffmpeg concat, фоновый прогрев page cache следующего чанка, общий ffprobe-кэш (`.probe_cache.json`) для plan/import/publish, `-probesize 1M -analyzeduration 0`.
+- **Compose:** hw decode включён по умолчанию (fastest-first fallback), профиль `hevc` (~3.5 Mbps ≈ H.264 6.5 Mbps → upload в ~1.9× быстрее) с авто-фолбэком на h264, `-prio_speed 1`.
+- **Publish:** конвейер compose(N+1) ∥ upload(N) (выкл: `--no-overlap`), disk guard `--min-free-gb`, `--prune-merged after-upload|after-compose` (merged-файлы удаляются после использования; исходники остаются на SD).
 
 ### Автопилот (один скрипт, без Cursor)
 
