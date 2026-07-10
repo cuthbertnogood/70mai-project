@@ -7,19 +7,19 @@ todos:
     status: completed
   - id: pipeline-disk
     content: Конвейер compose∥upload; prune sweep для всех uploaded; резерв 20 ГБ; after-compose
-    status: in_progress
+    status: completed
   - id: youtube-profile
     content: Дефолт balanced → 1080w @ 5 Mbps; обновить plan_estimate MB/min
-    status: pending
+    status: completed
   - id: log-hardening
     content: Encode heartbeat; жёсткий abort при low disk; watchdog stall по росту файла
-    status: pending
+    status: completed
   - id: live-dashboard
     content: TTY-таблица — Status, YouTube URL, Disk (merged/pruned/compose) по каждой поездке
-    status: pending
+    status: completed
   - id: docs-commit-push
     content: README; commit + push; команда запуска
-    status: pending
+    status: completed
 isProject: false
 ---
 
