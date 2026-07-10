@@ -366,10 +366,12 @@ Use `--profile` instead of tuning flags manually:
 
 | Profile | Use case | Codec | Bitrate | Width | FPS |
 |---------|----------|-------|---------|-------|-----|
-| `balanced` | **Default** — archive export | H.264 | 6.5 Mbps | 1206 | 25 |
+| `balanced` | **Default** — YouTube archive | H.264 | 5.0 Mbps | 1080 | 25 |
 | `draft` | Sync check / preview | H.264 | 5.0 Mbps | 960 | 20 |
 | `quality` | Higher bitrate archive | H.264 | 7.5 Mbps | 1206 | 25 |
-| `hevc` | Fastest upload (~1.9× smaller file) | HEVC | 3.5 Mbps | 1206 | 25 |
+| `hevc` | Smaller upload when HEVC HW available | HEVC | 3.5 Mbps | 1080 | 25 |
+
+`balanced` targets YouTube’s ~1080p ladder for vertical 2-cam (≈1080×1215 @ 5 Mbps) — ~24% smaller files than the old 1206@6.5 without a visible quality loss for dashcam.
 
 All profiles use VideoToolbox hw encode with `-prio_speed 1` and enable **hardware decode** by default (fastest pipeline is tried first: hw decode + CPU scale, then hw-encode-only fallback on failure). `scale_vt` is only used with explicit `--hw-decode`.
 
@@ -715,13 +717,15 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 | `--no-state-on-sd` | Keep upload state only on host (not portable) |
 | `--no-auth-on-sd` | Keep OAuth only on host (`~/.config/70mai/`) |
 | `--title` | YouTube title (default: date from first trip) |
-| `--profile` | Compose profile: `balanced` (default), `draft`, `quality`, `hevc` (≈2× faster upload) |
-| `--prune-merged` | `after-upload` (default), `after-compose` (min disk), `off` |
-| `--min-free-gb` | Disk reserve before each compose (default: 5) |
+| `--prune-merged` | `after-compose` (default), `after-upload`, `off` — also sweeps already-uploaded trips on start |
+| `--min-free-gb` | Disk reserve before each compose (default: 20) |
 | `--upload-chunk-mb` | YouTube upload chunk MB (default 256; `0` = whole file) |
 | `--no-overlap` | Disable compose/upload pipeline in publish |
+| `--no-dashboard` | Disable live TTY progress table |
 
-Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-upload`** (merged files deleted after their YouTube upload confirms), compose/upload **pipeline overlap on**. Types: **`Normal` + `Event`** — all collision/manual events on the card become **one** 2-cam YouTube video.
+Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-compose`**, **`--min-free-gb 20`**, compose/upload **pipeline overlap on**, live TTY dashboard (Status / YouTube / Disk). Types: **`Normal` + `Event`**.
+
+On start, publish **sweeps** already-uploaded trips and deletes their leftover merged files (fixes the “skip already uploaded → never prune” gap).
 
 The plan summary includes a **quota warning** when pending uploads exceed ~6/day (default YouTube API quota); the run continues and the remaining trips resume on the next day's run.
 
