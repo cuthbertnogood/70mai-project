@@ -156,6 +156,43 @@ def _publish_pids() -> list[int]:
     return pids
 
 
+def _orphan_ffmpeg_pids() -> list[int]:
+    try:
+        out = subprocess.run(
+            ["ps", "ax", "-o", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    pids: list[int] = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid_s, cmd = parts
+        lower = cmd.lower()
+        if "ffmpeg" not in lower:
+            continue
+        if ".publish_tmp" not in cmd and "/chunk_" not in cmd:
+            continue
+        try:
+            pids.append(int(pid_s))
+        except ValueError:
+            continue
+    return pids
+
+
+def kill_orphan_ffmpeg() -> None:
+    pids = _orphan_ffmpeg_pids()
+    if pids:
+        _kill_pids(pids, label="orphan ffmpeg")
+
+
 def _kill_pids(pids: list[int], *, label: str) -> None:
     targets = [p for p in pids if p != os.getpid()]
     if not targets:
@@ -186,6 +223,7 @@ def ensure_publish_slot(
 ) -> None:
     """Wait for publish_70mai.py to finish; kill stale/orphan processes on timeout or --force-restart."""
     if force:
+        kill_orphan_ffmpeg()
         pids = _publish_pids()
         if pids:
             _kill_pids(pids, label="publish_70mai.py")
@@ -691,6 +729,17 @@ def main() -> int:
         )
         dashboard.start()
         dashboard.render()
+
+        from youtube_upload import check_youtube_reachable
+
+        yt_ok, yt_detail = check_youtube_reachable()
+        if yt_ok:
+            log(f"YouTube API reachable ({yt_detail})")
+        else:
+            log(
+                f"Warning: YouTube API unreachable ({yt_detail}) — "
+                "start VPN before upload phase"
+            )
 
         ensure_publish_slot(force=args.force_restart)
 

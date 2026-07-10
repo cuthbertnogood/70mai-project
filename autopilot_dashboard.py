@@ -29,6 +29,8 @@ def write_status(
     detail: str = "",
     youtube_url: str | None = None,
     percent: float | None = None,
+    output_bytes: int | None = None,
+    stalled: bool = False,
 ) -> None:
     """Atomic status update for the live dashboard (safe across processes)."""
     path = status_path(temp_dir)
@@ -41,6 +43,8 @@ def write_status(
         "detail": detail,
         "youtube_url": youtube_url,
         "percent": percent,
+        "output_bytes": output_bytes,
+        "stalled": stalled,
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,6 +136,9 @@ class Dashboard:
     _thread: threading.Thread | None = None
     _tty = None
     _lines: int = 0
+    _youtube_ok: bool | None = None
+    _youtube_detail: str = "—"
+    _youtube_checked_at: float = 0.0
 
     @classmethod
     def from_plan(
@@ -232,8 +239,23 @@ class Dashboard:
 
     def _loop(self) -> None:
         while not self._stop.wait(1.0):
+            self._refresh_youtube_reachability()
             self._refresh_from_status()
             self.render()
+
+    def _refresh_youtube_reachability(self) -> None:
+        now = time.monotonic()
+        if now - self._youtube_checked_at < 30.0:
+            return
+        self._youtube_checked_at = now
+        try:
+            from youtube_upload import check_youtube_reachable
+
+            ok, detail = check_youtube_reachable()
+        except Exception as exc:
+            ok, detail = False, str(exc)[:48]
+        self._youtube_ok = ok
+        self._youtube_detail = detail
 
     def _refresh_from_status(self) -> None:
         st = read_status(self.temp_dir)
@@ -247,8 +269,12 @@ class Dashboard:
                 continue
             phase = st.get("phase") or row.status
             row.status = phase
+            if st.get("stalled"):
+                row.status = "stall"
             if st.get("detail"):
                 row.detail = str(st["detail"])
+            elif st.get("percent") is not None:
+                row.detail = f"{st['percent']:.0f}%"
             if st.get("youtube_url"):
                 row.youtube_url = st["youtube_url"]
             composed = _compose_bytes(
@@ -278,9 +304,15 @@ class Dashboard:
 
         usage = autopilot_disk_usage(self.video_dir, self.temp_dir)
         active = next(
-            (r for r in self.rows if r.status in ("compose", "upload", "import")),
+            (r for r in self.rows if r.status in ("compose", "upload", "import", "stall")),
             None,
         )
+        if self._youtube_ok is True:
+            yt_net = "YouTube OK"
+        elif self._youtube_ok is False:
+            yt_net = f"YouTube OFF ({self._youtube_detail})"
+        else:
+            yt_net = "YouTube …"
         phase = (
             f"{active.status} {active.record_type} "
             f"c{active.chunk_index}/t{active.trip_index}"
@@ -293,6 +325,7 @@ class Dashboard:
             + f"  |  free {free:.1f} GB (reserve {self.min_free_gb:g})"
             + f"  |  video {format_gb(usage['total'])} "
             f"(merged {format_gb(usage['merged'])}, tmp {format_gb(usage['composed'])})"
+            + f"  |  {yt_net}"
             + f"  |  phase: {phase}",
             f"{'#':<3} {'Type':<8} {'Label':<22} {'Dur':>8} {'Status':<8} "
             f"{'Disk':<14} YouTube",

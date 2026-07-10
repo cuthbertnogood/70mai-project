@@ -728,7 +728,7 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 | `--no-overlap` | Disable compose/upload pipeline in publish |
 | `--no-dashboard` | Disable live TTY progress table |
 
-Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-compose`**, **`--min-free-gb 20`**, compose/upload **pipeline overlap on**, live TTY dashboard (Status / YouTube / Disk). Types: **`Normal` + `Event`**.
+Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-compose`**, **`--min-free-gb 20`**, compose/upload **pipeline overlap on**, live TTY dashboard (Status / YouTube URL / Disk / **YouTube API reachability** — check VPN before upload). Types: **`Normal` + `Event`**.
 
 On start, publish **sweeps** already-uploaded trips and deletes their leftover merged files (fixes the “skip already uploaded → never prune” gap).
 
@@ -790,7 +790,7 @@ MONITOR_CHUNK=1 MONITOR_STALL_SEC=900 ./scripts/monitor_compose.sh
 # log: video/Output/.publish_tmp/monitor_chunk1.log
 ```
 
-**Upload watchdog:** `scripts/watch_publish_all_70mai.sh` restarts autopilot after a crash or stall. On each attempt it kills stale `publish_70mai.py` / hung autopilot (lock takeover), passes `--force-restart`, and exits when autopilot finishes cleanly (default). By default it also keeps the Mac awake with the lid closed (`pmset disablesleep` + `caffeinate`) for the whole session and restores sleep on exit — set `WATCH_AWAKE=0` to disable. Needs passwordless sudo for `/usr/bin/pmset` (see `scripts/70mai-awake.sh`).
+**Upload watchdog:** `scripts/watch_publish_all_70mai.sh` restarts autopilot after a crash or stall. On each attempt it kills stale **ffmpeg** / `publish_70mai.py` / hung autopilot (lock takeover), passes `--force-restart`, and exits when autopilot finishes cleanly (default). Stall detection uses **trip\_\*.mp4 file growth only** (encode heartbeat lines in the log do not count as progress). By default it also keeps the Mac awake with the lid closed (`pmset disablesleep` + `caffeinate`) for the whole session and restores sleep on exit — set `WATCH_AWAKE=0` to disable. Needs passwordless sudo for `/usr/bin/pmset` (see `scripts/70mai-awake.sh`).
 
 ```bash
 # Long upload session — restart on crash, stop when all trips uploaded
@@ -812,7 +812,7 @@ WATCH_AWAKE=0 ./scripts/watch_publish_all_70mai.sh --skip-import
 | `WATCH_RESTART_SEC` | `60` | Sleep before restart after failure |
 | `WATCH_STOP_ON_SUCCESS` | `1` | Exit watchdog when autopilot returns 0 |
 | `WATCH_ONCE` | `0` | One autopilot run, then exit |
-| `WATCH_STALL_SEC` | `1800` | Kill autopilot if `publish_all.log` has no new bytes for this long |
+| `WATCH_STALL_SEC` | `7200` | Kill autopilot if total `trip_*.mp4` bytes unchanged this long |
 
 | Flag | Description |
 |------|-------------|

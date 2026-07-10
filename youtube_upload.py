@@ -32,6 +32,27 @@ class YouTubeUploadError(RuntimeError):
     pass
 
 
+def check_youtube_reachable(timeout: float = 8.0) -> tuple[bool, str]:
+    """Probe HTTPS reachability to YouTube API (no OAuth). Useful before upload when VPN is manual."""
+    import urllib.error
+    import urllib.request
+
+    url = "https://www.googleapis.com/youtube/v3/"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "70mai-autopilot/1"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return True, "OK"
+    except urllib.error.HTTPError as exc:
+        if exc.code in (400, 403, 404):
+            return True, "OK"
+        return False, f"HTTP {exc.code}"
+    except urllib.error.URLError as exc:
+        reason = exc.reason if exc.reason else exc
+        return False, str(reason)[:48]
+    except (TimeoutError, OSError) as exc:
+        return False, str(exc)[:48]
+
+
 def format_file_size(num_bytes: int) -> str:
     size = float(num_bytes)
     for unit in ("B", "KB", "MB", "GB"):

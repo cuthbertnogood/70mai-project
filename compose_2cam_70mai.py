@@ -308,7 +308,7 @@ def run_compose_2cam(
 
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
-            run_ffmpeg_with_progress(cmd, duration_sec=duration)
+            run_ffmpeg_with_progress(cmd, duration_sec=duration, output_path=output)
             if label != attempts[0][2]:
                 log(f"\nNote: fell back to {label}")
             log(f"\nDone: {output}")

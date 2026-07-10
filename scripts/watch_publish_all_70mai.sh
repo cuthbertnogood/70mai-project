@@ -120,6 +120,7 @@ kill_stale_autopilot_holder() {
 }
 
 cleanup_before_autopilot() {
+  kill_stale_ffmpeg
   kill_stale_publish_70mai
   kill_stale_autopilot_holder
 }
@@ -180,27 +181,29 @@ run_autopilot() {
   "$AUTOPILOT" --force-restart "$@" >>"$AUTOPILOT_LOG" 2>&1 &
   CHILD_PID=$!
   local child=$CHILD_PID
-  local last_size last_change now sz
-  last_size="$(stat -f%z "$AUTOPILOT_LOG" 2>/dev/null || echo 0):0"
+  local last_trip_sz last_change now trip_sz
+  last_trip_sz=0
+  for f in "$LOG_DIR"/chunk_*/trip_*.mp4; do
+    [[ -f "$f" ]] || continue
+    last_trip_sz=$(( last_trip_sz + $(stat -f%z "$f" 2>/dev/null || echo 0) ))
+  done
   last_change="$(date +%s)"
 
   while pid_alive "$child"; do
     sleep 30
-    sz="$(stat -f%z "$AUTOPILOT_LOG" 2>/dev/null || echo 0)"
-    # Also treat growing composed trip_*.mp4 as progress (long encodes)
+    # Progress = trip_*.mp4 growth only (encode heartbeats must not reset stall)
     trip_sz=0
     for f in "$LOG_DIR"/chunk_*/trip_*.mp4; do
       [[ -f "$f" ]] || continue
       trip_sz=$(( trip_sz + $(stat -f%z "$f" 2>/dev/null || echo 0) ))
     done
-    marker="${sz}:${trip_sz}"
-    if [[ "$marker" != "$last_size" ]]; then
-      last_size="$marker"
+    if [[ "$trip_sz" != "$last_trip_sz" ]]; then
+      last_trip_sz="$trip_sz"
       last_change="$(date +%s)"
     fi
     now="$(date +%s)"
     if (( now - last_change > STALL_SEC )); then
-      log "Autopilot stalled (no log/file progress for ${STALL_SEC}s) — killing pid $child"
+      log "Autopilot stalled (trip_*.mp4 unchanged ${STALL_SEC}s, total ${trip_sz} bytes) — killing pid $child"
       kill -TERM "$child" 2>/dev/null || true
       sleep 5
       pid_alive "$child" && kill -KILL "$child" 2>/dev/null || true

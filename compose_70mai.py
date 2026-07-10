@@ -37,6 +37,10 @@ EVENT_MERGED_RE = re.compile(
 DEFAULT_PROFILE = "balanced"
 DEFAULT_DURATION = 600.0  # 10 minutes
 BAR_WIDTH = 36
+ENCODE_HEARTBEAT_SEC = 30.0
+ENCODE_STALL_WARN_SEC = 300.0  # 5 min without % or file growth → STALLED log
+ENCODE_STALL_ABORT_SEC = 600.0  # 10 min → kill ffmpeg
+TRIP_OUT_RE = re.compile(r"chunk_(\d+)/trip_(\d+)\.mp4$", re.IGNORECASE)
 FFMPEG_TIME_RE = re.compile(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})")
 FFMPEG_SPEED_RE = re.compile(r"speed=\s*([\d.]+)x")
 
@@ -177,18 +181,107 @@ class EncodeProgress:
             sys.stderr.flush()
 
 
-def run_ffmpeg_with_progress(cmd: list[str], *, duration_sec: float) -> None:
+def _update_encode_status(
+    output_path: Path | None,
+    *,
+    pct: float,
+    output_bytes: int,
+    stalled: bool,
+    ffmpeg_pid: int | None,
+) -> None:
+    if output_path is None or ".publish_tmp" not in output_path.as_posix():
+        return
+    match = TRIP_OUT_RE.search(output_path.as_posix())
+    if not match:
+        return
+    from autopilot_dashboard import read_status, write_status
+
+    temp_dir = output_path.parent.parent
+    chunk_index, trip_index = int(match.group(1)), int(match.group(2))
+    prior = read_status(temp_dir) or {}
+    record_type = prior.get("record_type") or "Normal"
+    out_mb = output_bytes // (1024 * 1024)
+    if stalled:
+        detail = f"STALLED {pct:.0f}% ({out_mb}M"
+        if ffmpeg_pid:
+            detail += f", pid {ffmpeg_pid}"
+        detail += ")"
+    else:
+        detail = f"{pct:.0f}% ({out_mb}M)"
+    write_status(
+        temp_dir,
+        record_type=record_type,
+        chunk_index=chunk_index,
+        trip_index=trip_index,
+        phase="stall" if stalled else "compose",
+        detail=detail,
+        percent=pct,
+        output_bytes=output_bytes,
+        stalled=stalled,
+    )
+
+
+def run_ffmpeg_with_progress(
+    cmd: list[str],
+    *,
+    duration_sec: float,
+    output_path: Path | None = None,
+) -> None:
     progress = EncodeProgress(duration_sec)
     stderr_chunks: list[str] = []
     stop_hb = threading.Event()
+    proc_holder: list[subprocess.Popen | None] = [None]
+    stall = {
+        "last_pct": -1.0,
+        "last_change": time.monotonic(),
+        "last_out_bytes": 0,
+    }
 
     def _heartbeat() -> None:
-        while not stop_hb.wait(30.0):
+        while not stop_hb.wait(ENCODE_HEARTBEAT_SEC):
+            now = time.monotonic()
             pct = 100 * min(1.0, progress.current_sec / progress.duration_sec)
-            elapsed = time.monotonic() - progress.start
-            log(
-                f"       … encoding ({format_duration(elapsed)}, {pct:.0f}%)"
+            elapsed = now - progress.start
+            out_bytes = 0
+            if output_path is not None and output_path.is_file():
+                try:
+                    out_bytes = output_path.stat().st_size
+                except OSError:
+                    pass
+            if pct > stall["last_pct"] + 0.05:
+                stall["last_pct"] = pct
+                stall["last_change"] = now
+            if out_bytes > stall["last_out_bytes"]:
+                stall["last_out_bytes"] = out_bytes
+                stall["last_change"] = now
+            idle = now - stall["last_change"]
+            stalled = idle >= ENCODE_STALL_WARN_SEC
+            proc = proc_holder[0]
+            pid = proc.pid if proc is not None else None
+            if stalled:
+                log(
+                    f"       … STALLED encoding ({format_duration(elapsed)}, "
+                    f"{pct:.0f}%, output {out_bytes // (1024 * 1024)}M, "
+                    f"idle {format_duration(idle)}"
+                    + (f", pid {pid}" if pid else "")
+                    + ")"
+                )
+            else:
+                log(f"       … encoding ({format_duration(elapsed)}, {pct:.0f}%)")
+            _update_encode_status(
+                output_path,
+                pct=pct,
+                output_bytes=out_bytes,
+                stalled=stalled,
+                ffmpeg_pid=pid,
             )
+            if stalled and idle >= ENCODE_STALL_ABORT_SEC and proc is not None:
+                log(
+                    f"       … encode abort: no progress for "
+                    f"{format_duration(idle)} — killing ffmpeg"
+                )
+                proc.kill()
+                return
 
     hb_thread = threading.Thread(target=_heartbeat, daemon=True)
     hb_thread.start()
@@ -199,6 +292,7 @@ def run_ffmpeg_with_progress(cmd: list[str], *, duration_sec: float) -> None:
         text=True,
         bufsize=1,
     )
+    proc_holder[0] = proc
     assert proc.stderr is not None
     buf = ""
     try:
@@ -1056,7 +1150,7 @@ def run_compose(
 
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
-            run_ffmpeg_with_progress(cmd, duration_sec=duration)
+            run_ffmpeg_with_progress(cmd, duration_sec=duration, output_path=output)
             if label != attempts[0][2]:
                 log(f"\nNote: fell back to {label}")
             log(f"\nDone: {output}")
