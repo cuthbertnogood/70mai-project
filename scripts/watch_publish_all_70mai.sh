@@ -8,7 +8,7 @@
 #   WATCH_RESTART_SEC=60       sleep before restart after failure
 #   WATCH_STOP_ON_SUCCESS=1    exit watchdog when autopilot returns 0 (default)
 #   WATCH_ONCE=1               single run, no restart loop
-#   WATCH_STALL_SEC=7200       kill if log AND trip_*.mp4 unchanged (default 2h)
+#   WATCH_STALL_SEC=7200       kill if trip_*.mp4 total size unchanged (default 2h; log heartbeats ignored)
 #   WATCH_AWAKE=1              lid-close awake via pmset+caffeinate (default on)
 #
 # Logs:
@@ -78,6 +78,27 @@ kill_stale_publish_70mai() {
       if is_publish_70mai_cmd "$cmd" && pid_alive "$pid"; then
         log "SIGKILL publish_70mai.py pid $pid"
         kill -KILL "$pid" 2>/dev/null || true
+      fi
+    done < <(ps ax -o pid=,command= 2>/dev/null || true)
+  fi
+}
+
+kill_stale_ffmpeg() {
+  local pid cmd killed=0
+  while read -r pid cmd; do
+    [[ -z "$pid" ]] && continue
+    if [[ "$cmd" == *ffmpeg* ]] && [[ "$cmd" == *".publish_tmp"* || "$cmd" == *"/chunk_"*"/trip_"* ]]; then
+      log "Killing stale ffmpeg pid $pid"
+      kill -TERM "$pid" 2>/dev/null || true
+      killed=1
+    fi
+  done < <(ps ax -o pid=,command= 2>/dev/null || true)
+  if [[ "$killed" == "1" ]]; then
+    sleep 2
+    while read -r pid cmd; do
+      [[ -z "$pid" ]] && continue
+      if [[ "$cmd" == *ffmpeg* ]] && [[ "$cmd" == *".publish_tmp"* || "$cmd" == *"/chunk_"*"/trip_"* ]]; then
+        pid_alive "$pid" && log "SIGKILL stale ffmpeg pid $pid" && kill -KILL "$pid" 2>/dev/null || true
       fi
     done < <(ps ax -o pid=,command= 2>/dev/null || true)
   fi
