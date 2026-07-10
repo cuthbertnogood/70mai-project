@@ -449,18 +449,23 @@ def main() -> int:
     parser.add_argument(
         "--prune-merged",
         choices=("off", "after-compose", "after-upload"),
-        default="after-upload",
+        default="after-compose",
         help=(
-            "Delete merged files once used (default: after-upload; "
-            "after-compose = minimum disk usage)"
+            "Delete merged files once used (default: after-compose; "
+            "after-upload = wait until YouTube confirms)"
         ),
     )
     parser.add_argument(
         "--min-free-gb",
         type=float,
-        default=5.0,
+        default=20.0,
         metavar="GB",
-        help="Disk reserve before each compose (default: 5)",
+        help="Disk reserve before each compose (default: 20)",
+    )
+    parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="Disable live TTY progress table",
     )
     parser.add_argument(
         "--upload-chunk-mb",
@@ -580,131 +585,155 @@ def main() -> int:
             inventory_summary=inventory_summary,
         )
 
+        from autopilot_dashboard import Dashboard
+
+        merged_state = load_merged_publish_state(
+            source, args.types, args.temp_dir, state_on_sd=state_on_sd
+        )
+        dashboard = Dashboard.from_plan(
+            chunks,
+            merged_state,
+            temp_dir=args.temp_dir,
+            video_dir=args.video_dir,
+            check_disk=Path("."),
+            min_free_gb=args.min_free_gb,
+            enabled=not args.no_dashboard and not args.dry_run,
+        )
+        dashboard.start()
+        dashboard.render()
+
         ensure_publish_slot(force=args.force_restart)
 
         append_log(args.log, f"publish_all start source={source} pending={pending}")
         failed = 0
 
-        if not args.skip_import:
-            import_cmd = [
-                python,
-                "import_70mai.py",
-                "--source",
-                str(source),
-                "--types",
-                ",".join(args.types),
-                "--output",
-                str(args.video_dir),
-                "--gap-seconds",
-                str(args.session_gap),
-                "--chunk-minutes",
-                str(IMPORT_CHUNK_MINUTES),
-            ]
-            if state_on_sd:
-                import_cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
-            ec = 0
-            for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
+        try:
+            if not args.skip_import:
+                import_cmd = [
+                    python,
+                    "import_70mai.py",
+                    "--source",
+                    str(source),
+                    "--types",
+                    ",".join(args.types),
+                    "--output",
+                    str(args.video_dir),
+                    "--gap-seconds",
+                    str(args.session_gap),
+                    "--chunk-minutes",
+                    str(IMPORT_CHUNK_MINUTES),
+                ]
+                if state_on_sd:
+                    import_cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
+                ec = 0
+                for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
+                    ec = run_step(
+                        import_cmd,
+                        log_path=args.log,
+                        dry_run=args.dry_run,
+                    )
+                    if ec == 0:
+                        break
+                    if import_attempt < IMPORT_MERGE_RETRY_MAX:
+                        log(
+                            f"Import had merge failure(s) — auto-retry "
+                            f"{import_attempt + 1}/{IMPORT_MERGE_RETRY_MAX} "
+                            f"in {IMPORT_MERGE_RETRY_DELAY_SEC}s…"
+                        )
+                        time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
+                if ec != 0:
+                    log(f"Import failed (exit {ec}) — see {args.log}")
+                    return ec
+
+            for record_type in args.types:
+                type_store = StateStore(
+                    source, args.temp_dir, record_type, state_on_sd=state_on_sd
+                )
+                type_state = type_store.load(resume=True)
+                type_trips, type_chunks, _, _, type_pending = pending_trips(
+                    source,
+                    [record_type],
+                    type_state,
+                    ffprobe=ffprobe or "ffprobe",
+                    chunk_minutes=args.chunk_minutes,
+                    session_gap=args.session_gap,
+                )
+                if type_pending == 0:
+                    log(f"{record_type}: all uploaded, skipping publish")
+                    continue
+
+                type_title = args.title or auto_title(type_trips)
+                log(f"\n>>> Publish {record_type}: {type_pending} pending")
+                publish_cmd = [
+                    python,
+                    "publish_70mai.py",
+                    "--source",
+                    str(source),
+                    "--types",
+                    record_type,
+                    "--video-dir",
+                    str(args.video_dir),
+                    "--temp-dir",
+                    str(args.temp_dir),
+                    "--per-trip-upload",
+                    "--resume",
+                    "--resume-upload",
+                    "--continue-on-error",
+                    "--state-on-sd" if state_on_sd else "--no-state-on-sd",
+                    "--credentials",
+                    str(creds),
+                    "--token",
+                    str(token),
+                    "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
+                    "--title",
+                    type_title,
+                    "--profile",
+                    args.profile,
+                    "--prune-merged",
+                    args.prune_merged,
+                    "--min-free-gb",
+                    str(args.min_free_gb),
+                ]
+                if args.upload_chunk_mb is not None:
+                    publish_cmd.extend(
+                        ["--upload-chunk-mb", str(args.upload_chunk_mb)]
+                    )
+                if args.no_overlap:
+                    publish_cmd.append("--no-overlap")
                 ec = run_step(
-                    import_cmd,
+                    publish_cmd,
                     log_path=args.log,
                     dry_run=args.dry_run,
                 )
-                if ec == 0:
-                    break
-                if import_attempt < IMPORT_MERGE_RETRY_MAX:
+                if ec != 0:
+                    failed = 1
                     log(
-                        f"Import had merge failure(s) — auto-retry "
-                        f"{import_attempt + 1}/{IMPORT_MERGE_RETRY_MAX} "
-                        f"in {IMPORT_MERGE_RETRY_DELAY_SEC}s…"
+                        f"Publish [{record_type}] finished with errors "
+                        f"(exit {ec}) — see {args.log}"
                     )
-                    time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
-            if ec != 0:
-                log(f"Import failed (exit {ec}) — see {args.log}")
-                return ec
 
-        for record_type in args.types:
-            type_store = StateStore(
-                source, args.temp_dir, record_type, state_on_sd=state_on_sd
-            )
-            type_state = type_store.load(resume=True)
-            type_trips, type_chunks, _, _, type_pending = pending_trips(
-                source,
-                [record_type],
-                type_state,
-                ffprobe=ffprobe or "ffprobe",
-                chunk_minutes=args.chunk_minutes,
-                session_gap=args.session_gap,
-            )
-            if type_pending == 0:
-                log(f"{record_type}: all uploaded, skipping publish")
-                continue
-
-            type_title = args.title or auto_title(type_trips)
-            log(f"\n>>> Publish {record_type}: {type_pending} pending")
-            publish_cmd = [
-                python,
-                "publish_70mai.py",
-                "--source",
-                str(source),
-                "--types",
-                record_type,
-                "--video-dir",
-                str(args.video_dir),
-                "--temp-dir",
-                str(args.temp_dir),
-                "--per-trip-upload",
-                "--resume",
-                "--resume-upload",
-                "--continue-on-error",
-                "--state-on-sd" if state_on_sd else "--no-state-on-sd",
-                "--credentials",
-                str(creds),
-                "--token",
-                str(token),
-                "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
-                "--title",
-                type_title,
-                "--profile",
-                args.profile,
-                "--prune-merged",
-                args.prune_merged,
-                "--min-free-gb",
-                str(args.min_free_gb),
-            ]
-            if args.upload_chunk_mb is not None:
-                publish_cmd.extend(["--upload-chunk-mb", str(args.upload_chunk_mb)])
-            if args.no_overlap:
-                publish_cmd.append("--no-overlap")
-            ec = run_step(
-                publish_cmd,
-                log_path=args.log,
-                dry_run=args.dry_run,
-            )
-            if ec != 0:
-                failed = 1
-                log(
-                    f"Publish [{record_type}] finished with errors "
-                    f"(exit {ec}) — see {args.log}"
+            log("")
+            log(f"Autopilot done. Log: {args.log}")
+            for record_type in args.types:
+                type_store = StateStore(
+                    source, args.temp_dir, record_type, state_on_sd=state_on_sd
                 )
-
-        log("")
-        log(f"Autopilot done. Log: {args.log}")
-        for record_type in args.types:
-            type_store = StateStore(
-                source, args.temp_dir, record_type, state_on_sd=state_on_sd
-            )
-            type_path = type_store.primary_path
-            if type_path.is_file():
-                uploaded = sum(
-                    1
-                    for p in json.loads(type_path.read_text()).get("trip_parts", [])
-                    if p.get("uploaded")
-                )
-                log(
-                    f"State [{record_type}]: {uploaded} trip(s) uploaded "
-                    f"in {type_path.name}"
-                )
-        return failed
+                type_path = type_store.primary_path
+                if type_path.is_file():
+                    uploaded = sum(
+                        1
+                        for p in json.loads(type_path.read_text()).get(
+                            "trip_parts", []
+                        )
+                        if p.get("uploaded")
+                    )
+                    log(
+                        f"State [{record_type}]: {uploaded} trip(s) uploaded "
+                        f"in {type_path.name}"
+                    )
+            return failed
+        finally:
+            dashboard.stop()
 
     acquire_lock(force=args.force_restart)
     setup_log_tee(args.log)

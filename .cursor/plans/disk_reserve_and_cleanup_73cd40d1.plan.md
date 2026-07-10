@@ -4,10 +4,10 @@ overview: Конвейер compose→upload→delete, резерв 20 ГБ, оп
 todos:
   - id: stop-and-cleanup
     content: Остановить autopilot/watchdog; удалить leftover MP4 и merged Normal для uploaded trips 1–7
-    status: pending
+    status: completed
   - id: pipeline-disk
     content: Конвейер compose∥upload; prune sweep для всех uploaded; резерв 20 ГБ; after-compose
-    status: pending
+    status: in_progress
   - id: youtube-profile
     content: Дефолт balanced → 1080w @ 5 Mbps; обновить plan_estimate MB/min
     status: pending

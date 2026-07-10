@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 from dataclasses import dataclass
@@ -42,8 +43,8 @@ FFMPEG_SPEED_RE = re.compile(r"speed=\s*([\d.]+)x")
 PROFILES: dict[str, dict[str, int | bool | str]] = {
     "balanced": {
         "hw": True,
-        "hw_quality": 65,
-        "width": 1206,
+        "hw_quality": 50,  # 5.0 Mbps — YouTube sweet spot for ~1080-tall 2-cam
+        "width": 1080,
         "fps": 25,
         "hw_decode": True,
         "use_vt_scale": False,
@@ -71,7 +72,7 @@ PROFILES: dict[str, dict[str, int | bool | str]] = {
     "hevc": {
         "hw": True,
         "hw_quality": 35,
-        "width": 1206,
+        "width": 1080,
         "fps": 25,
         "hw_decode": True,
         "use_vt_scale": False,
@@ -179,6 +180,18 @@ class EncodeProgress:
 def run_ffmpeg_with_progress(cmd: list[str], *, duration_sec: float) -> None:
     progress = EncodeProgress(duration_sec)
     stderr_chunks: list[str] = []
+    stop_hb = threading.Event()
+
+    def _heartbeat() -> None:
+        while not stop_hb.wait(30.0):
+            pct = 100 * min(1.0, progress.current_sec / progress.duration_sec)
+            elapsed = time.monotonic() - progress.start
+            log(
+                f"       … encoding ({format_duration(elapsed)}, {pct:.0f}%)"
+            )
+
+    hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+    hb_thread.start()
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
@@ -188,25 +201,28 @@ def run_ffmpeg_with_progress(cmd: list[str], *, duration_sec: float) -> None:
     )
     assert proc.stderr is not None
     buf = ""
-    while True:
-        chunk = proc.stderr.read(4096)
-        if not chunk:
-            break
-        stderr_chunks.append(chunk)
-        buf += chunk
+    try:
         while True:
-            idx_r = buf.find("\r")
-            idx_n = buf.find("\n")
-            if idx_r == -1 and idx_n == -1:
+            chunk = proc.stderr.read(4096)
+            if not chunk:
                 break
-            if idx_r != -1 and (idx_n == -1 or idx_r <= idx_n):
-                segment, buf = buf[:idx_r], buf[idx_r + 1 :]
-            else:
-                segment, buf = buf[:idx_n], buf[idx_n + 1 :]
-            segment = segment.strip()
-            if segment and "frame=" in segment:
-                progress.update_from_line(segment)
-    proc.wait()
+            stderr_chunks.append(chunk)
+            buf += chunk
+            while True:
+                idx_r = buf.find("\r")
+                idx_n = buf.find("\n")
+                if idx_r == -1 and idx_n == -1:
+                    break
+                if idx_r != -1 and (idx_n == -1 or idx_r <= idx_n):
+                    segment, buf = buf[:idx_r], buf[idx_r + 1 :]
+                else:
+                    segment, buf = buf[:idx_n], buf[idx_n + 1 :]
+                segment = segment.strip()
+                if segment and "frame=" in segment:
+                    progress.update_from_line(segment)
+        proc.wait()
+    finally:
+        stop_hb.set()
     progress.finish()
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(

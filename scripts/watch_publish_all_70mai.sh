@@ -8,7 +8,7 @@
 #   WATCH_RESTART_SEC=60       sleep before restart after failure
 #   WATCH_STOP_ON_SUCCESS=1    exit watchdog when autopilot returns 0 (default)
 #   WATCH_ONCE=1               single run, no restart loop
-#   WATCH_STALL_SEC=1800       kill autopilot if publish_all.log unchanged (default 30 min)
+#   WATCH_STALL_SEC=7200       kill if log AND trip_*.mp4 unchanged (default 2h)
 #
 # Logs:
 #   video/Output/.publish_tmp/publish_all.log          — autopilot
@@ -29,7 +29,7 @@ AUTOPILOT="$ROOT/scripts/publish_all_70mai.sh"
 RESTART_SEC="${WATCH_RESTART_SEC:-60}"
 STOP_ON_SUCCESS="${WATCH_STOP_ON_SUCCESS:-1}"
 WATCH_ONCE="${WATCH_ONCE:-0}"
-STALL_SEC="${WATCH_STALL_SEC:-1800}"
+STALL_SEC="${WATCH_STALL_SEC:-7200}"
 
 mkdir -p "$LOG_DIR"
 
@@ -133,19 +133,26 @@ run_autopilot() {
   "$AUTOPILOT" --force-restart "$@" >>"$AUTOPILOT_LOG" 2>&1 &
   local child=$!
   local last_size last_change now sz
-  last_size="$(stat -f%z "$AUTOPILOT_LOG" 2>/dev/null || echo 0)"
+  last_size="$(stat -f%z "$AUTOPILOT_LOG" 2>/dev/null || echo 0):0"
   last_change="$(date +%s)"
 
   while pid_alive "$child"; do
     sleep 30
     sz="$(stat -f%z "$AUTOPILOT_LOG" 2>/dev/null || echo 0)"
-    if [[ "$sz" != "$last_size" ]]; then
-      last_size="$sz"
+    # Also treat growing composed trip_*.mp4 as progress (long encodes)
+    trip_sz=0
+    for f in "$LOG_DIR"/chunk_*/trip_*.mp4; do
+      [[ -f "$f" ]] || continue
+      trip_sz=$(( trip_sz + $(stat -f%z "$f" 2>/dev/null || echo 0) ))
+    done
+    marker="${sz}:${trip_sz}"
+    if [[ "$marker" != "$last_size" ]]; then
+      last_size="$marker"
       last_change="$(date +%s)"
     fi
     now="$(date +%s)"
     if (( now - last_change > STALL_SEC )); then
-      log "Autopilot stalled (no log progress for ${STALL_SEC}s) — killing pid $child"
+      log "Autopilot stalled (no log/file progress for ${STALL_SEC}s) — killing pid $child"
       kill -TERM "$child" 2>/dev/null || true
       sleep 5
       pid_alive "$child" && kill -KILL "$child" 2>/dev/null || true

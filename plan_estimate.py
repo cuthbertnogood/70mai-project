@@ -24,7 +24,7 @@ from import_70mai import (
 DEFAULT_CHUNK_MINUTES = 120
 DEFAULT_SESSION_GAP = 120.0
 DEFAULT_PLAN_FILE = Path("video/Output/publish_plan.md")
-MB_PER_MIN_BALANCED = 45.0
+MB_PER_MIN_BALANCED = 37.5  # ~5 Mbps H.264 (balanced 1080w)
 YOUTUBE_DAILY_UPLOADS = 6
 
 

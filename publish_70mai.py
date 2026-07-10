@@ -126,12 +126,41 @@ def prune_merged_for_trip(
     return freed
 
 
+def prune_uploaded_trips(
+    state: dict,
+    chunks: list,
+    video_dir: Path,
+) -> int:
+    """Delete merged files for every trip already marked uploaded in state."""
+    total = 0
+    for chunk in chunks:
+        for trip_idx, trip in enumerate(chunk.trips, start=1):
+            if not trip_uploaded(state, chunk.record_type, chunk.index, trip_idx):
+                continue
+            freed = prune_merged_for_trip(
+                video_dir, chunk.record_type, trip.start, trip.end
+            )
+            if freed:
+                log(
+                    f"  Pruned uploaded [{chunk.record_type}] "
+                    f"chunk {chunk.index} trip {trip_idx}: "
+                    f"freed {format_file_size(freed)}"
+                )
+            total += freed
+    return total
+
+
 def guard_free_disk(
     check_path: Path,
     min_free_gb: float,
     pipeline: UploadPipeline | None,
+    *,
+    state: dict | None = None,
+    chunks: list | None = None,
+    video_dir: Path | None = None,
+    prune_merged: str = "off",
 ) -> None:
-    """Before compose: if disk is below reserve, wait for background upload to free space."""
+    """Before compose: enforce disk reserve; wait/upload-prune; hard-fail if still low."""
     if min_free_gb <= 0:
         return
     free = free_disk_gb(check_path)
@@ -144,10 +173,16 @@ def guard_free_disk(
         )
         pipeline.wait()
         free = free_disk_gb(check_path)
-    if free < min_free_gb:
+    if free < min_free_gb and prune_merged != "off" and state and chunks and video_dir:
         log(
-            f"  Warning: {free:.1f} GB free (< {min_free_gb:g} GB reserve) — "
-            "consider --prune-merged after-compose"
+            f"  Disk low ({free:.1f} GB) — pruning merged files for uploaded trips"
+        )
+        prune_uploaded_trips(state, chunks, video_dir)
+        free = free_disk_gb(check_path)
+    if free < min_free_gb:
+        raise RuntimeError(
+            f"Disk free {free:.1f} GB < {min_free_gb:g} GB reserve — "
+            "cannot compose. Free space or lower --min-free-gb."
         )
 
 
@@ -622,21 +657,25 @@ def publish_and_upload_trips(
     upload_chunk_bytes: int | None = None,
     pipeline: UploadPipeline | None = None,
     playlist_holder: dict | None = None,
-    prune_merged: str = "off",
-    min_free_gb: float = 0.0,
+    prune_merged: str = "after-compose",
+    min_free_gb: float = 20.0,
     check_disk: Path = Path("."),
+    all_chunks: list | None = None,
 ) -> tuple[str | None, str | None]:
     """Compose and upload each trip separately; returns (last_video_id, playlist_id).
 
     With a pipeline, the upload of trip N runs in the background while trip N+1
     composes — wall time becomes max(encode, upload) instead of the sum.
     """
+    from autopilot_dashboard import write_status
+
     chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
     chunk_dir.mkdir(parents=True, exist_ok=True)
     last_video_id = None
     if playlist_holder is None:
         playlist_holder = {"id": playlist_id}
     state_lock = pipeline.state_lock if pipeline else threading.Lock()
+    chunks_for_prune = all_chunks or [chunk]
 
     for trip_idx, trip in enumerate(chunk.trips, start=1):
         if trip_only is not None and trip_idx != trip_only:
@@ -656,6 +695,17 @@ def publish_and_upload_trips(
                 log(f"  Trip {trip.index}: skip (already uploaded): https://youtu.be/{vid}")
             else:
                 log(f"  Trip {trip.index}: skip (already uploaded per state)")
+            if prune_merged != "off":
+                prune_merged_for_trip(video_dir, record_type, trip.start, trip.end)
+            write_status(
+                temp_dir,
+                record_type=record_type,
+                chunk_index=chunk.index,
+                trip_index=trip_idx,
+                phase="done",
+                detail=f"youtu.be/{vid}" if vid else "uploaded",
+                youtube_url=youtube_watch_url(vid) if vid else None,
+            )
             summary.skipped += 1
             continue
 
@@ -679,7 +729,23 @@ def publish_and_upload_trips(
                 continue
             log(f"  Upload-only: {part_path.name} ({format_file_size(part_path.stat().st_size)})")
         elif not trip_part_complete(part_path, trip.duration_sec):
-            guard_free_disk(check_disk, min_free_gb, pipeline)
+            guard_free_disk(
+                check_disk,
+                min_free_gb,
+                pipeline,
+                state=state,
+                chunks=chunks_for_prune,
+                video_dir=video_dir,
+                prune_merged=prune_merged,
+            )
+            write_status(
+                temp_dir,
+                record_type=record_type,
+                chunk_index=chunk.index,
+                trip_index=trip_idx,
+                phase="compose",
+                detail=format_duration(trip.duration_sec),
+            )
             run_compose_2cam(
                 video_dir,
                 part_path,
@@ -730,6 +796,14 @@ def publish_and_upload_trips(
             trip_title: str = trip_title,
         ) -> None:
             nonlocal last_video_id
+            write_status(
+                temp_dir,
+                record_type=record_type,
+                chunk_index=chunk.index,
+                trip_index=trip_idx,
+                phase="upload",
+                detail=part_path.name,
+            )
             try:
                 video_id, new_playlist, freed, _elapsed = upload_and_cleanup(
                     part_path,
@@ -748,6 +822,14 @@ def publish_and_upload_trips(
             except YouTubeUploadError as exc:
                 msg = f"chunk {chunk.index} trip {trip_idx}: {exc}"
                 log(f"  Upload failed: {exc}")
+                write_status(
+                    temp_dir,
+                    record_type=record_type,
+                    chunk_index=chunk.index,
+                    trip_index=trip_idx,
+                    phase="fail",
+                    detail=str(exc)[:80],
+                )
                 if diag_log:
                     log(f"  Diagnostics: {diag_log}")
                     log(f"  Analyze: {cli_python()} scripts/analyze_youtube_upload.py")
@@ -787,6 +869,15 @@ def publish_and_upload_trips(
                     sync_card_youtube_inventory(state, state_store, **youtube_sync)
                 summary.uploaded += 1
                 summary.freed_bytes += freed
+            write_status(
+                temp_dir,
+                record_type=record_type,
+                chunk_index=chunk.index,
+                trip_index=trip_idx,
+                phase="done",
+                detail=f"youtu.be/{video_id}",
+                youtube_url=youtube_watch_url(video_id),
+            )
             if prune_merged == "after-upload":
                 prune_merged_for_trip(video_dir, record_type, trip.start, trip.end)
 
@@ -905,18 +996,18 @@ def main() -> None:
     parser.add_argument(
         "--prune-merged",
         choices=("off", "after-compose", "after-upload"),
-        default="off",
+        default="after-compose",
         help=(
-            "Delete merged source files once used: after-compose (aggressive, "
-            "min disk) or after-upload (conservative). Sources stay on SD."
+            "Delete merged source files once used: after-compose (default, min disk) "
+            "or after-upload. Sources stay on SD."
         ),
     )
     parser.add_argument(
         "--min-free-gb",
         type=float,
-        default=5.0,
+        default=20.0,
         metavar="GB",
-        help="Disk reserve: wait for background upload before compose if below (default: 5)",
+        help="Disk reserve before each compose (default: 20)",
     )
     parser.add_argument(
         "--no-overlap",
@@ -1122,6 +1213,8 @@ def main() -> None:
         playlist_holder = {"id": playlist_id}
         if pipeline is not None:
             log("Pipeline: compose of the next trip overlaps the current upload")
+        if args.prune_merged != "off" and not args.dry_run:
+            prune_uploaded_trips(state, chunks, args.video_dir)
 
         try:
             last_chunk_key: tuple[int, str] | None = None
@@ -1175,6 +1268,7 @@ def main() -> None:
                     prune_merged=args.prune_merged,
                     min_free_gb=args.min_free_gb,
                     check_disk=args.check_disk,
+                    all_chunks=chunks,
                 )
         finally:
             if pipeline is not None:
@@ -1191,6 +1285,8 @@ def main() -> None:
     state_lock = pipeline.state_lock if pipeline else threading.Lock()
     if pipeline is not None:
         log("Pipeline: compose of the next chunk overlaps the current upload")
+    if args.prune_merged != "off" and not args.dry_run:
+        prune_uploaded_trips(state, chunks, args.video_dir)
 
     try:
         for chunk in chunks:
@@ -1211,7 +1307,15 @@ def main() -> None:
             pl_title = args.playlist or ""
 
             if not args.dry_run:
-                guard_free_disk(args.check_disk, args.min_free_gb, pipeline)
+                guard_free_disk(
+                    args.check_disk,
+                    args.min_free_gb,
+                    pipeline,
+                    state=state,
+                    chunks=chunks,
+                    video_dir=args.video_dir,
+                    prune_merged=args.prune_merged,
+                )
             output = publish_chunk(
                 chunk,
                 video_dir=args.video_dir,
