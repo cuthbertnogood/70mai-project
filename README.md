@@ -472,7 +472,12 @@ python3 compose_70mai.py "video/ScreenRecording_....mp4" --profile draft
 # Force mix with manual offset
 python3 compose_70mai.py "video/ScreenRecording_....mp4" \
   --audio mix --audio-offset 0.5
+
+# Lid closed / leave running: caffeinate + pmset disablesleep (restored on exit)
+./scripts/compose_awake.sh "video/ScreenRecording_....mp4" --profile hevc
 ```
+
+`compose_awake.sh` asks for sudo once to set `pmset disablesleep 1` (the only reliable lid-close override), runs compose under `caffeinate -dims`, then restores the previous flag even on Ctrl-C. Amphetamine alone does not block lid-close sleep. Prefer AC power while the lid is shut. Optional passwordless sudo for `pmset` is documented in the script header.
 
 ## Publish plan (2-cam, trip-based chunks)
 
