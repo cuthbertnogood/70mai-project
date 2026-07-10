@@ -357,7 +357,12 @@ def print_plan_summary(
     pending: int,
     state_paths: list[Path],
     inventory_summary: Path | None = None,
+    check_disk: Path = Path("."),
+    min_free_gb: float = 20.0,
 ) -> None:
+    from publish_70mai import free_disk_gb
+
+    free = free_disk_gb(check_disk)
     log("")
     log("=== Autopilot plan ===")
     if state_paths:
@@ -366,6 +371,11 @@ def print_plan_summary(
     if inventory_summary is not None:
         log(f"  Card inventory: {inventory_summary}")
     log(f"  Trips/events: {total_trips} total, {pending} pending upload")
+    log(
+        f"  Disk free: {free:.1f} GB "
+        f"(reserve {min_free_gb:g} GB"
+        + (", OK)" if free >= min_free_gb else ", LOW — prune/wait before compose)")
+    )
     for chunk in chunks:
         if chunk.record_type == "Event":
             label = "all events → 1 video"
@@ -583,6 +593,8 @@ def main() -> int:
             pending=pending,
             state_paths=state_paths,
             inventory_summary=inventory_summary,
+            check_disk=Path("."),
+            min_free_gb=args.min_free_gb,
         )
 
         from autopilot_dashboard import Dashboard
@@ -713,7 +725,12 @@ def main() -> int:
                     )
 
             log("")
-            log(f"Autopilot done. Log: {args.log}")
+            from publish_70mai import free_disk_gb
+
+            log(
+                f"Autopilot done. Log: {args.log} | "
+                f"disk free {free_disk_gb(Path('.')):.1f} GB"
+            )
             for record_type in args.types:
                 type_store = StateStore(
                     source, args.temp_dir, record_type, state_on_sd=state_on_sd
