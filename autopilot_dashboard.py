@@ -274,6 +274,9 @@ class Dashboard:
         fail = sum(1 for r in self.rows if r.status == "fail")
         total = len(self.rows)
         free = free_disk_gb(self.check_disk)
+        from publish_all_70mai import autopilot_disk_usage, format_gb
+
+        usage = autopilot_disk_usage(self.video_dir, self.temp_dir)
         active = next(
             (r for r in self.rows if r.status in ("compose", "upload", "import")),
             None,
@@ -288,6 +291,8 @@ class Dashboard:
             f"Autopilot  {done}/{total} done"
             + (f"  {fail} fail" if fail else "")
             + f"  |  free {free:.1f} GB (reserve {self.min_free_gb:g})"
+            + f"  |  video {format_gb(usage['total'])} "
+            f"(merged {format_gb(usage['merged'])}, tmp {format_gb(usage['composed'])})"
             + f"  |  phase: {phase}",
             f"{'#':<3} {'Type':<8} {'Label':<22} {'Dur':>8} {'Status':<8} "
             f"{'Disk':<14} YouTube",

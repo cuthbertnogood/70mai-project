@@ -350,6 +350,71 @@ def auto_title(trips: list) -> str:
     return f"70mai {datetime.now():%Y-%m-%d}"
 
 
+def format_gb(n_bytes: int) -> str:
+    return f"{n_bytes / (1024**3):.1f} GB"
+
+
+def autopilot_disk_usage(
+    video_dir: Path,
+    temp_dir: Path,
+    types: list[str] | None = None,
+) -> dict[str, int]:
+    """Bytes used by autopilot video intermediates (freed as trips finish / prune).
+
+    Counts only video files (*.mp4 / *.MP4): merged under video_dir and
+    composed trips under temp_dir/chunk_*.
+    """
+    types = types or ["Normal", "Event", "Parking"]
+    merged = 0
+    for record_type in types:
+        for cam in ("Front", "Back"):
+            merged += video_files_size_bytes(video_dir / record_type / cam)
+    composed = 0
+    if temp_dir.is_dir():
+        for chunk_dir in temp_dir.glob("chunk_*"):
+            composed += video_files_size_bytes(chunk_dir)
+    return {
+        "merged": merged,
+        "composed": composed,
+        "total": merged + composed,
+    }
+
+
+def video_files_size_bytes(path: Path) -> int:
+    """Sum size of *.mp4 / *.MP4 under path (non-video files ignored)."""
+    total = 0
+    if not path.is_dir():
+        return 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                if not name.lower().endswith(".mp4"):
+                    continue
+                try:
+                    total += (Path(root) / name).stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        return 0
+    return total
+
+
+def dir_size_bytes(path: Path) -> int:
+    total = 0
+    if not path.is_dir():
+        return 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += (Path(root) / name).stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        return 0
+    return total
+
+
 def print_plan_summary(
     chunks: list,
     *,
@@ -359,10 +424,14 @@ def print_plan_summary(
     inventory_summary: Path | None = None,
     check_disk: Path = Path("."),
     min_free_gb: float = 20.0,
+    video_dir: Path = Path("video/Output"),
+    temp_dir: Path = Path("video/Output/.publish_tmp"),
+    types: list[str] | None = None,
 ) -> None:
     from publish_70mai import free_disk_gb
 
     free = free_disk_gb(check_disk)
+    usage = autopilot_disk_usage(video_dir, temp_dir, types=types)
     log("")
     log("=== Autopilot plan ===")
     if state_paths:
@@ -375,6 +444,12 @@ def print_plan_summary(
         f"  Disk free: {free:.1f} GB "
         f"(reserve {min_free_gb:g} GB"
         + (", OK)" if free >= min_free_gb else ", LOW — prune/wait before compose)")
+    )
+    log(
+        f"  Autopilot video: {format_gb(usage['total'])} "
+        f"(merged {format_gb(usage['merged'])}, "
+        f"compose tmp {format_gb(usage['composed'])}) "
+        "— video files, freed as trips upload/prune"
     )
     for chunk in chunks:
         if chunk.record_type == "Event":
@@ -595,6 +670,9 @@ def main() -> int:
             inventory_summary=inventory_summary,
             check_disk=Path("."),
             min_free_gb=args.min_free_gb,
+            video_dir=args.video_dir,
+            temp_dir=args.temp_dir,
+            types=args.types,
         )
 
         from autopilot_dashboard import Dashboard
@@ -727,9 +805,15 @@ def main() -> int:
             log("")
             from publish_70mai import free_disk_gb
 
+            usage = autopilot_disk_usage(
+                args.video_dir, args.temp_dir, types=args.types
+            )
             log(
                 f"Autopilot done. Log: {args.log} | "
-                f"disk free {free_disk_gb(Path('.')):.1f} GB"
+                f"disk free {free_disk_gb(Path('.')):.1f} GB | "
+                f"video left {format_gb(usage['total'])} "
+                f"(merged {format_gb(usage['merged'])}, "
+                f"compose tmp {format_gb(usage['composed'])})"
             )
             for record_type in args.types:
                 type_store = StateStore(
