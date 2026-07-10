@@ -118,8 +118,20 @@ release_watch_lock() {
   rm -f "$WATCH_LOCK"
 }
 
+CHILD_PID=""
+
 on_signal() {
-  log "Signal received — stopping watchdog (autopilot child not killed)"
+  log "Signal received — stopping watchdog and autopilot"
+  if [[ -n "${CHILD_PID}" ]] && pid_alive "$CHILD_PID"; then
+    log "Sending SIGTERM to autopilot pid $CHILD_PID"
+    kill -TERM "$CHILD_PID" 2>/dev/null || true
+    sleep 3
+    if pid_alive "$CHILD_PID"; then
+      log "SIGKILL autopilot pid $CHILD_PID"
+      kill -KILL "$CHILD_PID" 2>/dev/null || true
+    fi
+  fi
+  cleanup_before_autopilot
   release_watch_lock
   exit 130
 }
@@ -131,7 +143,8 @@ run_autopilot() {
   log "Starting: $AUTOPILOT --force-restart $*"
   set +e
   "$AUTOPILOT" --force-restart "$@" >>"$AUTOPILOT_LOG" 2>&1 &
-  local child=$!
+  CHILD_PID=$!
+  local child=$CHILD_PID
   local last_size last_change now sz
   last_size="$(stat -f%z "$AUTOPILOT_LOG" 2>/dev/null || echo 0):0"
   last_change="$(date +%s)"
@@ -158,12 +171,14 @@ run_autopilot() {
       pid_alive "$child" && kill -KILL "$child" 2>/dev/null || true
       cleanup_before_autopilot
       wait "$child" 2>/dev/null || true
+      CHILD_PID=""
       return 3
     fi
   done
 
   wait "$child"
   local ec=$?
+  CHILD_PID=""
   set -e
   log "Autopilot exited with code $ec"
   return "$ec"
