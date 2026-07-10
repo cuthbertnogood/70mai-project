@@ -868,6 +868,18 @@ Utility script to fully remove [Hermes Agent](https://hermes-agent.nousresearch.
 source ~/.zshrc
 ```
 
+## Cursor agent (context hygiene)
+
+Project rules and hooks keep agent chats from filling the context window with huge edit history:
+
+| Piece | Role |
+|-------|------|
+| [`.cursor/rules/context-hygiene.mdc`](.cursor/rules/context-hygiene.mdc) | Always-on: small patches, no full-file rewrite, batch docs, prefer new chat per workstream |
+| [`.cursor/rules/auto-documentation.mdc`](.cursor/rules/auto-documentation.mdc) | Docs still required, but **one** README/GOALS pass at end of a feature |
+| [`.cursor/hooks/context-hygiene.py`](.cursor/hooks/context-hygiene.py) | Blocks oversized `Write`/`StrReplace`; warns after repeated edits to the same file |
+
+Limits (hook): existing-file `Write` ≥8 000 chars denied; `StrReplace` `new_string` ≥4 000 chars denied (soft target under 2 000). After hooks change, reload Cursor if they do not pick up immediately.
+
 ## Notes
 
 - Front camera: 3840x2160, Back camera: 1920x1080

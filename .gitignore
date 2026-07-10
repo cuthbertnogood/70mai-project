@@ -37,3 +37,6 @@ youtube_token.json
 .vscode/
 *.swp
 *.swo
+
+# Cursor hook runtime state (per-chat edit counters)
+.cursor/hooks/state/

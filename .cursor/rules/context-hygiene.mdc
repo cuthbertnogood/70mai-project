@@ -1,0 +1,26 @@
+---
+description: Keep agent context lean — small patches, batch docs, prefer new chats
+alwaysApply: true
+---
+
+# Context hygiene
+
+This project burns context mainly via large `StrReplace`/`Write` history. Follow these every turn.
+
+## Edits
+
+- Prefer **small** `StrReplace` (ideally under ~500 tokens / ~2KB of `new_string`).
+- Do **not** `Write` an existing file’s full body — patch with `StrReplace`.
+- `Write` only for **new** files, or when the user explicitly asks to replace the whole file.
+- Avoid re-editing the same hot file dozens of times in one chat; finish the change, then move on.
+- Batch `README.md` / `GOALS.md` updates **once at the end** of a feature task (see auto-documentation rule).
+
+## Chat lifecycle
+
+- For a **new workstream** (new feature, unrelated bug, post-audit follow-up), tell the user to **start a new chat** and point at the relevant files/plan — do not keep stacking history here.
+- Keep replies short: prefer diffs and bullet outcomes over long narrative once the approach is settled.
+- Prefer `Task`/subagents for broad exploration so raw search dumps stay out of the main thread.
+
+## Do not optimize
+
+- Unused Cursor tool definitions and skill *descriptions* are fixed overhead — ignore them.
