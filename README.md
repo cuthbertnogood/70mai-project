@@ -473,11 +473,11 @@ python3 compose_70mai.py "video/ScreenRecording_....mp4" --profile draft
 python3 compose_70mai.py "video/ScreenRecording_....mp4" \
   --audio mix --audio-offset 0.5
 
-# Lid closed / leave running: caffeinate + pmset disablesleep (restored on exit)
-./scripts/compose_awake.sh "video/ScreenRecording_....mp4" --profile hevc
+# Lid closed / leave running (manual 3-cam only):
+./scripts/compose_awake.sh "video/ScreenRecording_04-25-2026 13-01-19.mp4" --profile hevc
 ```
 
-`compose_awake.sh` asks for sudo once to set `pmset disablesleep 1` (the only reliable lid-close override), runs compose under `caffeinate -dims`, then restores the previous flag even on Ctrl-C. Amphetamine alone does not block lid-close sleep. Prefer AC power while the lid is shut. Optional passwordless sudo for `pmset` is documented in the script header.
+For unattended autopilot with the lid closed, use the **watchdog** instead — it enables the same `pmset disablesleep` + `caffeinate` for the whole session (see [Upload watchdog](#autopilot-sd-card--youtube-zero-manual-steps)).
 
 ## Publish plan (2-cam, trip-based chunks)
 
@@ -790,10 +790,11 @@ MONITOR_CHUNK=1 MONITOR_STALL_SEC=900 ./scripts/monitor_compose.sh
 # log: video/Output/.publish_tmp/monitor_chunk1.log
 ```
 
-**Upload watchdog:** `scripts/watch_publish_all_70mai.sh` restarts autopilot after a crash or stall. On each attempt it kills stale `publish_70mai.py` / hung autopilot (lock takeover), passes `--force-restart`, and exits when autopilot finishes cleanly (default).
+**Upload watchdog:** `scripts/watch_publish_all_70mai.sh` restarts autopilot after a crash or stall. On each attempt it kills stale `publish_70mai.py` / hung autopilot (lock takeover), passes `--force-restart`, and exits when autopilot finishes cleanly (default). By default it also keeps the Mac awake with the lid closed (`pmset disablesleep` + `caffeinate`) for the whole session and restores sleep on exit — set `WATCH_AWAKE=0` to disable. Needs passwordless sudo for `/usr/bin/pmset` (see `scripts/70mai-awake.sh`).
 
 ```bash
 # Long upload session — restart on crash, stop when all trips uploaded
+# (awake on by default — close lid OK on AC after NOPASSWD pmset is set)
 ./scripts/watch_publish_all_70mai.sh --skip-import
 
 # Wait for SD, keep retrying on failure
@@ -801,6 +802,9 @@ MONITOR_CHUNK=1 MONITOR_STALL_SEC=900 ./scripts/monitor_compose.sh
 
 # Single wrapped run (no restart loop)
 WATCH_ONCE=1 ./scripts/watch_publish_all_70mai.sh --skip-import
+
+# Disable lid-close awake
+WATCH_AWAKE=0 ./scripts/watch_publish_all_70mai.sh --skip-import
 ```
 
 | Env | Default | Description |

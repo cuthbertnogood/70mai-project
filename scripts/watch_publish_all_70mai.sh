@@ -9,15 +9,22 @@
 #   WATCH_STOP_ON_SUCCESS=1    exit watchdog when autopilot returns 0 (default)
 #   WATCH_ONCE=1               single run, no restart loop
 #   WATCH_STALL_SEC=7200       kill if log AND trip_*.mp4 unchanged (default 2h)
+#   WATCH_AWAKE=1              lid-close awake via pmset+caffeinate (default on)
 #
 # Logs:
 #   video/Output/.publish_tmp/publish_all.log          — autopilot
 #   video/Output/.publish_tmp/publish_all_watchdog.log — watchdog events
+#
+# Lid-close: needs passwordless sudo for /usr/bin/pmset (see scripts/70mai-awake.sh).
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=70mai-awake.sh
+source "$ROOT/scripts/70mai-awake.sh"
+
+WATCH_AWAKE="${WATCH_AWAKE:-1}"
 
 LOG_DIR="video/Output/.publish_tmp"
 AUTOPILOT_LOG="$LOG_DIR/publish_all.log"
@@ -132,10 +139,17 @@ on_signal() {
     fi
   fi
   cleanup_before_autopilot
-  release_watch_lock
   exit 130
 }
 
+on_exit() {
+  if [[ "$WATCH_AWAKE" == "1" ]]; then
+    70mai_awake_restore
+  fi
+  release_watch_lock
+}
+
+trap on_exit EXIT
 trap on_signal INT TERM
 
 run_autopilot() {
@@ -186,8 +200,18 @@ run_autopilot() {
 
 main() {
   acquire_watch_lock
-  log "Watchdog started (restart=${RESTART_SEC}s, stop_on_success=${STOP_ON_SUCCESS}, once=${WATCH_ONCE}, stall=${STALL_SEC}s)"
+  log "Watchdog started (restart=${RESTART_SEC}s, stop_on_success=${STOP_ON_SUCCESS}, once=${WATCH_ONCE}, stall=${STALL_SEC}s, awake=${WATCH_AWAKE})"
   log "Args: $*"
+
+  if [[ "$WATCH_AWAKE" == "1" ]]; then
+    if 70mai_awake_enable 0; then
+      70mai_awake_caffeinate_self
+      log "Awake on (disablesleep + caffeinate) — lid may stay closed on AC"
+    else
+      70mai_awake_caffeinate_self
+      log "Awake partial (caffeinate only) — close lid only if SleepDisabled=1 already"
+    fi
+  fi
 
   local attempt=0
   while true; do
@@ -202,7 +226,6 @@ main() {
       log "Autopilot finished OK"
       if [[ "$STOP_ON_SUCCESS" == "1" || "$WATCH_ONCE" == "1" ]]; then
         log "Watchdog exiting (success)"
-        release_watch_lock
         exit 0
       fi
       log "Restarting after success in ${RESTART_SEC}s (WATCH_STOP_ON_SUCCESS=0)"
@@ -216,7 +239,6 @@ main() {
 
     if [[ "$WATCH_ONCE" == "1" ]]; then
       log "Watchdog exiting (WATCH_ONCE=1, exit $ec)"
-      release_watch_lock
       exit "$ec"
     fi
 
