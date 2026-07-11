@@ -627,8 +627,10 @@ Large uploads use the resumable protocol via `requests` (default **256 MB** chun
 
 **YouTube API quota:** a default Google Cloud project gets 10 000 units/day; each upload costs 1 600 → **~6 uploads/day** (resets midnight Pacific). The autopilot plan summary warns when pending uploads exceed the quota; extra uploads fail with `quotaExceeded` and resume the next day. For more, request a quota increase in Google Cloud Console (free, form review takes days).
 
-**Upload progress:** during transfer, stdout/stderr shows a bar with MB uploaded, speed, and ETA, e.g.  
-`Upload trip_02.mp4: [████░░░░] 512.00 MB/2.12 GB (24%) | 3.2 MB/s | ETA 8m 24s`
+**Upload progress:** during transfer, stdout/stderr shows a bar with MB uploaded, speed, elapsed, and ETA. In log files (non-TTY), progress lines appear every **~1%** or **30 s** (whichever comes first), plus **chunk start/ack** lines for resumable mode (default 256 MB chunks), e.g.  
+`Upload trip_02.mp4: [████░░░░] 512.00 MB/2.12 GB (24%) | 3.2 MB/s | 4m 12s elapsed | ETA 8m 24s`  
+`Chunk 2/17: 256.00 MB–512.00 MB (256.00 MB)`  
+`Chunk ack → 512.00 MB/4.13 GB (12%) | 0.9 MB/s chunk | 4m 45s chunk time`
 
 **Session resume:** `video/Output/.publish_tmp/<stem>.upload.json` (e.g. `trip_01.upload.json`) — deleted on success.
 

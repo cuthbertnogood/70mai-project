@@ -21,6 +21,8 @@ MAX_UPLOAD_RETRIES = 12
 # recommends the fewest possible requests on stable connections.
 UPLOAD_CHUNK_BYTES = 256 * 1024 * 1024
 UPLOAD_STREAM_BLOCK = 4 * 1024 * 1024  # read block for whole-file streaming mode
+UPLOAD_PROGRESS_STEP_PCT = 1  # on_progress callback granularity
+UPLOAD_LOG_INTERVAL_SEC = 30  # min seconds between progress lines in log files
 UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 
 DEFAULT_CREDENTIALS = Path.home() / ".config/70mai/youtube_credentials.json"
@@ -72,8 +74,9 @@ class UploadProgressReporter:
         self.size = max(size, 1)
         self.start = time.monotonic()
         self._last_logged_pct = -1
+        self._last_log_time = 0.0
 
-    def update(self, pct: int, offset: int | None = None) -> None:
+    def update(self, pct: int, offset: int | None = None, *, force: bool = False) -> None:
         if offset is None:
             offset = min(self.size, int(self.size * pct / 100))
         elapsed = time.monotonic() - self.start
@@ -85,16 +88,30 @@ class UploadProgressReporter:
         line = (
             f"Upload {self.label}: [{bar}] "
             f"{format_file_size(offset)}/{format_file_size(self.size)} ({pct}%) "
-            f"| {speed_mb:.1f} MB/s | ETA {format_duration(eta)}"
+            f"| {speed_mb:.1f} MB/s | {format_duration(elapsed)} elapsed "
+            f"| ETA {format_duration(eta)}"
         )
-        if is_tty():
+        if is_tty() and not force:
             sys.stderr.write("\r\033[K" + line)
             sys.stderr.flush()
             return
-        pct_bucket = pct // 2 * 2
-        if pct == 100 or pct_bucket > self._last_logged_pct or self._last_logged_pct < 0:
+        now = time.monotonic()
+        pct_bucket = int(pct)
+        time_due = (
+            offset > 0
+            and self._last_log_time > 0
+            and (now - self._last_log_time) >= UPLOAD_LOG_INTERVAL_SEC
+        )
+        if (
+            force
+            or pct == 100
+            or pct_bucket > self._last_logged_pct
+            or self._last_logged_pct < 0
+            or time_due
+        ):
             log(f"  {line}")
-            self._last_logged_pct = pct_bucket
+            self._last_logged_pct = max(self._last_logged_pct, pct_bucket)
+            self._last_log_time = now
 
     def finish(self) -> None:
         if is_tty():
@@ -114,6 +131,21 @@ def _call_progress(
         on_progress(pct, offset, size)
     except TypeError:
         on_progress(pct)
+
+
+def _byte_stream(fh, start: int, end: int, report: Callable[[int], None]):
+    """Yield file bytes from start..end inclusive, calling report(sent_offset) per block."""
+    fh.seek(start)
+    remaining = end - start + 1
+    sent = start
+    while remaining > 0:
+        block = fh.read(min(UPLOAD_STREAM_BLOCK, remaining))
+        if not block:
+            break
+        remaining -= len(block)
+        sent += len(block)
+        report(sent)
+        yield block
 
 
 def _require_google():
@@ -413,6 +445,17 @@ def _upload_video_inner(
     log(
         f"Uploading: {video_path.name} ({format_file_size(size)}) — {title}"
     )
+    if whole_file:
+        log(
+            f"  Mode: whole-file streaming PUT "
+            f"(block {format_file_size(UPLOAD_STREAM_BLOCK)}, timeout {HTTP_TIMEOUT_SEC}s)"
+        )
+    else:
+        total_chunks = (size + chunk_bytes - 1) // chunk_bytes
+        log(
+            f"  Mode: {total_chunks} resumable chunk(s) × "
+            f"{format_file_size(chunk_bytes)} (timeout {HTTP_TIMEOUT_SEC}s per chunk)"
+        )
 
     if diag:
         diag.start(
@@ -485,7 +528,7 @@ def _upload_video_inner(
     def report(offset_now: int) -> None:
         nonlocal last_logged
         pct = min(99, int(offset_now * 100 / size))
-        if on_progress and pct >= last_logged + 2:
+        if on_progress and pct >= last_logged + UPLOAD_PROGRESS_STEP_PCT:
             _call_progress(on_progress, pct, offset_now, size)
             last_logged = pct
 
@@ -494,71 +537,67 @@ def _upload_video_inner(
         fh.seek(offset)
         while offset < size:
             end = size - 1 if whole_file else min(offset + chunk_bytes, size) - 1
+            chunk_len = end - offset + 1
+            if not whole_file:
+                chunk_num = offset // chunk_bytes + 1
+                total_chunks = (size + chunk_bytes - 1) // chunk_bytes
+                log(
+                    f"  Chunk {chunk_num}/{total_chunks}: "
+                    f"{format_file_size(offset)}–{format_file_size(end + 1)} "
+                    f"({format_file_size(chunk_len)})"
+                )
             headers = {
-                "Content-Length": str(end - offset + 1),
+                "Content-Length": str(chunk_len),
                 "Content-Range": f"bytes {offset}-{end}/{size}",
             }
-            if whole_file:
-
-                def stream(start: int = offset, stop: int = end):
-                    fh.seek(start)
-                    remaining = stop - start + 1
-                    sent = start
-                    while remaining > 0:
-                        block = fh.read(min(UPLOAD_STREAM_BLOCK, remaining))
-                        if not block:
-                            break
-                        remaining -= len(block)
-                        sent += len(block)
-                        report(sent)
-                        yield block
-
-                try:
-                    resp = _request_with_retries(
-                        session,
-                        "PUT",
-                        upload_url,
-                        diag=diag,
-                        attempts=1,
-                        data=stream(),
-                        headers=headers,
-                    )
-                except YouTubeUploadError:
-                    # Stream interrupted: ask the server where to resume from.
-                    stream_failures += 1
-                    if stream_failures >= MAX_UPLOAD_RETRIES:
-                        raise
-                    time.sleep(min(2**stream_failures, 60))
-                    offset = _query_upload_offset(
-                        session, upload_url, size, diag=diag
-                    )
-                    fh.seek(offset)
-                    if diag:
-                        diag.retry(
-                            attempt=stream_failures,
-                            reason=f"stream interrupted; resuming at {offset}",
-                            method="PUT",
-                            url_hint=upload_url,
-                        )
-                    continue
-            else:
-                chunk = fh.read(end - offset + 1)
-                if not chunk:
-                    break
+            put_start = offset
+            chunk_started = time.monotonic()
+            try:
                 resp = _request_with_retries(
                     session,
                     "PUT",
                     upload_url,
                     diag=diag,
-                    data=chunk,
+                    attempts=1,
+                    data=_byte_stream(fh, offset, end, report),
                     headers=headers,
                 )
+            except YouTubeUploadError:
+                # Stream interrupted: ask the server where to resume from.
+                stream_failures += 1
+                if stream_failures >= MAX_UPLOAD_RETRIES:
+                    raise
+                time.sleep(min(2**stream_failures, 60))
+                offset = _query_upload_offset(
+                    session, upload_url, size, diag=diag
+                )
+                fh.seek(offset)
+                if diag:
+                    diag.retry(
+                        attempt=stream_failures,
+                        reason=f"stream interrupted; resuming at {offset}",
+                        method="PUT",
+                        url_hint=upload_url,
+                    )
+                continue
             if resp.status_code in (200, 201):
                 clear_upload_session(session_path)
                 video_id = resp.json()["id"]
                 if diag:
                     diag.success(video_id, size)
                 _call_progress(on_progress, 100, size, size)
+                elapsed_total = time.monotonic() - chunk_started
+                if not whole_file:
+                    chunk_speed = (
+                        chunk_len / elapsed_total / (1024 * 1024)
+                        if elapsed_total > 0
+                        else 0.0
+                    )
+                    log(
+                        f"  Chunk done → {format_file_size(size)}/{format_file_size(size)} "
+                        f"(100%) | {chunk_speed:.1f} MB/s last chunk | "
+                        f"{format_duration(elapsed_total)} chunk time"
+                    )
                 return video_id
             if resp.status_code == 308:
                 server_offset = _parse_range_end(resp.headers.get("Range"))
@@ -580,8 +619,23 @@ def _upload_video_inner(
                 )
                 if diag:
                     diag.chunk_ok(offset, size, status_code=308)
+                chunk_elapsed = time.monotonic() - chunk_started
+                sent_this_put = offset - put_start
+                if sent_this_put <= 0:
+                    sent_this_put = chunk_len
+                chunk_speed = (
+                    sent_this_put / chunk_elapsed / (1024 * 1024)
+                    if chunk_elapsed > 0
+                    else 0.0
+                )
                 pct = min(99, int(offset * 100 / size))
-                if on_progress and pct >= last_logged + 2:
+                if not whole_file:
+                    log(
+                        f"  Chunk ack → {format_file_size(offset)}/{format_file_size(size)} "
+                        f"({pct}%) | {chunk_speed:.1f} MB/s chunk | "
+                        f"{format_duration(chunk_elapsed)} chunk time"
+                    )
+                if on_progress and pct >= last_logged + UPLOAD_PROGRESS_STEP_PCT:
                     _call_progress(on_progress, pct, offset, size)
                     last_logged = pct
                 continue
