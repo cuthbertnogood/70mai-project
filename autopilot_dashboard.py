@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live TTY dashboard for autopilot trip progress (Status / YouTube / Disk)."""
+"""Live TTY dashboard for autopilot trip progress (Status / Progress / Disk / YouTube)."""
 
 from __future__ import annotations
 
@@ -110,6 +110,69 @@ def _fmt_gb(n: int) -> str:
     return f"{n / (1024**2):.0f}M"
 
 
+# Column widths for the trip table (cell content, excluding padding).
+_COL_WIDTHS = (3, 6, 22, 10, 8, 10, 10, 26)
+_COL_HEADERS = ("#", "Type", "Label", "Dur", "Status", "Progress", "Disk", "YouTube")
+
+_STATUS_LEGEND = (
+    "Статусы:  pending — в очереди  |  compose — кодирование (ffmpeg)  |  "
+    "upload — заливка на YouTube",
+    "          done — уже на YouTube  |  stall — encode завис  |  fail — ошибка",
+    "Диск:     merged N — исходники с SD  |  N G/M — готовый MP4  |  "
+    "pruned — загружено, исходники удалены  |  clean — пусто",
+    "Progress: N% — идёт encode  |  STALL N% — нет прогресса 5+ мин  |  "
+    "upload — заливается  |  done — готово  |  — — не активно",
+)
+
+
+def _table_top(widths: tuple[int, ...]) -> str:
+    return "┏" + "┳".join("━" * (w + 2) for w in widths) + "┓"
+
+
+def _table_sep(widths: tuple[int, ...]) -> str:
+    return "┣" + "┳".join("━" * (w + 2) for w in widths) + "┫"
+
+
+def _table_bottom(widths: tuple[int, ...]) -> str:
+    return "┗" + "┻".join("━" * (w + 2) for w in widths) + "┛"
+
+
+def _table_row(cells: tuple[str, ...], widths: tuple[int, ...]) -> str:
+    padded = []
+    for cell, w in zip(cells, widths):
+        text = cell if len(cell) <= w else cell[: max(0, w - 1)] + "…"
+        padded.append(f" {text:<{w}} ")
+    return "┃" + "┃".join(padded) + "┃"
+
+
+def _progress_label(
+    status: str,
+    *,
+    percent: float | None = None,
+    stalled: bool = False,
+    is_active: bool = False,
+) -> str:
+    if status == "done":
+        return "done"
+    if status == "fail":
+        return "fail"
+    if status == "upload":
+        return "upload"
+    if not is_active:
+        return "—"
+    if stalled or status == "stall":
+        if percent is not None:
+            return f"STALL {percent:.0f}%"
+        return "STALL"
+    if status == "compose" and percent is not None:
+        return f"{percent:.0f}%"
+    if status == "compose":
+        return "…"
+    if status == "import":
+        return "import"
+    return "—"
+
+
 @dataclass
 class TripRow:
     key: str
@@ -121,6 +184,7 @@ class TripRow:
     status: str = "pending"
     youtube_url: str | None = None
     disk: str = "—"
+    progress: str = "—"
     detail: str = ""
 
 
@@ -182,7 +246,7 @@ class Dashboard:
                     disk = "pruned" if merged == 0 else f"merged {_fmt_gb(merged)}"
                     status = "done"
                 elif composed > 0:
-                    disk = f"compose {_fmt_gb(composed)}"
+                    disk = _fmt_gb(composed)
                     status = "pending"
                 elif merged > 0:
                     disk = f"merged {_fmt_gb(merged)}"
@@ -259,37 +323,46 @@ class Dashboard:
 
     def _refresh_from_status(self) -> None:
         st = read_status(self.temp_dir)
-        if not st:
-            return
-        key = (
-            f"{st.get('record_type')}:{st.get('chunk_index')}:{st.get('trip_index')}"
-        )
-        for row in self.rows:
-            if row.key != key:
-                continue
-            phase = st.get("phase") or row.status
-            row.status = phase
-            if st.get("stalled"):
-                row.status = "stall"
-            if st.get("detail"):
-                row.detail = str(st["detail"])
-            elif st.get("percent") is not None:
-                row.detail = f"{st['percent']:.0f}%"
-            if st.get("youtube_url"):
-                row.youtube_url = st["youtube_url"]
-            composed = _compose_bytes(
-                self.temp_dir, row.chunk_index, row.trip_index
+        active_key: str | None = None
+        if st:
+            active_key = (
+                f"{st.get('record_type')}:{st.get('chunk_index')}:{st.get('trip_index')}"
             )
-            if phase == "done":
-                row.disk = "pruned" if "merged" not in row.disk else row.disk
-                if composed == 0 and row.disk.startswith("merged"):
-                    # re-check
-                    pass
-            elif phase == "compose" and composed > 0:
-                row.disk = f"compose {_fmt_gb(composed)}"
-            elif phase == "upload" and composed > 0:
-                row.disk = f"compose {_fmt_gb(composed)}"
-            break
+        for row in self.rows:
+            if active_key and row.key == active_key and st:
+                phase = st.get("phase") or row.status
+                row.status = phase
+                stalled = bool(st.get("stalled"))
+                if stalled:
+                    row.status = "stall"
+                pct = st.get("percent")
+                if isinstance(pct, (int, float)):
+                    pct_f: float | None = float(pct)
+                else:
+                    pct_f = None
+                row.progress = _progress_label(
+                    row.status,
+                    percent=pct_f,
+                    stalled=stalled,
+                    is_active=True,
+                )
+                if st.get("youtube_url"):
+                    row.youtube_url = st["youtube_url"]
+                composed = _compose_bytes(
+                    self.temp_dir, row.chunk_index, row.trip_index
+                )
+                if phase == "done":
+                    row.disk = "pruned" if "merged" not in row.disk else row.disk
+                elif phase in ("compose", "upload", "stall") and composed > 0:
+                    row.disk = _fmt_gb(composed)
+                continue
+
+            if row.status == "done":
+                row.progress = "done"
+            elif row.status == "fail":
+                row.progress = "fail"
+            else:
+                row.progress = "—"
 
     def render(self) -> None:
         if not self.enabled or self._tty is None:
@@ -327,19 +400,32 @@ class Dashboard:
             f"(merged {format_gb(usage['merged'])}, tmp {format_gb(usage['composed'])})"
             + f"  |  {yt_net}"
             + f"  |  phase: {phase}",
-            f"{'#':<3} {'Type':<8} {'Label':<22} {'Dur':>8} {'Status':<8} "
-            f"{'Disk':<14} YouTube",
-            "-" * 96,
+            "",
+            _table_top(_COL_WIDTHS),
+            _table_row(_COL_HEADERS, _COL_WIDTHS),
+            _table_sep(_COL_WIDTHS),
         ]
         for i, row in enumerate(self.rows, start=1):
             yt = (row.youtube_url or "—").replace("https://", "")
-            if len(yt) > 28:
-                yt = yt[:25] + "…"
+            dur = format_duration(row.duration_sec)
             lines.append(
-                f"{i:<3} {row.record_type:<8} {row.label:<22} "
-                f"{format_duration(row.duration_sec):>8} {row.status:<8} "
-                f"{row.disk:<14} {yt}"
+                _table_row(
+                    (
+                        str(i),
+                        row.record_type,
+                        row.label,
+                        dur,
+                        row.status,
+                        row.progress,
+                        row.disk,
+                        yt,
+                    ),
+                    _COL_WIDTHS,
+                )
             )
+        lines.append(_table_bottom(_COL_WIDTHS))
+        lines.append("")
+        lines.extend(_STATUS_LEGEND)
         block = "\n".join(lines)
         # Clear previous block then rewrite
         out = self._tty
