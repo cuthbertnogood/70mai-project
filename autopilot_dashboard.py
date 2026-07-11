@@ -227,8 +227,7 @@ def _fmt_gb(n: int) -> str:
     return f"{n / (1024**2):.0f}M"
 
 
-# Column widths for the trip table (cell content, excluding padding).
-_COL_WIDTHS = (3, 6, 16, 8, 7, 8, 6, 36, 14, 20)
+# Column widths: computed from terminal size in _column_widths().
 _COL_HEADERS = (
     "#",
     "Type",
@@ -246,9 +245,93 @@ _STATUS_LEGEND = (
     "Статусы:  pending — в очереди  |  compose — кодирование  |  upload — заливка  |  "
     "done — на YouTube  |  stall — завис  |  fail — ошибка",
     "Progress: N% — encode  |  STALL N% — нет прогресса 5+ мин  |  upload/done/—",
-    "Path:     путь к MP4 в .publish_tmp/chunk_XX/  или Normal/Front+Back (исходники)  |  — = удалён",
-    "Reason:   почему остановился процесс  |  Disk: размер на диске",
+    "Path:     chunk_XX/trip_YY.mp4 (полный путь если влезает)  |  — = удалён",
+    "YouTube:  youtu.be/VIDEO_ID  |  Reason / Disk — как раньше",
 )
+
+
+def _table_width(widths: tuple[int, ...]) -> int:
+    return 2 + sum(w + 2 for w in widths)
+
+
+def _column_widths(term_cols: int) -> tuple[int, ...]:
+    """Path + YouTube get extra space; Label/Reason shrink on narrow terminals."""
+    base = (3, 6, 14, 10, 7, 8, 9, 26, 19, 12)  # #: Type Label Dur … Path YT Reason
+    extra = max(0, term_cols - _table_width(base))
+    path_w = base[7] + int(extra * 0.50)
+    yt_w = base[8] + int(extra * 0.22)
+    reason_w = base[9] + int(extra * 0.18)
+    label_w = base[2] + (
+        extra - int(extra * 0.50) - int(extra * 0.22) - int(extra * 0.18)
+    )
+    return (
+        base[0],
+        base[1],
+        max(10, label_w),
+        base[3],
+        base[4],
+        base[5],
+        base[6],
+        path_w,
+        max(19, yt_w),
+        max(8, reason_w),
+    )
+
+
+def _fit_text(text: str, width: int, *, tail: bool = False) -> str:
+    if len(text) <= width:
+        return text
+    if width <= 1:
+        return "…"
+    if tail:
+        return "…" + text[-(width - 1) :]
+    return text[: max(0, width - 1)] + "…"
+
+
+def _path_display(path: str) -> str:
+    if path in ("—", "-", ""):
+        return "—"
+    if ".publish_tmp/" in path:
+        return path.split(".publish_tmp/", 1)[1]
+    for rec in ("Normal", "Event", "Parking"):
+        needle = f"{rec}/"
+        if needle in path:
+            return path[path.index(needle) :]
+    return path
+
+
+def _path_for_column(path: str, width: int) -> str:
+    if path in ("—", "-", ""):
+        return "—"
+    if len(path) <= width:
+        return path
+    compact = _path_display(path)
+    if len(compact) <= width:
+        return compact
+    return _fit_text(compact, width, tail=True)
+
+
+def _youtube_display(url: str | None) -> str:
+    if not url:
+        return "—"
+    u = url.strip()
+    for prefix in ("https://", "http://"):
+        if u.startswith(prefix):
+            u = u[len(prefix) :]
+    if u.startswith("youtu.be/"):
+        vid = u.split("youtu.be/", 1)[1].split("?")[0].split("&")[0]
+        return f"youtu.be/{vid}"
+    if "watch?v=" in u:
+        vid = u.split("watch?v=", 1)[1].split("&")[0]
+        return f"youtu.be/{vid}"
+    return u
+
+
+def _youtube_for_column(url: str | None, width: int) -> str:
+    disp = _youtube_display(url)
+    if len(disp) <= width:
+        return disp
+    return _fit_text(disp, width, tail=True)
 
 
 def _table_top(widths: tuple[int, ...]) -> str:
@@ -266,7 +349,7 @@ def _table_bottom(widths: tuple[int, ...]) -> str:
 def _table_row(cells: tuple[str, ...], widths: tuple[int, ...]) -> str:
     padded = []
     for cell, w in zip(cells, widths):
-        text = cell if len(cell) <= w else cell[: max(0, w - 1)] + "…"
+        text = cell if len(cell) <= w else _fit_text(cell, w)
         padded.append(f" {text:<{w}} ")
     return "┃" + "┃".join(padded) + "┃"
 
@@ -659,6 +742,11 @@ class Dashboard:
             if active
             else "idle"
         )
+        try:
+            term_cols = shutil.get_terminal_size().columns
+        except OSError:
+            term_cols = 140
+        col_widths = _column_widths(term_cols)
         lines = [
             f"Autopilot  {done}/{total} done"
             + (f"  {fail} fail" if fail else "")
@@ -668,31 +756,30 @@ class Dashboard:
             + f"  |  {yt_net}"
             + f"  |  phase: {phase}",
             "",
-            _table_top(_COL_WIDTHS),
-            _table_row(_COL_HEADERS, _COL_WIDTHS),
-            _table_sep(_COL_WIDTHS),
+            _table_top(col_widths),
+            _table_row(_COL_HEADERS, col_widths),
+            _table_sep(col_widths),
         ]
         for i, row in enumerate(self.rows, start=1):
-            yt = (row.youtube_url or "—").replace("https://", "")
             dur = format_duration(row.duration_sec)
             lines.append(
                 _table_row(
                     (
                         str(i),
-                        row.record_type,
-                        row.label,
-                        dur,
-                        row.status,
-                        row.progress,
-                        row.disk,
-                        row.local_path,
-                        yt,
-                        row.reason,
+                        _fit_text(row.record_type, col_widths[1]),
+                        _fit_text(row.label, col_widths[2]),
+                        _fit_text(dur, col_widths[3]),
+                        _fit_text(row.status, col_widths[4]),
+                        _fit_text(row.progress, col_widths[5]),
+                        _fit_text(row.disk, col_widths[6]),
+                        _path_for_column(row.local_path, col_widths[7]),
+                        _youtube_for_column(row.youtube_url, col_widths[8]),
+                        _fit_text(row.reason, col_widths[9], tail=True),
                     ),
-                    _COL_WIDTHS,
+                    col_widths,
                 )
             )
-        lines.append(_table_bottom(_COL_WIDTHS))
+        lines.append(_table_bottom(col_widths))
         lines.append("")
         lines.extend(_STATUS_LEGEND)
         block = "\n".join(lines)
