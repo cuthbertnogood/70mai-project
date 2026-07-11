@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -372,6 +373,22 @@ def _table_row(cells: tuple[str, ...], widths: tuple[int, ...]) -> str:
     return "┃" + "┃".join(padded) + "┃"
 
 
+def _short_reason(reason: str) -> str:
+    """One-line summary for fail/stall footer (hide HTML blobs)."""
+    if not reason or reason == "—":
+        return "—"
+    text = reason.strip()
+    if text.startswith("upload:"):
+        text = text[len("upload:") :].strip()
+    if "Upload chunk failed" in text:
+        m = re.search(r"\((\d+)\)", text)
+        code = m.group(1) if m else "?"
+        return f"загрузка на YouTube: HTTP {code}"
+    if text.startswith("ffmpeg"):
+        return text[:80]
+    return text[:80]
+
+
 def _stage_label(
     status: str,
     *,
@@ -708,6 +725,7 @@ class Dashboard:
             )
             saved = reasons.get(row.key, {})
             saved_reason = saved.get("reason", "") if isinstance(saved, dict) else ""
+            saved_phase = saved.get("phase", "") if isinstance(saved, dict) else ""
 
             if active_key and row.key == active_key and st:
                 phase = st.get("phase") or row.status
@@ -753,8 +771,11 @@ class Dashboard:
                 row.percent = None
                 row.stalled = False
                 row.reason = "—"
-            elif row.status == "fail":
+            elif row.status == "fail" or saved_phase == "fail":
+                row.status = "fail"
                 row.progress = "ошибка"
+                row.percent = None
+                row.stalled = False
                 row.reason = saved_reason or "ошибка"
             else:
                 row.progress = _stage_label(row.status)
@@ -848,7 +869,7 @@ class Dashboard:
             if row.status in ("fail", "stall") and row.reason not in ("—", ""):
                 loc = f"c{row.chunk_index:02d}/t{row.trip_index:02d}"
                 lines.extend(
-                    _wrap_line(f"⚠ {loc}: {row.reason}", term_cols)
+                    _wrap_line(f"⚠ {loc}: {_short_reason(row.reason)}", term_cols)
                 )
         block = "\n".join(lines)
         out = self._tty
