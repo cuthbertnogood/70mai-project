@@ -17,8 +17,11 @@ todos:
   - id: live-dashboard
     content: TTY-таблица — Status, YouTube URL, Disk (merged/pruned/compose) по каждой поездке
     status: completed
-  - id: docs-commit-push
-    content: README; commit + push; команда запуска
+  - id: parking-single-video
+    content: "Parking: все клипы → 1 YouTube-видео (как Event); import merge 1 файл/камера"
+    status: completed
+  - id: quota-note-factual
+    content: "QUOTA NOTE по факту — слоты left today из diag jsonl, без «точно упадёт»"
     status: completed
 isProject: false
 ---
@@ -100,9 +103,9 @@ Trips 1–7 в state: `uploaded=True` (`updated_at` 2026-07-08T13:52:15Z). Их 
 
 ### Следующие итерации (не блокируют сейчас)
 
+- **Parking → 1 YouTube-видео** (как Event): все PA-клипы → merge 1 файл/камера → compose → 1 upload.
 - **Compose resume / chunked encode** для trip >2 ч — не терять 50% encode при kill.
-- **Не перезапускать Event**, пока Normal pending (приоритет очереди).
-- Запрос **YouTube quota increase** до больших пачек (>6/день).
+- **YouTube quota note:** предупреждение по факту (`youtube_upload.diag.jsonl` — сколько слотов осталось сегодня Pacific), без «upload точно упадёт»; autopilot не блокирует, пробует upload.
 - HEVC-профиль, когда HW появится — ещё −40% к размеру.
 
 ## Целевой конвейер

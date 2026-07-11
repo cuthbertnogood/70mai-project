@@ -26,7 +26,12 @@ from datetime import datetime
 from pathlib import Path
 
 from import_70mai import format_log_line, log as _console_log
-from plan_estimate import DEFAULT_SESSION_GAP, YOUTUBE_DAILY_UPLOADS, build_plan
+from plan_estimate import (
+    DEFAULT_SESSION_GAP,
+    SINGLE_VIDEO_TYPES,
+    format_youtube_quota_note,
+    build_plan,
+)
 from publish_70mai import trip_uploaded
 from publish_state import AuthStore, StateStore
 
@@ -491,22 +496,23 @@ def print_plan_summary(
         "— video files, freed as trips upload/prune"
     )
     for chunk in chunks:
-        if chunk.record_type == "Event":
-            label = "all events → 1 video"
+        if chunk.record_type in SINGLE_VIDEO_TYPES:
+            label = (
+                "all events → 1 video"
+                if chunk.record_type == "Event"
+                else "all parking → 1 video"
+            )
         else:
             label = chunk.trip_labels
         log(
             f"  [{chunk.record_type}] chunk {chunk.index}: {label} "
             f"({chunk.duration_sec / 60:.0f} min, ~{chunk.est_mb:.0f} MB est.)"
         )
-    if pending > YOUTUBE_DAILY_UPLOADS:
-        log(
-            f"  QUOTA WARNING: {pending} uploads pending, but the default "
-            f"YouTube API quota allows ~{YOUTUBE_DAILY_UPLOADS}/day "
-            "(resets midnight Pacific). Extra uploads will fail with "
-            "quotaExceeded — rerun the next day (state resumes) or request "
-            "a quota increase in Google Cloud Console."
-        )
+    quota_note = format_youtube_quota_note(
+        pending, temp_dir / "youtube_upload.diag.jsonl"
+    )
+    if quota_note:
+        log(quota_note)
     log("")
 
 
@@ -535,7 +541,7 @@ def main() -> int:
         default=DEFAULT_TYPES,
         choices=["Normal", "Event", "Parking"],
         metavar="TYPE",
-        help="Record types to process (default: Normal Event — Event = one merged YouTube video)",
+        help="Record types to process (default: Normal Event — Event/Parking = one merged YouTube video each)",
     )
     parser.add_argument("--title", default="", help="YouTube base title (auto from SD date)")
     parser.add_argument("--video-dir", type=Path, default=DEFAULT_VIDEO_DIR)

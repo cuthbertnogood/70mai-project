@@ -24,6 +24,7 @@ from plan_estimate import (
     DEFAULT_CHUNK_MINUTES,
     DEFAULT_PLAN_FILE,
     DEFAULT_SESSION_GAP,
+    SINGLE_VIDEO_TYPES,
     ChunkPlan,
     append_plan_file,
     build_plan,
@@ -817,11 +818,17 @@ def publish_and_upload_trips(
             state_store.save(state)
             continue
 
-        if record_type == "Event":
-            trip_title = (
-                f"{base_title} Event — все события "
-                f"({trip.clip_count} клипов, {trip.start:%Y-%m-%d})"
-            )
+        if record_type in SINGLE_VIDEO_TYPES:
+            if record_type == "Event":
+                trip_title = (
+                    f"{base_title} Event — все события "
+                    f"({trip.clip_count} клипов, {trip.start:%Y-%m-%d})"
+                )
+            else:
+                trip_title = (
+                    f"{base_title} Parking — все записи "
+                    f"({trip.clip_count} клипов, {trip.start:%Y-%m-%d} → {trip.end:%Y-%m-%d})"
+                )
         else:
             trip_title = (
                 f"{base_title} {record_type} — поездка {trip.index} "

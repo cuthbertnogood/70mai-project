@@ -475,6 +475,8 @@ class TripRow:
 def _trip_display(row: TripRow) -> str:
     if row.record_type == "Event":
         return "все события"
+    if row.record_type == "Parking":
+        return "все parking"
     parts = row.label.split()
     if len(parts) >= 3 and parts[0] == "trip":
         return " ".join(parts[2:])
@@ -536,14 +538,19 @@ class Dashboard:
         state_on_sd: bool = True,
     ) -> Dashboard:
         from import_70mai import format_duration
+        from plan_estimate import SINGLE_VIDEO_TYPES
         from publish_70mai import get_trip_state, trip_uploaded
         from publish_state import youtube_watch_url
 
         rows: list[TripRow] = []
         for chunk in chunks:
             for trip_idx, trip in enumerate(chunk.trips, start=1):
-                if chunk.record_type == "Event":
-                    label = "all events"
+                if chunk.record_type in SINGLE_VIDEO_TYPES:
+                    label = (
+                        "all events"
+                        if chunk.record_type == "Event"
+                        else "all parking"
+                    )
                 else:
                     label = f"trip {trip.index} {trip.start:%m-%d %H:%M}"
                 key = f"{chunk.record_type}:{chunk.index}:{trip_idx}"

@@ -22,7 +22,7 @@ SCREEN_RE = re.compile(
     re.IGNORECASE,
 )
 MERGED_RE = re.compile(
-    r"^NO_(\d{8})-(\d{6})_(\d{6})_([FB])\.mp4$",
+    r"^(NO|PA)_(\d{8})-(\d{6})_(\d{6})_([FB])\.mp4$",
     re.IGNORECASE,
 )
 EVENT_EXPORT_RE = re.compile(
@@ -380,7 +380,7 @@ def parse_merged_file(path: Path) -> MergedClip | None:
     match = MERGED_RE.match(path.name)
     if not match:
         return None
-    date_part, start_part, end_part, cam_suffix = match.groups()
+    _prefix, date_part, start_part, end_part, cam_suffix = match.groups()
     start = datetime.strptime(date_part + start_part, "%Y%m%d%H%M%S")
     end = datetime.strptime(date_part + end_part, "%Y%m%d%H%M%S")
     camera = "Front" if cam_suffix.upper() == "F" else "Back"
@@ -417,6 +417,9 @@ def scan_merged_clips(
     if record_type == "Event":
         glob_pattern = "EV_*.mp4"
         parse_fn = parse_event_export_file
+    elif record_type == "Parking":
+        glob_pattern = "PA_*.mp4"
+        parse_fn = parse_merged_file
     else:
         glob_pattern = "NO_*.mp4"
         parse_fn = parse_merged_file

@@ -2010,7 +2010,7 @@ def main() -> int:
 
     for group_idx, (record_type, camera, clips) in enumerate(groups, start=1):
         log(f"\n>>> Group {group_idx}/{len(groups)}: {record_type}/{camera}")
-        if record_type == "Event":
+        if record_type in ("Event", "Parking"):
             merged, skipped, failed, planned = process_event_group(
                 clips,
                 args.output,

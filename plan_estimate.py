@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from import_70mai import (
     RECORD_TYPES,
@@ -26,6 +28,8 @@ DEFAULT_SESSION_GAP = 120.0
 DEFAULT_PLAN_FILE = Path("video/Output/publish_plan.md")
 MB_PER_MIN_BALANCED = 37.5  # ~5 Mbps H.264 (balanced 1080w)
 YOUTUBE_DAILY_UPLOADS = 6
+# One 2-cam YouTube video for all clips of this type (no trip/chunk split).
+SINGLE_VIDEO_TYPES = ("Event", "Parking")
 
 
 @dataclass(frozen=True)
@@ -163,12 +167,75 @@ def pack_trips_to_chunks(trips: list[Trip], target_sec: float) -> list[ChunkPlan
     return chunks
 
 
+def count_youtube_uploads_today(diag_path: Path | None = None) -> int:
+    """upload_success events today (YouTube quota day = US/Pacific midnight)."""
+    if diag_path is None:
+        diag_path = Path("video/Output/.publish_tmp/youtube_upload.diag.jsonl")
+    if not diag_path.is_file():
+        return 0
+    pacific = ZoneInfo("America/Los_Angeles")
+    today = datetime.now(pacific).date()
+    count = 0
+    for line in diag_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event") != "upload_success":
+            continue
+        ts_raw = event.get("ts", "")
+        try:
+            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(pacific)
+        except ValueError:
+            continue
+        if ts.date() == today:
+            count += 1
+    return count
+
+
+def youtube_quota_slots_remaining(diag_path: Path | None = None) -> int:
+    return max(0, YOUTUBE_DAILY_UPLOADS - count_youtube_uploads_today(diag_path))
+
+
+def format_youtube_quota_note(
+    pending: int,
+    diag_path: Path | None = None,
+) -> str | None:
+    """Informational quota note — checks slots left today, not a hard block."""
+    if pending <= 0:
+        return None
+    used = count_youtube_uploads_today(diag_path)
+    remaining = youtube_quota_slots_remaining(diag_path)
+    if pending <= remaining:
+        if used > 0 or pending > 1:
+            return (
+                f"  QUOTA NOTE: {pending} upload(s) pending, "
+                f"{remaining} of ~{YOUTUBE_DAILY_UPLOADS} daily slot(s) left "
+                f"(Pacific). OK to proceed."
+            )
+        return None
+    if remaining == 0:
+        return (
+            f"  QUOTA NOTE: ~{YOUTUBE_DAILY_UPLOADS}/day default quota — "
+            f"{used} upload(s) already today (resets midnight Pacific). "
+            f"Upload waits for a free slot; state resumes automatically."
+        )
+    return (
+        f"  QUOTA NOTE: {pending} pending, {remaining} slot(s) left today "
+        f"(~{YOUTUBE_DAILY_UPLOADS}/day). Remaining trips continue next "
+        f"Pacific day — state resumes."
+    )
+
+
 def event_trip_from_all_clips(
     record_type: str,
     front: list[Clip],
     back: list[Clip],
 ) -> list[Trip]:
-    """Single trip/chunk for all Event clips (one 2-cam YouTube video)."""
+    """Single trip/chunk for all clips of this type (one 2-cam YouTube video)."""
     if not front:
         return []
 
@@ -227,17 +294,17 @@ def build_plan(
         front = probe_clips(front_raw, ffprobe)
         back = probe_clips(back_raw, ffprobe) if back_raw else []
 
-        if record_type == "Event":
-            event_trips = event_trip_from_all_clips(record_type, front, back)
-            if not event_trips:
+        if record_type in SINGLE_VIDEO_TYPES:
+            single_trips = event_trip_from_all_clips(record_type, front, back)
+            if not single_trips:
                 continue
-            pair_dur = event_trips[0].duration_sec
+            pair_dur = single_trips[0].duration_sec
             dur_by_type[record_type] = pair_dur
-            chunks = pack_event_trips_to_chunks(event_trips)
-            all_trips.extend(event_trips)
+            chunks = pack_event_trips_to_chunks(single_trips)
+            all_trips.extend(single_trips)
             all_chunks.extend(chunks)
             log(
-                f"  Event: {len(front)} front + {len(back)} back clip(s), "
+                f"  {record_type}: {len(front)} front + {len(back)} back clip(s), "
                 f"{format_duration(pair_dur)} (2-cam) -> 1 upload"
             )
             continue
@@ -345,7 +412,9 @@ def render_markdown(
             lines.append("")
         lines.append(f"- {trip.index}. {trip.label}")
 
-    quota_ok = total_chunks <= YOUTUBE_DAILY_UPLOADS
+    diag_path = Path("video/Output/.publish_tmp/youtube_upload.diag.jsonl")
+    slots_left = youtube_quota_slots_remaining(diag_path)
+    quota_ok = total_chunks <= slots_left
     disk_ok = peak_mb / 1024 < disk_free_gb * 0.9
 
     lines.extend(
@@ -363,13 +432,14 @@ def render_markdown(
                 + ("OK" if disk_ok else f"LOW (need ~{peak_mb / 1024:.1f} GB peak)")
             ),
             (
-                f"- **YouTube uploads:** {total_chunks} — "
+                f"- **YouTube uploads:** {total_chunks} pending — "
                 + (
-                    f"OK (≤{YOUTUBE_DAILY_UPLOADS}/day default)"
+                    f"OK ({slots_left} slot(s) left today, "
+                    f"~{YOUTUBE_DAILY_UPLOADS}/day default)"
                     if quota_ok
                     else (
-                        f"WARN (> {YOUTUBE_DAILY_UPLOADS}/day — "
-                        "split across days or request quota)"
+                        f"NOTE ({slots_left} slot(s) left today — "
+                        "rest resume next Pacific day; state preserved)"
                     )
                 )
             ),

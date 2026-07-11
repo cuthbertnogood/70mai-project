@@ -190,9 +190,7 @@ def collect_period_rows(
             period_start = min(t.start for t in trips)
             period_end = max(t.end for t in trips)
             dur_2cam = dur_map.get(record_type, 0.0)
-        yt_total = sum(1 for t in trips) if record_type == "Event" else len(trips)
-        if record_type == "Event" and trips:
-            yt_total = 1
+        yt_total = 1 if record_type in ("Event", "Parking") and trips else len(trips)
         uploaded = sum(
             1 for v in video_rows if v.record_type == record_type and v.uploaded
         )
@@ -277,39 +275,29 @@ def plan_parking_section(source: Path, ffprobe: str) -> list[str]:
         return ["На карте нет клипов Parking или ffprobe недоступен."]
     front_n, back_n = count_sd_clips(source, "Parking")
     dur = dur_by_type.get("Parking", 0.0)
+    trip = trips[0]
+    est_mb = chunks[0].est_mb if chunks else 0.0
     lines = [
         "## План: Parking (следующий этап)",
         "",
+        "Parking обрабатывается **как Event**: все клипы → один 2-cam ролик на YouTube.",
+        "",
         f"- **Клипы на SD:** Front {front_n}, Back {back_n} ({front_n + back_n} файлов)",
-        f"- **Период записи:** {min(t.start for t in trips):%Y-%m-%d %H:%M} → "
-        f"{max(t.end for t in trips):%Y-%m-%d %H:%M}",
+        f"- **Период записи:** {trip.start:%Y-%m-%d %H:%M} → {trip.end:%Y-%m-%d %H:%M}",
         f"- **2-cam длительность:** {format_duration(dur)}",
-        f"- **Поездок (sessions):** {len(trips)}",
-        f"- **YouTube chunks (~120 min):** {len(chunks)}",
+        f"- **YouTube:** **1 видео** (~{est_mb:.0f} MB est.)",
         "",
         "### Команда",
         "",
         "```bash",
-        "./scripts/publish_all_70mai.sh --types Normal Event Parking --skip-import",
+        "./scripts/publish_all_70mai.sh --types Parking --skip-import",
         "# или полный цикл с merge:",
-        "./scripts/publish_all_70mai.sh --types Normal Event Parking",
+        "./scripts/publish_all_70mai.sh --types Parking",
         "```",
         "",
-        "### Поездки Parking",
-        "",
-        "| # | Начало | Конец | Длительность | Клипов |",
-        "|---|--------|-------|--------------|--------|",
+        "Import: Front+Back → по **1 merged-файлу** на камеру (как Event).",
+        "Compose + upload: один trip `chunk_01/trip_01.mp4`.",
     ]
-    for i, t in enumerate(trips, start=1):
-        lines.append(
-            f"| {i} | {t.start:%Y-%m-%d %H:%M} | {t.end:%Y-%m-%d %H:%M} | "
-            f"{format_duration(t.duration_sec)} | {t.clip_count} |"
-        )
-    lines.append("")
-    lines.append(
-        f"**Оценка upload:** ~{len(chunks)} видео; при квоте ~6/день — "
-        f"~{(len(chunks) + 5) // 6} календарных дней."
-    )
     return lines
 
 

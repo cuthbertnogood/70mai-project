@@ -509,7 +509,7 @@ def build_clip_youtube_catalog(
         if not front_clips:
             continue
 
-        if record_type == "Event":
+        if record_type in ("Event", "Parking"):
             def trip_index_fn(_clip):
                 return 1
 
