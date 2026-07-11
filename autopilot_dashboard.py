@@ -242,40 +242,108 @@ _COL_HEADERS = (
 )
 
 _STATUS_LEGEND = (
-    "Статусы:  pending — в очереди  |  compose — кодирование  |  upload — заливка  |  "
-    "done — на YouTube  |  stall — завис  |  fail — ошибка",
-    "Progress: N% — encode  |  STALL N% — нет прогресса 5+ мин  |  upload/done/—",
-    "Path:     chunk_XX/trip_YY.mp4 (полный путь если влезает)  |  — = удалён",
-    "YouTube:  youtu.be/VIDEO_ID  |  Reason / Disk — как раньше",
+    "Статусы: pending compose upload done stall fail",
+    "Path: chunk_XX/trip_YY.mp4  |  YouTube: youtu.be/VIDEO_ID",
 )
 
 
 def _table_width(widths: tuple[int, ...]) -> int:
-    return 2 + sum(w + 2 for w in widths)
+    """Rendered row width including border chars between columns."""
+    n = len(widths)
+    if n == 0:
+        return 0
+    return 2 + (n - 1) + sum(w + 2 for w in widths)
 
 
 def _column_widths(term_cols: int) -> tuple[int, ...]:
-    """Path + YouTube get extra space; Label/Reason shrink on narrow terminals."""
-    base = (3, 6, 14, 10, 7, 8, 9, 26, 19, 12)  # #: Type Label Dur … Path YT Reason
-    extra = max(0, term_cols - _table_width(base))
-    path_w = base[7] + int(extra * 0.50)
-    yt_w = base[8] + int(extra * 0.22)
-    reason_w = base[9] + int(extra * 0.18)
-    label_w = base[2] + (
-        extra - int(extra * 0.50) - int(extra * 0.22) - int(extra * 0.18)
-    )
-    return (
-        base[0],
-        base[1],
-        max(10, label_w),
-        base[3],
-        base[4],
-        base[5],
-        base[6],
-        path_w,
-        max(19, yt_w),
-        max(8, reason_w),
-    )
+    """Fit table into terminal width; Path/YouTube keep priority."""
+    term_cols = max(72, term_cols)
+    # #: Type Label Dur Status Progress Disk Path YouTube Reason
+    widths = [3, 6, 12, 9, 7, 7, 8, 20, 19, 8]
+    floors = [2, 4, 6, 7, 5, 5, 5, 10, 19, 4]
+
+    def fits(w: list[int]) -> bool:
+        return _table_width(tuple(w)) <= term_cols
+
+    while not fits(widths):
+        shrunk = False
+        for idx in (9, 2, 6, 3, 5, 1, 4, 0, 7, 8):
+            if fits(widths):
+                break
+            if widths[idx] > floors[idx]:
+                widths[idx] -= 1
+                shrunk = True
+        if not shrunk:
+            break
+
+    while fits([widths[0], widths[1], widths[2], widths[3], widths[4],
+                widths[5], widths[6], widths[7] + 1, widths[8], widths[9]]):
+        widths[7] += 1
+
+    return tuple(widths)
+
+
+def _compact_table_width(widths: tuple[int, ...]) -> int:
+    n = len(widths)
+    if n == 0:
+        return 0
+    return 3 * (n - 1) + sum(widths)
+
+
+def _compact_column_widths(term_cols: int) -> tuple[int, ...]:
+    term_cols = max(72, term_cols)
+    widths = [2, 4, 6, 7, 5, 5, 4, 14, 11, 0]
+    floors = [2, 3, 4, 6, 4, 4, 3, 6, 6, 0]
+
+    def fits(w: list[int]) -> bool:
+        return _compact_table_width(tuple(w)) <= term_cols
+
+    while not fits(widths):
+        shrunk = False
+        for idx in (9, 2, 6, 3, 5, 1, 4, 0, 7, 8):
+            if fits(widths):
+                break
+            if widths[idx] > floors[idx]:
+                widths[idx] -= 1
+                shrunk = True
+        if not shrunk:
+            break
+
+    while fits([*widths[:7], widths[7] + 1, *widths[8:]]):
+        widths[7] += 1
+
+    return tuple(widths)
+
+
+def _use_compact_table(term_cols: int) -> bool:
+    return _table_width(_column_widths(term_cols)) > term_cols
+
+
+def _compact_row(cells: tuple[str, ...], widths: tuple[int, ...]) -> str:
+    parts = []
+    for cell, w in zip(cells, widths):
+        if w <= 0:
+            continue
+        text = cell if len(cell) <= w else _fit_text(cell, w)
+        parts.append(text)
+    return " | ".join(parts)
+
+
+def _wrap_line(text: str, width: int) -> list[str]:
+    if width <= 0 or len(text) <= width:
+        return [text]
+    lines: list[str] = []
+    rest = text
+    while rest:
+        if len(rest) <= width:
+            lines.append(rest)
+            break
+        cut = rest.rfind(" | ", 0, width + 1)
+        if cut < width // 3:
+            cut = width
+        lines.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip(" |")
+    return lines
 
 
 def _fit_text(text: str, width: int, *, tail: bool = False) -> str:
@@ -329,6 +397,11 @@ def _youtube_display(url: str | None) -> str:
 
 def _youtube_for_column(url: str | None, width: int) -> str:
     disp = _youtube_display(url)
+    if width < 19 and disp.startswith("youtu.be/"):
+        vid = disp.split("/", 1)[1]
+        if len(vid) <= width:
+            return vid
+        return _fit_text(vid, width, tail=True)
     if len(disp) <= width:
         return disp
     return _fit_text(disp, width, tail=True)
@@ -417,6 +490,7 @@ class Dashboard:
     _thread: threading.Thread | None = None
     _tty = None
     _lines: int = 0
+    _alt_screen: bool = False
     _youtube_ok: bool | None = None
     _youtube_detail: str = "—"
     _youtube_checked_at: float = 0.0
@@ -522,6 +596,12 @@ class Dashboard:
         except OSError:
             self.enabled = False
             return
+        try:
+            self._tty.write("\033[?1049h\033[H\033[J")
+            self._tty.flush()
+            self._alt_screen = True
+        except OSError:
+            self._alt_screen = False
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
@@ -531,12 +611,16 @@ class Dashboard:
             self._thread.join(timeout=2)
         if self._tty is not None:
             try:
-                self._tty.write("\n")
+                if self._alt_screen:
+                    self._tty.write("\033[?1049l")
+                else:
+                    self._tty.write("\n")
                 self._tty.flush()
                 self._tty.close()
             except OSError:
                 pass
             self._tty = None
+            self._alt_screen = False
 
     def _loop(self) -> None:
         while not self._stop.wait(self.refresh_interval):
@@ -745,49 +829,64 @@ class Dashboard:
         try:
             term_cols = shutil.get_terminal_size().columns
         except OSError:
-            term_cols = 140
-        col_widths = _column_widths(term_cols)
-        lines = [
-            f"Autopilot  {done}/{total} done"
+            term_cols = 100
+        col_widths = (
+            _compact_column_widths(term_cols)
+            if _use_compact_table(term_cols)
+            else _column_widths(term_cols)
+        )
+        compact = _use_compact_table(term_cols)
+        header = (
+            f"Autopilot {done}/{total} done"
             + (f"  {fail} fail" if fail else "")
-            + f"  |  free {free:.1f} GB (reserve {self.min_free_gb:g})"
-            + f"  |  video {format_gb(usage['total'])} "
-            f"(merged {format_gb(usage['merged'])}, tmp {format_gb(usage['composed'])})"
+            + f"  |  phase: {phase}"
+            + f"  |  free {free:.1f} GB"
+            + f"  |  video {format_gb(usage['total'])}"
             + f"  |  {yt_net}"
-            + f"  |  phase: {phase}",
-            "",
-            _table_top(col_widths),
-            _table_row(_COL_HEADERS, col_widths),
-            _table_sep(col_widths),
-        ]
+        )
+        lines: list[str] = []
+        for hl in _wrap_line(header, term_cols):
+            lines.append(hl)
+        lines.append("")
+        if compact:
+            lines.append(_compact_row(_COL_HEADERS, col_widths))
+            lines.append("-" * min(term_cols, _compact_table_width(col_widths)))
+        else:
+            lines.append(_table_top(col_widths))
+            lines.append(_table_row(_COL_HEADERS, col_widths))
+            lines.append(_table_sep(col_widths))
         for i, row in enumerate(self.rows, start=1):
             dur = format_duration(row.duration_sec)
-            lines.append(
-                _table_row(
-                    (
-                        str(i),
-                        _fit_text(row.record_type, col_widths[1]),
-                        _fit_text(row.label, col_widths[2]),
-                        _fit_text(dur, col_widths[3]),
-                        _fit_text(row.status, col_widths[4]),
-                        _fit_text(row.progress, col_widths[5]),
-                        _fit_text(row.disk, col_widths[6]),
-                        _path_for_column(row.local_path, col_widths[7]),
-                        _youtube_for_column(row.youtube_url, col_widths[8]),
-                        _fit_text(row.reason, col_widths[9], tail=True),
-                    ),
-                    col_widths,
-                )
+            cells = (
+                str(i),
+                _fit_text(row.record_type, col_widths[1]),
+                _fit_text(row.label, col_widths[2]),
+                _fit_text(dur, col_widths[3]),
+                _fit_text(row.status, col_widths[4]),
+                _fit_text(row.progress, col_widths[5]),
+                _fit_text(row.disk, col_widths[6]),
+                _path_for_column(row.local_path, col_widths[7]),
+                _youtube_for_column(row.youtube_url, col_widths[8]),
+                _fit_text(row.reason, col_widths[9], tail=True),
             )
-        lines.append(_table_bottom(col_widths))
+            if compact:
+                lines.append(_compact_row(cells, col_widths))
+            else:
+                lines.append(_table_row(cells, col_widths))
+        if not compact:
+            lines.append(_table_bottom(col_widths))
         lines.append("")
-        lines.extend(_STATUS_LEGEND)
+        for leg in _STATUS_LEGEND:
+            lines.extend(_wrap_line(leg, term_cols))
         block = "\n".join(lines)
-        # Clear previous block then rewrite
         out = self._tty
-        if self._lines:
+        if self._alt_screen:
+            out.write("\033[H\033[J")
+        elif self._lines:
             out.write(f"\033[{self._lines}A\033[J")
-        out.write(block + "\n")
+        out.write(block)
+        if not block.endswith("\n"):
+            out.write("\n")
         out.flush()
         self._lines = len(lines)
 
