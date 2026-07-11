@@ -402,6 +402,8 @@ def _short_reason(reason: str) -> str:
     text = reason.strip()
     if text.startswith("upload:"):
         text = text[len("upload:") :].strip()
+    if text.startswith("oauth:") or "invalid_grant" in text.lower():
+        return "YouTube OAuth: повторный вход — см. publish_all.log"
     if "Upload chunk failed" in text:
         m = re.search(r"\((\d+)\)", text)
         code = m.group(1) if m else "?"
@@ -425,6 +427,8 @@ def _stage_label(
         pos = f"{overall_index}/{overall_total} "
     if status == "done":
         return "✓"
+    if status == "oauth":
+        return f"{pos}OAuth вход".strip()
     if status == "fail":
         return f"{pos}ошибка".strip()
     if stalled or status == "stall":
@@ -684,7 +688,7 @@ class Dashboard:
             # Live compose/upload/stall — keep overlay from autopilot_status.json
             if (
                 active_key == row.key
-                and active_phase in ("compose", "upload", "stall", "import")
+                and active_phase in ("compose", "upload", "stall", "import", "oauth")
             ):
                 continue
             if not trip_uploaded(
@@ -868,7 +872,7 @@ class Dashboard:
         active_rows = [
             r
             for r in self.rows
-            if r.status in ("compose", "upload", "import", "stall")
+            if r.status in ("compose", "upload", "import", "stall", "oauth")
         ]
         if self._youtube_ok is True:
             yt_net = "сеть YouTube OK"
@@ -965,7 +969,7 @@ class Dashboard:
         for leg in _STATUS_LEGEND:
             lines.extend(_wrap_line(leg, term_cols))
         for row in self.rows:
-            if row.status in ("fail", "stall") and row.reason not in ("—", ""):
+            if row.status in ("fail", "stall", "oauth") and row.reason not in ("—", ""):
                 num = row.overall_index or 0
                 lines.extend(
                     _wrap_line(

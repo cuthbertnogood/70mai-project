@@ -619,6 +619,15 @@ python3 publish_70mai.py --source /Volumes/Untitled --types Normal --chunk 1 \
 
 **Security:** `youtube_token.json` is a refresh token — anyone with the file can upload to your YouTube account. Keep the SD card private; if lost, revoke access at [Google Account → Third-party access](https://myaccount.google.com/permissions). Do not publish the OAuth client JSON either.
 
+**Token expired (`invalid_grant`):** autopilot checks OAuth before upload. In an **interactive terminal** it deletes the stale token and opens the browser automatically. If upload still fails (watchdog / no TTY), the log prints a recovery block (`=== YouTube OAuth: нужен повторный вход ===`) and the dashboard shows **OAuth вход** on the pending trip. Fix:
+
+```bash
+rm -f /Volumes/Untitled/.70mai/auth/youtube_token.json ~/.config/70mai/youtube_token.json
+./scripts/publish_all_70mai.sh --skip-import
+```
+
+Composed MP4s stay on disk; `--resume-upload` continues partial uploads.
+
 Large uploads use the resumable protocol via `requests` (default **256 MB** chunks, 600 s timeout). Each PUT declares `Content-Type: video/mp4` and a sized iterator, preventing the invalid `Content-Length` + `Transfer-Encoding: chunked` combination that Google rejects with HTTP 400. Bigger chunks amortize the per-chunk RTT pause on latent networks; on a stable connection `--upload-chunk-mb 0` streams the whole file in one PUT (Google-recommended fastest mode — resume still works: on interruption the client queries the server offset and continues). System proxy env vars are ignored to avoid VPN/proxy redirect errors.
 
 **Compose/upload pipeline (default on):** while trip N uploads in a background thread, trip N+1 composes in parallel — wall time becomes max(encode, upload) instead of the sum (−35–45% on typical cards). Before each compose a **disk guard** checks `--min-free-gb` (default 5 GB) and waits for the in-flight upload to free space if needed. Disable with `--no-overlap`.

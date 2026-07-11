@@ -34,6 +34,102 @@ class YouTubeUploadError(RuntimeError):
     pass
 
 
+class OAuthReauthRequired(YouTubeUploadError):
+    """YouTube refresh token expired/revoked; browser re-login required."""
+
+
+def oauth_needs_reauth(exc: BaseException | str) -> bool:
+    text = str(exc).lower()
+    return "invalid_grant" in text or "token has been expired or revoked" in text
+
+
+def oauth_reauth_help_lines(
+    *,
+    token_path: Path,
+    credentials_path: Path | None = None,
+    reason: str = "",
+) -> list[str]:
+    """Copy-paste recovery steps for logs / dashboard."""
+    token = token_path
+    local = DEFAULT_TOKEN
+    lines = [
+        "=== YouTube OAuth: нужен повторный вход ===",
+    ]
+    if reason:
+        lines.append(f"  Причина: {reason[:120]}")
+    lines.extend(
+        [
+            "  Токен upload на YouTube протух или отозван — без нового входа upload невозможен.",
+            "  Собранные MP4 на диске сохраняются; после входа upload продолжится (--resume-upload).",
+            "",
+            "  Вариант A (интерактивный терминал — откроется браузер):",
+            f"    rm -f {token} {local}",
+            "    ./scripts/publish_all_70mai.sh --skip-import",
+            "",
+            "  Вариант B (только Event / один тип):",
+            f"    rm -f {token} {local}",
+            "    ./run publish_70mai.py --source /Volumes/Untitled --types Event \\",
+            "      --resume --resume-upload --state-on-sd --auth-on-sd --title '70mai …'",
+            "",
+            "  Если вход не помог: Google Account → Security → Third-party access → отозвать 70mai, затем A.",
+        ]
+    )
+    if credentials_path and not credentials_path.is_file():
+        lines.extend(
+            [
+                "",
+                f"  Также отсутствует OAuth client JSON: {credentials_path}",
+                "  Скачайте Desktop OAuth из Google Cloud Console (YouTube Data API v3).",
+            ]
+        )
+    return lines
+
+
+def log_oauth_reauth_help(
+    *,
+    token_path: Path,
+    credentials_path: Path | None = None,
+    reason: str = "",
+) -> None:
+    for line in oauth_reauth_help_lines(
+        token_path=token_path,
+        credentials_path=credentials_path,
+        reason=reason,
+    ):
+        log(line)
+
+
+def ensure_youtube_oauth_for_upload(
+    credentials_path: Path,
+    token_path: Path,
+    *,
+    interactive: bool | None = None,
+    auto_reauth: bool = True,
+) -> tuple[bool, str]:
+    """Verify OAuth; on invalid_grant optionally delete token and open browser login."""
+    if interactive is None:
+        interactive = sys.stdin.isatty()
+    ok, detail = check_youtube_upload_ready(credentials_path, token_path)
+    if ok:
+        return True, detail
+    if not oauth_needs_reauth(detail) or not auto_reauth:
+        return False, detail
+    if not interactive:
+        return False, detail
+    log("")
+    log("YouTube OAuth: токен недействителен — открываю браузер для повторного входа…")
+    for path in (token_path, DEFAULT_TOKEN):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    try:
+        load_credentials(credentials_path, token_path)
+    except Exception as exc:
+        return False, str(exc)
+    return check_youtube_upload_ready(credentials_path, token_path)
+
+
 class UploadHttpError(YouTubeUploadError):
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(message)
@@ -84,7 +180,11 @@ def check_youtube_upload_ready(
             token_path.write_text(creds.to_json(), encoding="utf-8")
         if not creds.valid:
             return False, "OAuth token invalid; authorization required"
+    except OAuthReauthRequired as exc:
+        return False, f"oauth_reauth: {exc}"
     except Exception as exc:
+        if oauth_needs_reauth(exc):
+            return False, f"oauth_reauth: {exc}"
         return False, f"OAuth: {str(exc)[:80]}"
     return True, "network + OAuth OK"
 
@@ -234,7 +334,15 @@ def load_credentials(
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as exc:
+                if oauth_needs_reauth(exc):
+                    raise OAuthReauthRequired(
+                        "YouTube OAuth token expired or revoked (invalid_grant). "
+                        "Re-login required — see log for ./scripts/publish_all_70mai.sh steps."
+                    ) from exc
+                raise YouTubeUploadError(f"YouTube OAuth refresh failed: {exc}") from exc
         else:
             if not credentials_path.is_file():
                 raise YouTubeUploadError(

@@ -35,12 +35,15 @@ from project_env import cli_python
 from youtube_upload import (
     DEFAULT_CREDENTIALS,
     DEFAULT_TOKEN,
+    OAuthReauthRequired,
     UploadProgressReporter,
     YouTubeUploadError,
     add_to_playlist,
     clear_upload_session,
     ensure_playlist,
     format_file_size,
+    log_oauth_reauth_help,
+    oauth_needs_reauth,
     upload_session_path_for_file,
     upload_video,
 )
@@ -873,17 +876,33 @@ def publish_and_upload_trips(
                     status_hook=status_hook,
                 )
             except YouTubeUploadError as exc:
+                if isinstance(exc, OAuthReauthRequired) or oauth_needs_reauth(exc):
+                    log_oauth_reauth_help(
+                        token_path=token,
+                        credentials_path=credentials,
+                        reason=str(exc),
+                    )
+                    write_status(
+                        temp_dir,
+                        record_type=record_type,
+                        chunk_index=chunk.index,
+                        trip_index=trip_idx,
+                        phase="oauth",
+                        detail="YouTube OAuth",
+                        reason="oauth: invalid_grant — нужен повторный вход (см. лог)",
+                    )
                 msg = f"chunk {chunk.index} trip {trip_idx}: {exc}"
                 log(f"  Upload failed: {exc}")
-                write_status(
-                    temp_dir,
-                    record_type=record_type,
-                    chunk_index=chunk.index,
-                    trip_index=trip_idx,
-                    phase="fail",
-                    detail=str(exc)[:80],
-                    reason=f"upload: {str(exc)[:100]}",
-                )
+                if not isinstance(exc, OAuthReauthRequired) and not oauth_needs_reauth(exc):
+                    write_status(
+                        temp_dir,
+                        record_type=record_type,
+                        chunk_index=chunk.index,
+                        trip_index=trip_idx,
+                        phase="fail",
+                        detail=str(exc)[:80],
+                        reason=f"upload: {str(exc)[:100]}",
+                    )
                 if diag_log:
                     log(f"  Diagnostics: {diag_log}")
                     log(f"  Analyze: {cli_python()} scripts/analyze_youtube_upload.py")

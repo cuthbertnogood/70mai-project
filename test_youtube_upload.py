@@ -207,5 +207,37 @@ class UploadHealthTests(unittest.TestCase):
             )
 
 
+class OAuthHelpTests(unittest.TestCase):
+    def test_oauth_needs_reauth_detects_invalid_grant(self) -> None:
+        self.assertTrue(
+            youtube_upload.oauth_needs_reauth(
+                "invalid_grant: Token has been expired or revoked."
+            )
+        )
+        self.assertFalse(youtube_upload.oauth_needs_reauth("network timeout"))
+
+    def test_oauth_help_includes_recovery_commands(self) -> None:
+        lines = youtube_upload.oauth_reauth_help_lines(
+            token_path=Path("/Volumes/Untitled/.70mai/auth/youtube_token.json"),
+        )
+        text = "\n".join(lines)
+        self.assertIn("publish_all_70mai.sh --skip-import", text)
+        self.assertIn("rm -f", text)
+
+    def test_ensure_oauth_non_interactive_skips_browser(self) -> None:
+        with patch.object(
+            youtube_upload,
+            "check_youtube_upload_ready",
+            return_value=(False, "oauth_reauth: invalid_grant"),
+        ):
+            ok, detail = youtube_upload.ensure_youtube_oauth_for_upload(
+                Path("creds.json"),
+                Path("token.json"),
+                interactive=False,
+            )
+        self.assertFalse(ok)
+        self.assertIn("invalid_grant", detail)
+
+
 if __name__ == "__main__":
     unittest.main()

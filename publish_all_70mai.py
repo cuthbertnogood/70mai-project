@@ -714,7 +714,7 @@ def main() -> int:
             types=args.types,
         )
 
-        from autopilot_dashboard import Dashboard
+        from autopilot_dashboard import Dashboard, write_status
 
         merged_state = load_merged_publish_state(
             source, args.types, args.temp_dir, state_on_sd=state_on_sd
@@ -734,15 +734,55 @@ def main() -> int:
         dashboard.start()
         dashboard.render()
 
-        from youtube_upload import check_youtube_upload_ready
+        from youtube_upload import (
+            ensure_youtube_oauth_for_upload,
+            log_oauth_reauth_help,
+            oauth_needs_reauth,
+        )
 
-        yt_ok, yt_detail = check_youtube_upload_ready(creds, token)
+        yt_ok, yt_detail = ensure_youtube_oauth_for_upload(
+            creds,
+            token,
+            interactive=not args.dry_run,
+        )
         if yt_ok:
             log(f"YouTube upload ready ({yt_detail})")
+        elif oauth_needs_reauth(yt_detail):
+            log_oauth_reauth_help(
+                token_path=token,
+                credentials_path=creds,
+                reason=yt_detail,
+            )
+            # Mark first pending trip so dashboard shows the blocker.
+            for chunk in chunks:
+                for trip_idx, trip in enumerate(chunk.trips, start=1):
+                    if not trip_uploaded(
+                        merged_state, chunk.record_type, chunk.index, trip_idx
+                    ):
+                        write_status(
+                            args.temp_dir,
+                            record_type=chunk.record_type,
+                            chunk_index=chunk.index,
+                            trip_index=trip_idx,
+                            phase="oauth",
+                            detail="YouTube OAuth",
+                            reason="oauth: invalid_grant — нужен повторный вход (см. лог)",
+                        )
+                        break
+                else:
+                    continue
+                break
+            dashboard.render()
+            log("")
+            log(
+                "Autopilot остановлен: YouTube OAuth недоступен. "
+                "Выполните шаги выше и перезапустите (--skip-import если import уже готов)."
+            )
+            return 1
         else:
             log(
                 f"Warning: YouTube upload is not ready ({yt_detail}) — "
-                "compose may continue, but upload will retry/fail with diagnostics"
+                "compose may continue, but upload may fail"
             )
 
         ensure_publish_slot(force=args.force_restart)
