@@ -128,7 +128,7 @@ Use the ranges from `--scan` to pick `--date` / `--from-time` / `--to-time` for 
 
 ### Export events (one file per event)
 
-Events are short clips — with autopilot (`Event` in `--types`, default) all events are **merged into one file per camera**, then composed as a single 2-cam video and uploaded to YouTube once. For separate files per event, use `--export-events`:
+Events are short clips — with autopilot (`Event` in `--types`, default) all events are **merged into one file per camera**, then composed as a single 2-cam video and uploaded to YouTube once. **Parking** uses the same model: all PA clips → one merged file per camera → **one YouTube upload**. For separate files per event, use `--export-events`:
 
 ```bash
 # All events, both cameras (manual)
@@ -634,7 +634,7 @@ Large uploads use the resumable protocol via `requests` (default **256 MB** chun
 
 **Disk lifecycle:** composed videos are always deleted right after successful upload (unless `--keep`). Merged 10-min source files accumulate by default; `--prune-merged after-upload` deletes a trip's merged files after its YouTube upload confirms, `--prune-merged after-compose` deletes them as soon as the trip's composed file is ready (peak disk ≈ one trip instead of the whole card). Source clips stay on SD, so merged files can always be rebuilt by rerunning import.
 
-**YouTube API quota:** a default Google Cloud project gets 10 000 units/day; each upload costs 1 600 → **~6 uploads/day** (resets midnight Pacific). The autopilot plan summary warns when pending uploads exceed the quota; extra uploads fail with `quotaExceeded` and resume the next day. For more, request a quota increase in Google Cloud Console (free, form review takes days).
+**YouTube API quota:** a default Google Cloud project gets 10 000 units/day; each upload costs 1 600 → **~6 uploads/day** (resets midnight Pacific). The autopilot plan prints a **QUOTA NOTE** (not a hard stop): it counts today's successful uploads from `youtube_upload.diag.jsonl` and shows how many slots remain — «OK to proceed» or «wait for Pacific reset; state resumes». Upload is still attempted; only a real `quotaExceeded` from the API stops that trip.
 
 **Upload progress:** during transfer, stdout/stderr shows a bar with MB uploaded, speed, elapsed, and ETA. In log files (non-TTY), progress lines appear every **~1%** or **30 s** (whichever comes first), plus **chunk start/ack** lines for resumable mode (default 256 MB chunks), e.g.  
 `Upload trip_02.mp4: [████░░░░] 512.00 MB/2.12 GB (24%) | 3.2 MB/s | 4m 12s elapsed | ETA 8m 24s`  
@@ -696,8 +696,8 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 |------|------|-------|
 | Detect SD | auto | `/Volumes/Untitled` or scan `/Volumes/*` for 70mai layout |
 | **New card setup** | autopilot | Creates `.70mai/` on SD, copies OAuth from host/project, browser login if needed |
-| Import | `import_70mai.py` | Normal → merge by session; Event → **all clips → one file** per camera |
-| Compose + upload | `publish_70mai.py` | Normal: one video per trip; Event: **one video for all events** |
+| Import | `import_70mai.py` | Normal → merge by session; Event/Parking → **all clips → one file** per camera |
+| Compose + upload | `publish_70mai.py` | Normal: one video per trip; Event/Parking: **one video for all clips** |
 | Skip done | state file | `publish_Normal.state.json`, `publish_Event.state.json` on SD + local cache |
 | Portable | SD `.70mai/` | State + OAuth + import inventory on card |
 
@@ -753,7 +753,7 @@ Autopilot defaults (no extra flags): SD OAuth, startup **network + OAuth refresh
 
 On start, publish **sweeps** already-uploaded trips and deletes their leftover merged files (fixes the “skip already uploaded → never prune” gap).
 
-The plan summary includes a **quota warning** when pending uploads exceed ~6/day (default YouTube API quota); the run continues and the remaining trips resume on the next day's run.
+The plan summary may include a **QUOTA NOTE** when many uploads are pending — it checks slots left today (Pacific) from the upload diag log; the run is not blocked, and remaining trips resume on the next day if needed.
 
 Fastest configuration for slow uplinks:
 

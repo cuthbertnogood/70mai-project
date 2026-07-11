@@ -157,4 +157,28 @@ sequenceDiagram
 
 Дефолты: `--min-free-gb 20`, `--prune-merged after-compose`, `balanced` 1080@5Mbps, overlap on, dashboard on.
 
+## Parking (следующий этап)
+
+**Цель:** все ~506 PA-клипов → **один** 2-cam ролик на YouTube (аналог Event).
+
+| Этап | Parking (как Event) |
+|------|---------------------|
+| Plan | `SINGLE_VIDEO_TYPES`: 1 trip, 1 chunk, 1 upload |
+| Import | `process_event_group` — concat всех PA → **1 merged/камера** |
+| Compose | `PA_*.mp4` → `chunk_01/trip_01.mp4` |
+| Upload | 1 видео, title `Parking — все записи (N клипов, …)` |
+| Quota | 1 слот — `QUOTA NOTE` покажет, есть ли слот сегодня |
+
+```bash
+./scripts/publish_all_70mai.sh --types Parking --skip-import
+# или с merge:
+./scripts/publish_all_70mai.sh --types Parking
+```
+
+## YouTube quota (поведение)
+
+- **Не блокирует** autopilot — только `QUOTA NOTE` в плане.
+- Считает `upload_success` за сегодня (Pacific) из `youtube_upload.diag.jsonl`.
+- Если слоты есть → «OK to proceed»; если нет → «ждёт reset, state resumes» (без «точно упадёт»).
+
 Commit + push автоматически.

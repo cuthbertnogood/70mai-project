@@ -62,14 +62,15 @@ Target chunk: **2 ч по поездкам** (короткие поездки с
 
 ### Следующий этап — Parking
 
-На карте **~506** клипов Parking (253 Front + 253 Back), **не обработано**. План и команда — в `отчеты/*/PLAN_PARKING.md` после генерации отчёта:
+На карте **~506** клипов Parking (253 Front + 253 Back), **не обработано**. Как Event: **все клипы → 1 YouTube-видео** (merge 1 файл/камера, compose, upload). План — `отчеты/*/PLAN_PARKING.md` (`./scripts/generate_card_reports.sh`):
 
 ```bash
-./scripts/generate_card_reports.sh
-./scripts/publish_all_70mai.sh --types Normal Event Parking --skip-import
+./scripts/publish_all_70mai.sh --types Parking --skip-import
+# или с merge:
+./scripts/publish_all_70mai.sh --types Parking
 ```
 
-YouTube quota ~6 видео/день — Parking может занять несколько календарных дней.
+Quota: 1 upload — autopilot покажет `QUOTA NOTE`, есть ли слот сегодня (не блокирует запуск).
 
 ### Ускорение пайплайна (Jul 2026)
 
