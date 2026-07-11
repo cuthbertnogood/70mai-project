@@ -15,6 +15,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 from compose_2cam_70mai import run_compose_2cam
 from compose_70mai import probe_duration
@@ -359,6 +360,7 @@ def upload_and_cleanup(
     playlist_id: str | None,
     playlist_title: str,
     upload_chunk_bytes: int | None = None,
+    status_hook: Callable[[int, int, int], None] | None = None,
 ) -> tuple[str | None, str | None, int, float]:
     """Upload, add to playlist, delete local file. Returns (video_id, playlist_id, freed_bytes, elapsed_sec)."""
     if not path.is_file():
@@ -371,6 +373,8 @@ def upload_and_cleanup(
 
     def progress(pct: int, offset: int = 0, size: int = 0) -> None:
         reporter.update(pct, offset or None)
+        if status_hook is not None:
+            status_hook(pct, offset, size or file_size)
 
     log(f"  Uploading to YouTube: {title}")
     video_id = upload_video(
@@ -836,6 +840,22 @@ def publish_and_upload_trips(
                 phase="upload",
                 detail=part_path.name,
             )
+
+            def status_hook(pct: int, offset: int, size: int) -> None:
+                write_status(
+                    temp_dir,
+                    record_type=record_type,
+                    chunk_index=chunk.index,
+                    trip_index=trip_idx,
+                    phase="upload",
+                    detail=(
+                        f"{format_file_size(offset)}/{format_file_size(size)}"
+                        if size
+                        else part_path.name
+                    ),
+                    percent=float(pct),
+                )
+
             try:
                 video_id, new_playlist, freed, _elapsed = upload_and_cleanup(
                     part_path,
@@ -850,6 +870,7 @@ def publish_and_upload_trips(
                     playlist_id=playlist_holder["id"],
                     playlist_title=playlist_title,
                     upload_chunk_bytes=upload_chunk_bytes,
+                    status_hook=status_hook,
                 )
             except YouTubeUploadError as exc:
                 msg = f"chunk {chunk.index} trip {trip_idx}: {exc}"

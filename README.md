@@ -632,9 +632,9 @@ Large uploads use the resumable protocol via `requests` (default **256 MB** chun
 `Chunk 2/17: 256.00 MB–512.00 MB (256.00 MB)`  
 `Chunk ack → 512.00 MB/4.13 GB (12%) | 0.9 MB/s chunk | 4m 45s chunk time`
 
-**Session resume:** `video/Output/.publish_tmp/<stem>.upload.json` (e.g. `trip_01.upload.json`) — deleted on success.
+**Session resume:** `video/Output/.publish_tmp/<stem>.upload.json` (or `/.70mai/publish/sessions/` on SD in autopilot) — deleted on success. If YouTube accepts a saved offset but rejects the next chunk with HTTP 400, the client treats the resumable URI as stale, deletes it, and retries **once from 0%** with a fresh session. A second HTTP 400 remains a hard failure to avoid an infinite restart loop.
 
-**Diagnostics:** structured JSONL at `video/Output/.publish_tmp/youtube_upload.diag.jsonl` (retries, throughput, error categories). Analyze after failures:
+**Diagnostics:** structured JSONL at `video/Output/.publish_tmp/youtube_upload.diag.jsonl` (retries, session resets, throughput, HTTP status and error categories). Analyze after failures:
 
 ```bash
 python3 scripts/analyze_youtube_upload.py
@@ -738,9 +738,9 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 ./scripts/watch_publish_all_70mai.sh --skip-import --no-dashboard
 ```
 
-Reads `autopilot_status.json`, publish state on SD, and `chunk_*/trip_*.mp4` sizes only — no subprocess coupling. Flags: `--source`, `--wait`, `--types`, `--temp-dir`, `--interval` (default 1s).
+Reads `autopilot_status.json`, publish state on SD, `chunk_*/trip_*.mp4` sizes, and the upload diagnostic JSONL — no subprocess coupling. The header deliberately separates **`сеть YouTube`** (HTTPS reachability) from **`upload`** (last real transfer result), so an accessible Google endpoint cannot hide a failed resumable session. Flags: `--source`, `--wait`, `--types`, `--temp-dir`, `--interval` (default 1s).
 
-Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-compose`**, **`--min-free-gb 20`**, compose/upload **pipeline overlap on**, live TTY dashboard (6 columns: **Поездка / Длит / Этап / Размер / YouTube**; `►` = active trip; Russian stage labels). Types: **`Normal` + `Event`**.
+Autopilot defaults (no extra flags): SD OAuth, startup **network + OAuth refresh validation**, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-compose`**, **`--min-free-gb 20`**, compose/upload **pipeline overlap on**, live TTY dashboard (columns **№ / Поездка / Длит / Этап / Размер / YouTube**; `№` = video **N/M** on YouTube; `►` = active; upload stage **`N/M ↑ 45%`**). Types: **`Normal` + `Event`**.
 
 On start, publish **sweeps** already-uploaded trips and deletes their leftover merged files (fixes the “skip already uploaded → never prune” gap).
 
@@ -773,6 +773,7 @@ pgrep -fl publish_70mai
 | Mechanism | What it does |
 |-----------|--------------|
 | `--resume` + `--resume-upload` | Continue from SD state + `publish/sessions/*.upload.json` (YouTube resumable upload) |
+| HTTP 400 stale-session recovery | Delete rejected saved URI and retry once from 0%; log `session_reset` |
 | `--continue-on-error` | On one trip failure, continue to the next |
 | `--wait` | Block until SD card appears |
 | `--loop` | After a full run, wait for SD again and start next session (not crash recovery) |

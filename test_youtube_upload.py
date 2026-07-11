@@ -1,0 +1,141 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import youtube_upload
+from youtube_upload_diagnostics import latest_upload_health
+
+
+class UploadRecoveryTests(unittest.TestCase):
+    def test_stale_saved_session_restarts_once_without_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "trip.mp4"
+            video.write_bytes(b"video")
+            session = root / "trip.upload.json"
+            session.write_text("{}", encoding="utf-8")
+
+            with patch.object(
+                youtube_upload,
+                "_upload_video_inner",
+                side_effect=[
+                    youtube_upload.StaleUploadSessionError("HTTP 400"),
+                    "video-id",
+                ],
+            ) as inner:
+                result = youtube_upload.upload_video(
+                    video,
+                    title="test",
+                    session_path=session,
+                    resume=True,
+                    diag_log=None,
+                )
+
+            self.assertEqual(result, "video-id")
+            self.assertFalse(session.exists())
+            self.assertTrue(inner.call_args_list[0].kwargs["resume"])
+            self.assertFalse(inner.call_args_list[1].kwargs["resume"])
+            self.assertEqual(inner.call_count, 2)
+
+    def test_non_session_error_is_not_restarted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "trip.mp4"
+            video.write_bytes(b"video")
+            with patch.object(
+                youtube_upload,
+                "_upload_video_inner",
+                side_effect=youtube_upload.YouTubeUploadError("HTTP 403"),
+            ) as inner:
+                with self.assertRaises(youtube_upload.YouTubeUploadError):
+                    youtube_upload.upload_video(
+                        video,
+                        title="test",
+                        diag_log=None,
+                    )
+            self.assertEqual(inner.call_count, 1)
+
+    def test_network_error_during_offset_query_keeps_saved_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "trip.mp4"
+            video.write_bytes(b"video")
+            session = root / "trip.upload.json"
+            session.write_text(
+                json.dumps(
+                    {
+                        "video_path": str(video),
+                        "video_stem": video.stem,
+                        "size": video.stat().st_size,
+                        "upload_url": "https://upload.invalid/session",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(youtube_upload, "_authorized_session", return_value=object()),
+                patch.object(
+                    youtube_upload,
+                    "_query_upload_offset",
+                    side_effect=youtube_upload.YouTubeUploadError("network timeout"),
+                ),
+            ):
+                with self.assertRaises(youtube_upload.YouTubeUploadError):
+                    youtube_upload._upload_video_inner(
+                        video,
+                        title="test",
+                        description="",
+                        tags=None,
+                        privacy="private",
+                        category_id="22",
+                        credentials_path=root / "credentials.json",
+                        token_path=root / "token.json",
+                        session_path=session,
+                        resume=True,
+                        diag=None,
+                        on_progress=None,
+                    )
+            self.assertTrue(session.exists())
+
+
+class UploadHealthTests(unittest.TestCase):
+    def test_latest_http_error_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "diag.jsonl"
+            records = [
+                {"event": "upload_start"},
+                {
+                    "event": "error",
+                    "status_code": 400,
+                    "category": "chunk_rejected",
+                },
+            ]
+            log.write_text(
+                "\n".join(json.dumps(record) for record in records) + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                latest_upload_health(log),
+                ("error", "HTTP 400 (chunk_rejected)"),
+            )
+
+    def test_success_replaces_old_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "diag.jsonl"
+            records = [
+                {"event": "error", "status_code": 400},
+                {"event": "upload_success", "video_id": "abc123"},
+            ]
+            log.write_text(
+                "\n".join(json.dumps(record) for record in records) + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                latest_upload_health(log),
+                ("ok", "last success abc123"),
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

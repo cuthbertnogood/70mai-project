@@ -44,8 +44,8 @@ RECOMMENDATIONS: dict[str, str] = {
         "consider wired network or upload overnight with --resume-upload."
     ),
     "chunk_rejected": (
-        "HTTP 400 on chunk upload. Ensure chunk size is a multiple of 256 KiB "
-        f"(current default: 64 MB)."
+        "HTTP 400 on chunk upload. A rejected saved resumable session is now "
+        "discarded and retried once from 0%; repeated HTTP 400 needs raw-log review."
     ),
     "auth_error": (
         "OAuth/auth failure. Refresh token: delete ~/.config/70mai/youtube_token.json "
@@ -129,6 +129,14 @@ class UploadDiagnostics:
     def session_created(self, session_path: str | None) -> None:
         self.log("session_created", session_path=session_path)
 
+    def session_reset(self, *, reason: str) -> None:
+        self.log(
+            "session_reset",
+            reason=reason[:500],
+            category="session_expired",
+            action="restart_from_zero",
+        )
+
     def chunk_ok(self, offset: int, size: int, *, status_code: int) -> None:
         now = time.monotonic()
         delta_bytes = max(0, offset - self._last_offset)
@@ -176,6 +184,58 @@ class UploadDiagnostics:
             elapsed_sec=round(elapsed, 1),
             avg_throughput_mbps=round(avg_mbps, 2),
         )
+
+
+def latest_upload_health(
+    log_path: Path = DEFAULT_DIAG_LOG,
+    *,
+    max_bytes: int = 256 * 1024,
+) -> tuple[str, str]:
+    """Return latest upload state without parsing an unbounded JSONL history."""
+    if not log_path.is_file():
+        return "unknown", "no uploads yet"
+    try:
+        with log_path.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            raw = handle.read().decode("utf-8", errors="replace")
+    except OSError as exc:
+        return "unknown", str(exc)[:80]
+
+    lines = raw.splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]
+    for line in reversed(lines):
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        kind = event.get("event")
+        if kind == "upload_success":
+            video_id = event.get("video_id") or "complete"
+            return "ok", f"last success {video_id}"
+        if kind == "error":
+            code = event.get("status_code")
+            message = str(event.get("message") or "")
+            if not code and "Upload chunk failed (" in message:
+                candidate = message.split("Upload chunk failed (", 1)[1].split(")", 1)[0]
+                if candidate.isdigit():
+                    code = int(candidate)
+            category = classify_error(message, status_code=code)
+            if code:
+                return "error", f"HTTP {code} ({category})"
+            message = message or category
+            return "error", message.splitlines()[0][:80]
+        if kind == "session_reset":
+            return "retry", "bad session reset; restarting from 0%"
+        if kind == "retry":
+            attempt = event.get("attempt") or "?"
+            category = event.get("category") or "network"
+            return "retry", f"retry {attempt} ({category})"
+        if kind == "upload_start":
+            return "upload", "upload started"
+    return "unknown", "no upload status"
 
 
 def load_events(log_path: Path) -> list[dict[str, Any]]:

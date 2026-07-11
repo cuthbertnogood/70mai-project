@@ -229,11 +229,12 @@ def _fmt_gb(n: int) -> str:
 
 
 # Six columns — one readable row per trip (no Status/Progress/Disk/Path split).
-_COL_HEADERS = ("#", "Поездка", "Длит", "Этап", "Размер", "YouTube")
+_COL_HEADERS = ("№", "Поездка", "Длит", "Этап", "Размер", "YouTube")
 
 _STATUS_LEGEND = (
-    "Этап: ожидание → сборка N% → загрузка → ✓  |  ► = сейчас в работе",
-    "Размер = готовый chunk_XX/trip_YY.mp4  |  YouTube = ID после upload",
+    "№ = видео N из M (очередь на YouTube)  |  ► = сейчас в работе",
+    "Этап: ожидание → сборка N/M · N% → ↑ N/M · N% → ✓",
+    "Размер = готовый trip_YY.mp4 на диске  |  YouTube = ссылка после upload",
 )
 
 
@@ -248,8 +249,8 @@ def _table_width(widths: tuple[int, ...]) -> int:
 def _column_widths(term_cols: int) -> tuple[int, ...]:
     """Fit 6-column table into terminal width."""
     term_cols = max(60, term_cols)
-    widths = [3, 24, 9, 14, 7, 14]
-    floors = [2, 10, 7, 8, 4, 6]
+    widths = [6, 22, 9, 16, 7, 14]
+    floors = [5, 10, 7, 10, 4, 6]
 
     def fits(w: list[int]) -> bool:
         return _table_width(tuple(w)) <= term_cols
@@ -394,24 +395,31 @@ def _stage_label(
     *,
     percent: float | None = None,
     stalled: bool = False,
+    overall_index: int | None = None,
+    overall_total: int | None = None,
 ) -> str:
     """Single human-readable stage (replaces separate Status + Progress)."""
+    pos = ""
+    if overall_index is not None and overall_total:
+        pos = f"{overall_index}/{overall_total} "
     if status == "done":
         return "✓"
     if status == "fail":
-        return "ошибка"
+        return f"{pos}ошибка".strip()
     if stalled or status == "stall":
         if percent is not None:
-            return f"ЗАВИС {percent:.0f}%"
-        return "ЗАВИС"
+            return f"{pos}ЗАВИС {percent:.0f}%".strip()
+        return f"{pos}ЗАВИС".strip()
     if status == "upload":
-        return "загрузка"
+        if percent is not None:
+            return f"{pos}↑ {percent:.0f}%".strip()
+        return f"{pos}↑ …".strip()
     if status == "compose":
         if percent is not None:
-            return f"сборка {percent:.0f}%"
-        return "сборка …"
+            return f"{pos}сборка {percent:.0f}%".strip()
+        return f"{pos}сборка …".strip()
     if status == "import":
-        return "импорт"
+        return f"{pos}импорт".strip() if pos else "импорт"
     if status == "pending":
         return "ожидание"
     return status
@@ -436,16 +444,31 @@ class TripRow:
     stalled: bool = False
     trip_start: datetime | None = None
     trip_end: datetime | None = None
+    overall_index: int = 0
 
 
 def _trip_display(row: TripRow) -> str:
-    loc = f"c{row.chunk_index:02d}/t{row.trip_index:02d}"
     if row.record_type == "Event":
-        return f"{loc} all events"
+        return "все события"
     parts = row.label.split()
     if len(parts) >= 3 and parts[0] == "trip":
-        return f"{loc} {' '.join(parts[2:])}"
-    return f"{loc} {row.label}"
+        return " ".join(parts[2:])
+    return row.label
+
+
+def _read_upload_percent(temp_dir: Path, trip_index: int) -> float | None:
+    """Best-effort upload % from resumable session file on disk."""
+    from youtube_upload import load_upload_session
+
+    session_path = temp_dir / f"trip_{trip_index:02d}.upload.json"
+    saved = load_upload_session(session_path)
+    if not saved:
+        return None
+    size = saved.get("size")
+    offset = saved.get("offset", 0)
+    if not size or int(size) <= 0:
+        return None
+    return min(99.0, float(offset) * 100.0 / float(size))
 
 
 @dataclass
@@ -468,6 +491,9 @@ class Dashboard:
     _youtube_ok: bool | None = None
     _youtube_detail: str = "—"
     _youtube_checked_at: float = 0.0
+    _upload_health: str = "unknown"
+    _upload_health_detail: str = "no uploads yet"
+    _upload_health_checked_at: float = 0.0
 
     @classmethod
     def from_plan(
@@ -548,6 +574,7 @@ class Dashboard:
                         trip_start=trip.start,
                         trip_end=trip.end,
                         detail=format_duration(trip.duration_sec),
+                        overall_index=len(rows) + 1,
                     )
                 )
         return cls(
@@ -599,6 +626,7 @@ class Dashboard:
     def _loop(self) -> None:
         while not self._stop.wait(self.refresh_interval):
             self._refresh_youtube_reachability()
+            self._refresh_upload_health()
             self._refresh_from_publish_state()
             self._refresh_from_status()
             self.render()
@@ -691,6 +719,19 @@ class Dashboard:
         self._youtube_ok = ok
         self._youtube_detail = detail
 
+    def _refresh_upload_health(self) -> None:
+        now = time.monotonic()
+        if now - self._upload_health_checked_at < 5.0:
+            return
+        self._upload_health_checked_at = now
+        from youtube_upload_diagnostics import latest_upload_health
+
+        health, detail = latest_upload_health(
+            self.temp_dir / "youtube_upload.diag.jsonl"
+        )
+        self._upload_health = health
+        self._upload_health_detail = detail
+
     def _refresh_from_status(self) -> None:
         st = read_status(self.temp_dir)
         reasons = read_trip_reasons(self.temp_dir)
@@ -739,10 +780,15 @@ class Dashboard:
                     pct_f: float | None = float(pct)
                 else:
                     pct_f = None
+                if phase == "upload" and pct_f is None:
+                    pct_f = _read_upload_percent(self.temp_dir, row.trip_index)
+                total = len(self.rows)
                 row.progress = _stage_label(
                     row.status,
                     percent=pct_f,
                     stalled=stalled,
+                    overall_index=row.overall_index or None,
+                    overall_total=total,
                 )
                 row.percent = pct_f
                 row.stalled = stalled
@@ -779,7 +825,12 @@ class Dashboard:
                 row.stalled = False
                 row.reason = saved_reason or "ошибка"
             else:
-                row.progress = _stage_label(row.status)
+                total = len(self.rows)
+                row.progress = _stage_label(
+                    row.status,
+                    overall_index=row.overall_index or None,
+                    overall_total=total,
+                )
                 row.percent = None
                 row.stalled = False
                 row.reason = saved_reason or "—"
@@ -802,30 +853,45 @@ class Dashboard:
             if r.status in ("compose", "upload", "import", "stall")
         ]
         if self._youtube_ok is True:
-            yt_net = "YouTube OK"
+            yt_net = "сеть YouTube OK"
         elif self._youtube_ok is False:
-            yt_net = f"YouTube OFF ({self._youtube_detail})"
+            yt_net = f"сеть YouTube OFF ({self._youtube_detail})"
         else:
-            yt_net = "YouTube …"
+            yt_net = "сеть YouTube …"
+        if self._upload_health == "error":
+            yt_upload = f"UPLOAD ОШИБКА: {self._upload_health_detail}"
+        elif self._upload_health == "retry":
+            yt_upload = f"upload retry: {self._upload_health_detail}"
+        elif self._upload_health == "upload":
+            yt_upload = "upload запущен"
+        elif self._upload_health == "ok":
+            yt_upload = f"upload OK: {self._upload_health_detail}"
+        else:
+            yt_upload = "upload: данных нет"
         try:
             term_cols = shutil.get_terminal_size().columns
         except OSError:
             term_cols = 100
         col_widths = _column_widths(term_cols)
 
-        summary = f"Автопилот: {done}/{total} готово"
+        total = len(self.rows)
+        summary = f"YouTube: {done}/{total} загружено"
         if fail:
             summary += f", {fail} ошибок"
         if active_rows:
             parts = []
             for ar in active_rows[:3]:
+                pct = ar.percent
+                if ar.status == "upload" and pct is None:
+                    pct = _read_upload_percent(self.temp_dir, ar.trip_index)
                 stage = _stage_label(
-                    ar.status, percent=ar.percent, stalled=ar.stalled
+                    ar.status,
+                    percent=pct,
+                    stalled=ar.stalled,
+                    overall_index=ar.overall_index or None,
+                    overall_total=total,
                 )
-                parts.append(
-                    f"{stage} {ar.record_type} "
-                    f"c{ar.chunk_index:02d}/t{ar.trip_index:02d}"
-                )
+                parts.append(f"{stage} · {_trip_display(ar)}")
             summary += "  |  сейчас: " + ", ".join(parts)
         else:
             summary += "  |  сейчас: ожидание"
@@ -833,7 +899,7 @@ class Dashboard:
         disk_line = (
             f"Диск: {free:.0f} GB свободно (резерв {self.min_free_gb:.0f})"
             f"  |  видео {format_gb(usage['total'])}"
-            f"  |  {yt_net}"
+            f"  |  {yt_net}  |  {yt_upload}"
         )
 
         lines: list[str] = []
@@ -850,11 +916,16 @@ class Dashboard:
             size_b = _compose_bytes(
                 self.temp_dir, row.chunk_index, row.trip_index
             )
-            stage = row.progress if row.progress != "—" else _stage_label(row.status)
+            stage = row.progress if row.progress != "—" else _stage_label(
+                row.status,
+                overall_index=row.overall_index or i,
+                overall_total=total,
+            )
             is_active = row.status in ("compose", "upload", "import", "stall")
             marker = "►" if is_active else " "
+            num = row.overall_index or i
             cells = (
-                f"{marker}{i}",
+                f"{marker}{num}/{total}",
                 _fit_text(_trip_display(row), col_widths[1]),
                 _fit_text(dur, col_widths[2]),
                 _fit_text(stage, col_widths[3]),
@@ -868,9 +939,13 @@ class Dashboard:
             lines.extend(_wrap_line(leg, term_cols))
         for row in self.rows:
             if row.status in ("fail", "stall") and row.reason not in ("—", ""):
-                loc = f"c{row.chunk_index:02d}/t{row.trip_index:02d}"
+                num = row.overall_index or 0
                 lines.extend(
-                    _wrap_line(f"⚠ {loc}: {_short_reason(row.reason)}", term_cols)
+                    _wrap_line(
+                        f"⚠ {num}/{total} {_trip_display(row)}: "
+                        f"{_short_reason(row.reason)}",
+                        term_cols,
+                    )
                 )
         block = "\n".join(lines)
         out = self._tty
@@ -1009,6 +1084,7 @@ def main() -> int:
         return 1
 
     dashboard._refresh_youtube_reachability()
+    dashboard._refresh_upload_health()
     dashboard._refresh_from_publish_state()
     dashboard._refresh_from_status()
     dashboard.render()

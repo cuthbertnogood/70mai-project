@@ -734,15 +734,15 @@ def main() -> int:
         dashboard.start()
         dashboard.render()
 
-        from youtube_upload import check_youtube_reachable
+        from youtube_upload import check_youtube_upload_ready
 
-        yt_ok, yt_detail = check_youtube_reachable()
+        yt_ok, yt_detail = check_youtube_upload_ready(creds, token)
         if yt_ok:
-            log(f"YouTube API reachable ({yt_detail})")
+            log(f"YouTube upload ready ({yt_detail})")
         else:
             log(
-                f"Warning: YouTube API unreachable ({yt_detail}) — "
-                "start VPN before upload phase"
+                f"Warning: YouTube upload is not ready ({yt_detail}) — "
+                "compose may continue, but upload will retry/fail with diagnostics"
             )
 
         ensure_publish_slot(force=args.force_restart)

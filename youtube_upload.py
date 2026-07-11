@@ -34,6 +34,16 @@ class YouTubeUploadError(RuntimeError):
     pass
 
 
+class UploadHttpError(YouTubeUploadError):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class StaleUploadSessionError(YouTubeUploadError):
+    """A saved resumable session was accepted, then rejected during PUT."""
+
+
 def check_youtube_reachable(timeout: float = 8.0) -> tuple[bool, str]:
     """Probe HTTPS reachability to YouTube API (no OAuth). Useful before upload when VPN is manual."""
     import urllib.error
@@ -53,6 +63,30 @@ def check_youtube_reachable(timeout: float = 8.0) -> tuple[bool, str]:
         return False, str(reason)[:48]
     except (TimeoutError, OSError) as exc:
         return False, str(exc)[:48]
+
+
+def check_youtube_upload_ready(
+    credentials_path: Path = DEFAULT_CREDENTIALS,
+    token_path: Path = DEFAULT_TOKEN,
+    timeout: float = 8.0,
+) -> tuple[bool, str]:
+    """Check network plus OAuth refresh without creating an upload."""
+    reachable, detail = check_youtube_reachable(timeout)
+    if not reachable:
+        return False, f"network: {detail}"
+    try:
+        Request, Credentials, *_ = _require_google()
+        if not token_path.is_file():
+            return False, f"OAuth token missing: {token_path}"
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        if not creds.valid and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            token_path.write_text(creds.to_json(), encoding="utf-8")
+        if not creds.valid:
+            return False, "OAuth token invalid; authorization required"
+    except Exception as exc:
+        return False, f"OAuth: {str(exc)[:80]}"
+    return True, "network + OAuth OK"
 
 
 def format_file_size(num_bytes: int) -> str:
@@ -331,9 +365,12 @@ def _query_upload_offset(session, upload_url: str, size: int, *, diag: UploadDia
         offset = _parse_range_end(resp.headers.get("Range"))
         return offset if offset is not None else 0
     if resp.status_code == 404:
-        raise YouTubeUploadError("Upload session expired (404); restart without --resume-upload")
-    raise YouTubeUploadError(
-        f"Upload status query failed ({resp.status_code}): {resp.text[:500]}"
+        raise UploadHttpError(
+            404, "Upload session expired (404); restart without --resume-upload"
+        )
+    raise UploadHttpError(
+        resp.status_code,
+        f"Upload status query failed ({resp.status_code}): {resp.text[:500]}",
     )
 
 
@@ -407,6 +444,32 @@ def upload_video(
             on_progress=on_progress,
             chunk_bytes=UPLOAD_CHUNK_BYTES if chunk_bytes is None else chunk_bytes,
         )
+    except StaleUploadSessionError as exc:
+        log(f"  Saved upload session rejected ({exc}); restarting once from 0%")
+        if session_path is not None:
+            clear_upload_session(session_path)
+        if diag:
+            diag.session_reset(reason=str(exc))
+        try:
+            return _upload_video_inner(
+                video_path,
+                title=title,
+                description=description,
+                tags=tags,
+                privacy=privacy,
+                category_id=category_id,
+                credentials_path=credentials_path,
+                token_path=token_path,
+                session_path=session_path,
+                resume=False,
+                diag=diag,
+                on_progress=on_progress,
+                chunk_bytes=UPLOAD_CHUNK_BYTES if chunk_bytes is None else chunk_bytes,
+            )
+        except YouTubeUploadError as retry_exc:
+            if diag:
+                diag.error(str(retry_exc))
+            raise
     except YouTubeUploadError as exc:
         if diag:
             diag.error(str(exc))
@@ -481,6 +544,7 @@ def _upload_video_inner(
 
     upload_url: str | None = None
     offset = 0
+    resumed_session = False
 
     if resume and session_path:
         saved = load_upload_session(session_path)
@@ -488,12 +552,16 @@ def _upload_video_inner(
             upload_url = saved["upload_url"]
             try:
                 offset = _query_upload_offset(session, upload_url, size, diag=diag)
-            except YouTubeUploadError as exc:
+            except UploadHttpError as exc:
+                if exc.status_code not in (400, 404):
+                    raise
+                log(f"  Saved upload session invalid ({exc}); starting from 0%")
                 if diag:
-                    diag.error(str(exc), status_code=404)
+                    diag.session_reset(reason=str(exc))
                 clear_upload_session(session_path)
                 upload_url = None
             else:
+                resumed_session = True
                 if offset >= size:
                     clear_upload_session(session_path)
                     raise YouTubeUploadError(
@@ -645,6 +713,12 @@ def _upload_video_inner(
                 if diag:
                     diag.error(msg, status_code=404, offset=offset)
                 raise YouTubeUploadError(msg)
+            if resp.status_code == 400 and resumed_session:
+                clear_upload_session(session_path)
+                msg = "saved resumable session rejected with HTTP 400"
+                if diag:
+                    diag.error(msg, status_code=400, offset=offset)
+                raise StaleUploadSessionError(msg)
             msg = f"Upload chunk failed ({resp.status_code}): {resp.text[:500]}"
             if diag:
                 diag.error(msg, status_code=resp.status_code, offset=offset)
