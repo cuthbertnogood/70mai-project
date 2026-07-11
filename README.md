@@ -763,6 +763,16 @@ Fastest configuration for slow uplinks:
 
 Master log: `video/Output/.publish_tmp/publish_all.log`. Autopilot mirrors **all** its own messages (plan, step headers, done summary) into this file, not only subprocess output. Import merge logs a **heartbeat every 30s** while ffmpeg concat runs (`… merging FILE (elapsed)`). Lock file (`.publish_all.lock`) prevents duplicate autopilot runs.
 
+**Session reports (MD + CSV):** after a card is processed, generate a one-pager with periods, processing time, all YouTube links, and a **Parking** plan:
+
+```bash
+./scripts/generate_card_reports.sh
+# project: отчеты/<period>_<volume>/
+# SD card: /.70mai/reports/<period>_<volume>/
+```
+
+Outputs: `SUMMARY.md`, `VIDEOS.csv`, `PERIOD.md`, `PROCESSING.md`, `PLAN_PARKING.md`, `CARD_INFO.json`. Does not run import/upload.
+
 **Watch progress:**
 
 ```bash

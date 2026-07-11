@@ -58,9 +58,18 @@ Target chunk: **2 ч по поездкам** (короткие поездки с
 | 4 | 9–10 | 6008 | compose → upload → delete |
 | 3 | 8 | 7729 | compose → upload → delete (самый долгий) |
 
-**Оставшиеся chunks (2–5):** autopilot (`publish_all_70mai.sh`) обрабатывает все pending trips сам — compose → upload → delete, с `--resume` и state на SD. По умолчанию: **Normal** (поездки) + **Event** (все события на карте — **один** 2-cam ролик на YouTube). Для долгой сессии с auto-restart: `watch_publish_all_70mai.sh --skip-import`.
+**Статус Jul 2026:** Normal **11/11** + Event **1/1** на YouTube ✅ (см. `отчеты/` или `/.70mai/reports/` на SD — `./scripts/generate_card_reports.sh`).
 
-YouTube quota ~6 видео/день — при 429/errors продолжить на следующий день с `--resume`. Автопилот предупреждает о превышении квоты в plan summary.
+### Следующий этап — Parking
+
+На карте **~506** клипов Parking (253 Front + 253 Back), **не обработано**. План и команда — в `отчеты/*/PLAN_PARKING.md` после генерации отчёта:
+
+```bash
+./scripts/generate_card_reports.sh
+./scripts/publish_all_70mai.sh --types Normal Event Parking --skip-import
+```
+
+YouTube quota ~6 видео/день — Parking может занять несколько календарных дней.
 
 ### Ускорение пайплайна (Jul 2026)
 
