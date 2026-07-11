@@ -219,6 +219,27 @@ def _compose_bytes(temp_dir: Path, chunk_index: int, trip_index: int) -> int:
         return 0
 
 
+def _row_compose_bytes(
+    temp_dir: Path,
+    row: TripRow,
+    *,
+    active_key: str | None = None,
+) -> int:
+    """Composed MP4 size for this dashboard row (not a reused temp path)."""
+    if row.status == "done":
+        return 0
+    path = _compose_trip_path(temp_dir, row.chunk_index, row.trip_index)
+    if not path.is_file():
+        return 0
+    # Normal and Event both use chunk_01/trip_01.mp4 — attribute file to active row only.
+    if active_key and row.key != active_key:
+        return 0
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def _fmt_gb(n: int) -> str:
     if n <= 0:
         return "—"
@@ -234,7 +255,7 @@ _COL_HEADERS = ("№", "Поездка", "Длит", "Этап", "Размер",
 _STATUS_LEGEND = (
     "№ = видео N из M (очередь на YouTube)  |  ► = сейчас в работе",
     "Этап: ожидание → сборка N/M · N% → ↑ N/M · N% → ✓",
-    "Размер = готовый trip_YY.mp4 на диске  |  YouTube = ссылка после upload",
+    "Размер = MP4 на диске (— после upload; один temp-путь на chunk/trip)",
 )
 
 
@@ -743,8 +764,8 @@ class Dashboard:
                 int(st.get("trip_index") or 0),
             )
         for row in self.rows:
-            composed = _compose_bytes(
-                self.temp_dir, row.chunk_index, row.trip_index
+            composed = _row_compose_bytes(
+                self.temp_dir, row, active_key=active_key
             )
             merged_bytes = 0
             if row.trip_start is not None and row.trip_end is not None:
@@ -803,9 +824,6 @@ class Dashboard:
                     row.reason = saved_reason or "—"
                 if st.get("youtube_url"):
                     row.youtube_url = st["youtube_url"]
-                composed = _compose_bytes(
-                    self.temp_dir, row.chunk_index, row.trip_index
-                )
                 if phase == "done":
                     row.disk = "pruned" if "merged" not in row.disk else row.disk
                     row.reason = "—"
@@ -874,6 +892,15 @@ class Dashboard:
             term_cols = 100
         col_widths = _column_widths(term_cols)
 
+        st = read_status(self.temp_dir)
+        active_key: str | None = None
+        if st:
+            active_key = trip_key(
+                st.get("record_type", ""),
+                int(st.get("chunk_index") or 0),
+                int(st.get("trip_index") or 0),
+            )
+
         total = len(self.rows)
         summary = f"YouTube: {done}/{total} загружено"
         if fail:
@@ -913,8 +940,8 @@ class Dashboard:
         lines.append(_table_sep(col_widths))
         for i, row in enumerate(self.rows, start=1):
             dur = format_duration(row.duration_sec)
-            size_b = _compose_bytes(
-                self.temp_dir, row.chunk_index, row.trip_index
+            size_b = _row_compose_bytes(
+                self.temp_dir, row, active_key=active_key
             )
             stage = row.progress if row.progress != "—" else _stage_label(
                 row.status,
