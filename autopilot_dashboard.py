@@ -227,23 +227,12 @@ def _fmt_gb(n: int) -> str:
     return f"{n / (1024**2):.0f}M"
 
 
-# Column widths: computed from terminal size in _column_widths().
-_COL_HEADERS = (
-    "#",
-    "Type",
-    "Label",
-    "Dur",
-    "Status",
-    "Progress",
-    "Disk",
-    "Path",
-    "YouTube",
-    "Reason",
-)
+# Six columns — one readable row per trip (no Status/Progress/Disk/Path split).
+_COL_HEADERS = ("#", "Поездка", "Длит", "Этап", "Размер", "YouTube")
 
 _STATUS_LEGEND = (
-    "Статусы: pending compose upload done stall fail",
-    "Path: chunk_XX/trip_YY.mp4  |  YouTube: youtu.be/VIDEO_ID",
+    "Этап: ожидание → сборка N% → загрузка → ✓  |  ► = сейчас в работе",
+    "Размер = готовый chunk_XX/trip_YY.mp4  |  YouTube = ID после upload",
 )
 
 
@@ -256,18 +245,17 @@ def _table_width(widths: tuple[int, ...]) -> int:
 
 
 def _column_widths(term_cols: int) -> tuple[int, ...]:
-    """Fit table into terminal width; Path/YouTube keep priority."""
-    term_cols = max(72, term_cols)
-    # #: Type Label Dur Status Progress Disk Path YouTube Reason
-    widths = [3, 6, 12, 9, 7, 7, 8, 20, 19, 8]
-    floors = [2, 4, 6, 7, 5, 5, 5, 10, 19, 4]
+    """Fit 6-column table into terminal width."""
+    term_cols = max(60, term_cols)
+    widths = [3, 24, 9, 14, 7, 14]
+    floors = [2, 10, 7, 8, 4, 6]
 
     def fits(w: list[int]) -> bool:
         return _table_width(tuple(w)) <= term_cols
 
     while not fits(widths):
         shrunk = False
-        for idx in (9, 2, 6, 3, 5, 1, 4, 0, 7, 8):
+        for idx in (1, 3, 5, 2, 4, 0):
             if fits(widths):
                 break
             if widths[idx] > floors[idx]:
@@ -276,57 +264,14 @@ def _column_widths(term_cols: int) -> tuple[int, ...]:
         if not shrunk:
             break
 
-    while fits([widths[0], widths[1], widths[2], widths[3], widths[4],
-                widths[5], widths[6], widths[7] + 1, widths[8], widths[9]]):
-        widths[7] += 1
-
-    return tuple(widths)
-
-
-def _compact_table_width(widths: tuple[int, ...]) -> int:
-    n = len(widths)
-    if n == 0:
-        return 0
-    return 3 * (n - 1) + sum(widths)
-
-
-def _compact_column_widths(term_cols: int) -> tuple[int, ...]:
-    term_cols = max(72, term_cols)
-    widths = [2, 4, 6, 7, 5, 5, 4, 14, 11, 0]
-    floors = [2, 3, 4, 6, 4, 4, 3, 6, 6, 0]
-
-    def fits(w: list[int]) -> bool:
-        return _compact_table_width(tuple(w)) <= term_cols
-
-    while not fits(widths):
-        shrunk = False
-        for idx in (9, 2, 6, 3, 5, 1, 4, 0, 7, 8):
-            if fits(widths):
-                break
-            if widths[idx] > floors[idx]:
-                widths[idx] -= 1
-                shrunk = True
-        if not shrunk:
-            break
-
-    while fits([*widths[:7], widths[7] + 1, *widths[8:]]):
-        widths[7] += 1
+    while fits([*widths[:1], widths[1] + 1, *widths[2:]]):
+        widths[1] += 1
 
     return tuple(widths)
 
 
 def _use_compact_table(term_cols: int) -> bool:
-    return _table_width(_column_widths(term_cols)) > term_cols
-
-
-def _compact_row(cells: tuple[str, ...], widths: tuple[int, ...]) -> str:
-    parts = []
-    for cell, w in zip(cells, widths):
-        if w <= 0:
-            continue
-        text = cell if len(cell) <= w else _fit_text(cell, w)
-        parts.append(text)
-    return " | ".join(parts)
+    return False
 
 
 def _wrap_line(text: str, width: int) -> list[str]:
@@ -427,32 +372,32 @@ def _table_row(cells: tuple[str, ...], widths: tuple[int, ...]) -> str:
     return "┃" + "┃".join(padded) + "┃"
 
 
-def _progress_label(
+def _stage_label(
     status: str,
     *,
     percent: float | None = None,
     stalled: bool = False,
-    is_active: bool = False,
 ) -> str:
+    """Single human-readable stage (replaces separate Status + Progress)."""
     if status == "done":
-        return "done"
+        return "✓"
     if status == "fail":
-        return "fail"
-    if status == "upload":
-        return "upload"
-    if not is_active:
-        return "—"
+        return "ошибка"
     if stalled or status == "stall":
         if percent is not None:
-            return f"STALL {percent:.0f}%"
-        return "STALL"
-    if status == "compose" and percent is not None:
-        return f"{percent:.0f}%"
+            return f"ЗАВИС {percent:.0f}%"
+        return "ЗАВИС"
+    if status == "upload":
+        return "загрузка"
     if status == "compose":
-        return "…"
+        if percent is not None:
+            return f"сборка {percent:.0f}%"
+        return "сборка …"
     if status == "import":
-        return "import"
-    return "—"
+        return "импорт"
+    if status == "pending":
+        return "ожидание"
+    return status
 
 
 @dataclass
@@ -470,8 +415,20 @@ class TripRow:
     reason: str = "—"
     local_path: str = "—"
     detail: str = ""
+    percent: float | None = None
+    stalled: bool = False
     trip_start: datetime | None = None
     trip_end: datetime | None = None
+
+
+def _trip_display(row: TripRow) -> str:
+    loc = f"c{row.chunk_index:02d}/t{row.trip_index:02d}"
+    if row.record_type == "Event":
+        return f"{loc} all events"
+    parts = row.label.split()
+    if len(parts) >= 3 and parts[0] == "trip":
+        return f"{loc} {' '.join(parts[2:])}"
+    return f"{loc} {row.label}"
 
 
 @dataclass
@@ -676,7 +633,9 @@ class Dashboard:
                 if not url and entry.get("video_id"):
                     url = youtube_watch_url(entry["video_id"])
             row.status = "done"
-            row.progress = "done"
+            row.progress = "✓"
+            row.percent = None
+            row.stalled = False
             row.reason = "—"
             row.youtube_url = url
             merged = 0
@@ -761,12 +720,13 @@ class Dashboard:
                     pct_f: float | None = float(pct)
                 else:
                     pct_f = None
-                row.progress = _progress_label(
+                row.progress = _stage_label(
                     row.status,
                     percent=pct_f,
                     stalled=stalled,
-                    is_active=True,
                 )
+                row.percent = pct_f
+                row.stalled = stalled
                 live_reason = (st.get("reason") or "").strip()
                 if live_reason:
                     row.reason = live_reason
@@ -789,13 +749,17 @@ class Dashboard:
                 continue
 
             if row.status == "done":
-                row.progress = "done"
+                row.progress = "✓"
+                row.percent = None
+                row.stalled = False
                 row.reason = "—"
             elif row.status == "fail":
-                row.progress = "fail"
+                row.progress = "ошибка"
                 row.reason = saved_reason or "ошибка"
             else:
-                row.progress = "—"
+                row.progress = _stage_label(row.status)
+                row.percent = None
+                row.stalled = False
                 row.reason = saved_reason or "—"
 
     def render(self) -> None:
@@ -810,74 +774,82 @@ class Dashboard:
         from publish_all_70mai import autopilot_disk_usage, format_gb
 
         usage = autopilot_disk_usage(self.video_dir, self.temp_dir)
-        active = next(
-            (r for r in self.rows if r.status in ("compose", "upload", "import", "stall")),
-            None,
-        )
+        active_rows = [
+            r
+            for r in self.rows
+            if r.status in ("compose", "upload", "import", "stall")
+        ]
         if self._youtube_ok is True:
             yt_net = "YouTube OK"
         elif self._youtube_ok is False:
             yt_net = f"YouTube OFF ({self._youtube_detail})"
         else:
             yt_net = "YouTube …"
-        phase = (
-            f"{active.status} {active.record_type} "
-            f"c{active.chunk_index}/t{active.trip_index}"
-            if active
-            else "idle"
-        )
         try:
             term_cols = shutil.get_terminal_size().columns
         except OSError:
             term_cols = 100
-        col_widths = (
-            _compact_column_widths(term_cols)
-            if _use_compact_table(term_cols)
-            else _column_widths(term_cols)
+        col_widths = _column_widths(term_cols)
+
+        summary = f"Автопилот: {done}/{total} готово"
+        if fail:
+            summary += f", {fail} ошибок"
+        if active_rows:
+            parts = []
+            for ar in active_rows[:3]:
+                stage = _stage_label(
+                    ar.status, percent=ar.percent, stalled=ar.stalled
+                )
+                parts.append(
+                    f"{stage} {ar.record_type} "
+                    f"c{ar.chunk_index:02d}/t{ar.trip_index:02d}"
+                )
+            summary += "  |  сейчас: " + ", ".join(parts)
+        else:
+            summary += "  |  сейчас: ожидание"
+
+        disk_line = (
+            f"Диск: {free:.0f} GB свободно (резерв {self.min_free_gb:.0f})"
+            f"  |  видео {format_gb(usage['total'])}"
+            f"  |  {yt_net}"
         )
-        compact = _use_compact_table(term_cols)
-        header = (
-            f"Autopilot {done}/{total} done"
-            + (f"  {fail} fail" if fail else "")
-            + f"  |  phase: {phase}"
-            + f"  |  free {free:.1f} GB"
-            + f"  |  video {format_gb(usage['total'])}"
-            + f"  |  {yt_net}"
-        )
+
         lines: list[str] = []
-        for hl in _wrap_line(header, term_cols):
+        for hl in _wrap_line(summary, term_cols):
+            lines.append(hl)
+        for hl in _wrap_line(disk_line, term_cols):
             lines.append(hl)
         lines.append("")
-        if compact:
-            lines.append(_compact_row(_COL_HEADERS, col_widths))
-            lines.append("-" * min(term_cols, _compact_table_width(col_widths)))
-        else:
-            lines.append(_table_top(col_widths))
-            lines.append(_table_row(_COL_HEADERS, col_widths))
-            lines.append(_table_sep(col_widths))
+        lines.append(_table_top(col_widths))
+        lines.append(_table_row(_COL_HEADERS, col_widths))
+        lines.append(_table_sep(col_widths))
         for i, row in enumerate(self.rows, start=1):
             dur = format_duration(row.duration_sec)
-            cells = (
-                str(i),
-                _fit_text(row.record_type, col_widths[1]),
-                _fit_text(row.label, col_widths[2]),
-                _fit_text(dur, col_widths[3]),
-                _fit_text(row.status, col_widths[4]),
-                _fit_text(row.progress, col_widths[5]),
-                _fit_text(row.disk, col_widths[6]),
-                _path_for_column(row.local_path, col_widths[7]),
-                _youtube_for_column(row.youtube_url, col_widths[8]),
-                _fit_text(row.reason, col_widths[9], tail=True),
+            size_b = _compose_bytes(
+                self.temp_dir, row.chunk_index, row.trip_index
             )
-            if compact:
-                lines.append(_compact_row(cells, col_widths))
-            else:
-                lines.append(_table_row(cells, col_widths))
-        if not compact:
-            lines.append(_table_bottom(col_widths))
+            stage = row.progress if row.progress != "—" else _stage_label(row.status)
+            is_active = row.status in ("compose", "upload", "import", "stall")
+            marker = "►" if is_active else " "
+            cells = (
+                f"{marker}{i}",
+                _fit_text(_trip_display(row), col_widths[1]),
+                _fit_text(dur, col_widths[2]),
+                _fit_text(stage, col_widths[3]),
+                _fit_text(_fmt_gb(size_b), col_widths[4]),
+                _youtube_for_column(row.youtube_url, col_widths[5]),
+            )
+            lines.append(_table_row(cells, col_widths))
+        lines.append(_table_bottom(col_widths))
         lines.append("")
         for leg in _STATUS_LEGEND:
             lines.extend(_wrap_line(leg, term_cols))
+        for row in self.rows:
+            if row.status in ("fail", "stall") and row.reason not in ("—", ""):
+                loc = f"c{row.chunk_index:02d}/t{row.trip_index:02d}"
+                lines.extend(
+                    _wrap_line(f"⚠ {loc}: {row.reason}", term_cols)
+                )
         block = "\n".join(lines)
         out = self._tty
         if self._alt_screen:
