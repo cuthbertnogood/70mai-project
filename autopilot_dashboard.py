@@ -329,6 +329,7 @@ class Dashboard:
     types: list[str] = field(default_factory=lambda: ["Normal"])
     state_on_sd: bool = True
     enabled: bool = True
+    refresh_interval: float = 1.0
     _stop: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
     _tty = None
@@ -455,7 +456,7 @@ class Dashboard:
             self._tty = None
 
     def _loop(self) -> None:
-        while not self._stop.wait(1.0):
+        while not self._stop.wait(self.refresh_interval):
             self._refresh_youtube_reachability()
             self._refresh_from_publish_state()
             self._refresh_from_status()
@@ -702,3 +703,147 @@ class Dashboard:
         out.write(block + "\n")
         out.flush()
         self._lines = len(lines)
+
+
+def main() -> int:
+    """Standalone dashboard: reads status/state from disk only (no autopilot process)."""
+    import argparse
+    import signal
+    import sys
+
+    from plan_estimate import DEFAULT_SESSION_GAP
+    from project_env import ensure_venv_python
+
+    ensure_venv_python()
+
+    from publish_all_70mai import (
+        DEFAULT_TEMP_DIR,
+        DEFAULT_TYPES,
+        DEFAULT_VIDEO_DIR,
+        IMPORT_CHUNK_MINUTES,
+        aggregate_plan,
+        find_sd_card,
+        load_merged_publish_state,
+        wait_for_sd,
+    )
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Live autopilot dashboard (standalone). Reads autopilot_status.json, "
+            "publish state on SD, and compose file sizes — safe to restart anytime."
+        ),
+    )
+    parser.add_argument(
+        "--source",
+        type=Path,
+        help="70mai SD mount (auto-detect /Volumes if omitted)",
+    )
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="Wait until SD card is inserted before building the trip table",
+    )
+    parser.add_argument(
+        "--types",
+        nargs="+",
+        default=DEFAULT_TYPES,
+        choices=["Normal", "Event", "Parking"],
+        metavar="TYPE",
+    )
+    parser.add_argument("--video-dir", type=Path, default=DEFAULT_VIDEO_DIR)
+    parser.add_argument("--temp-dir", type=Path, default=DEFAULT_TEMP_DIR)
+    parser.add_argument(
+        "--no-state-on-sd",
+        action="store_true",
+        help="Read publish state from host cache only",
+    )
+    parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=20.0,
+        metavar="GB",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=1.0,
+        metavar="SEC",
+        help="Refresh interval (default: 1)",
+    )
+    parser.add_argument(
+        "--session-gap",
+        type=float,
+        default=DEFAULT_SESSION_GAP,
+        help="Session gap for trip plan (match autopilot)",
+    )
+    args = parser.parse_args()
+
+    if args.wait:
+        source = wait_for_sd()
+    elif args.source is not None:
+        source = args.source.resolve()
+    else:
+        source = find_sd_card()
+        if source is None:
+            print(
+                "SD card not found — use --source /Volumes/Untitled or --wait",
+                file=sys.stderr,
+            )
+            return 1
+
+    ffprobe = shutil.which("ffprobe") or "ffprobe"
+    state_on_sd = not args.no_state_on_sd
+
+    _trips, chunks, _dur, _total, _pending = aggregate_plan(
+        source,
+        args.types,
+        args.temp_dir,
+        state_on_sd=state_on_sd,
+        ffprobe=ffprobe,
+        chunk_minutes=IMPORT_CHUNK_MINUTES,
+        session_gap=args.session_gap,
+    )
+    if not chunks:
+        print("No trips in plan (empty SD or wrong --types?)", file=sys.stderr)
+        return 1
+
+    merged_state = load_merged_publish_state(
+        source, args.types, args.temp_dir, state_on_sd=state_on_sd
+    )
+    dashboard = Dashboard.from_plan(
+        chunks,
+        merged_state,
+        temp_dir=args.temp_dir,
+        video_dir=args.video_dir,
+        check_disk=Path("."),
+        min_free_gb=args.min_free_gb,
+        enabled=True,
+        source=source,
+        types=args.types,
+        state_on_sd=state_on_sd,
+    )
+    dashboard.refresh_interval = args.interval
+    dashboard.start()
+    if not dashboard.enabled:
+        print("Cannot open /dev/tty — run in a real terminal (not piped)", file=sys.stderr)
+        return 1
+
+    dashboard._refresh_youtube_reachability()
+    dashboard._refresh_from_publish_state()
+    dashboard._refresh_from_status()
+    dashboard.render()
+
+    stop = threading.Event()
+
+    def _shutdown(*_args: object) -> None:
+        dashboard.stop()
+        stop.set()
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+    stop.wait()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -726,7 +726,17 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 | `--min-free-gb` | Disk reserve before each compose (default: 20) |
 | `--upload-chunk-mb` | YouTube upload chunk MB (default 256; `0` = whole file) |
 | `--no-overlap` | Disable compose/upload pipeline in publish |
-| `--no-dashboard` | Disable live TTY progress table |
+| `--no-dashboard` | Disable live TTY progress table (use with external dashboard below) |
+
+**Standalone dashboard** (second terminal; restart anytime without touching encode/upload):
+
+```bash
+./scripts/autopilot_dashboard.sh
+# autopilot without built-in table:
+./scripts/watch_publish_all_70mai.sh --skip-import --no-dashboard
+```
+
+Reads `autopilot_status.json`, publish state on SD, and `chunk_*/trip_*.mp4` sizes only — no subprocess coupling. Flags: `--source`, `--wait`, `--types`, `--temp-dir`, `--interval` (default 1s).
 
 Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-compose`**, **`--min-free-gb 20`**, compose/upload **pipeline overlap on**, live TTY dashboard (Status / Progress / Disk / **Path** / YouTube / Reason + легенда). Types: **`Normal` + `Event`**.
 
