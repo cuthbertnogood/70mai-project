@@ -627,6 +627,7 @@ class Dashboard:
                 self.types,
                 self.temp_dir,
                 state_on_sd=self.state_on_sd,
+                quiet=True,
             )
         except OSError:
             return

@@ -309,12 +309,13 @@ def load_merged_publish_state(
     temp_dir: Path,
     *,
     state_on_sd: bool,
+    quiet: bool = False,
 ) -> dict:
     """Combine trip_parts from per-type publish state files."""
     merged: dict = {"trip_parts": [], "parts": []}
     for record_type in types:
         store = StateStore(source, temp_dir, record_type, state_on_sd=state_on_sd)
-        state = store.load(resume=True)
+        state = store.load(resume=True, quiet=quiet)
         merged["trip_parts"].extend(state.get("trip_parts", []))
         merged["parts"].extend(state.get("parts", []))
         if state.get("playlist_id") and not merged.get("playlist_id"):

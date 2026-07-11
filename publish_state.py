@@ -391,28 +391,34 @@ class StateStore:
             return sd_session_dir(self.source)
         return self.temp_dir
 
-    def load(self, *, resume: bool) -> dict:
+    def load(self, *, resume: bool, quiet: bool = False) -> dict:
         if not resume:
             return {}
         local = load_state_file(self.local_path)
         if not self.state_on_sd or self.sd_path is None:
-            if local:
+            if local and not quiet:
                 log(f"State (local): {self.local_path}")
             return local
 
         sd = load_state_file(self.sd_path)
         if sd and local:
             merged = merge_publish_state(sd, local)
-            log(
-                f"State merged: SD {self.sd_path} + local "
-                f"({len(merged.get('trip_parts', []))} trip record(s))"
-            )
+            if not quiet:
+                log(
+                    f"State merged: SD {self.sd_path} + local "
+                    f"({len(merged.get('trip_parts', []))} trip record(s))"
+                )
         elif sd:
             merged = sd
-            log(f"State (SD): {self.sd_path} ({len(sd.get('trip_parts', []))} trip record(s))")
+            if not quiet:
+                log(
+                    f"State (SD): {self.sd_path} "
+                    f"({len(sd.get('trip_parts', []))} trip record(s))"
+                )
         elif local:
             merged = local
-            log(f"Migrating local state → SD: {self.sd_path}")
+            if not quiet:
+                log(f"Migrating local state → SD: {self.sd_path}")
         else:
             return {}
 
