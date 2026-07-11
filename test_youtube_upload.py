@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import requests
+
 import youtube_upload
 from youtube_upload_diagnostics import latest_upload_health
 
@@ -145,6 +147,26 @@ class UploadRecoveryTests(unittest.TestCase):
             self.assertEqual(result, "video-id")
             self.assertEqual(seen_headers["Content-Type"], "video/mp4")
             self.assertEqual(seen_headers["Content-Length"], "5")
+
+    def test_sized_stream_does_not_enable_chunked_transfer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "trip.mp4"
+            video.write_bytes(b"video")
+            with video.open("rb") as handle:
+                body = youtube_upload._byte_stream(handle, 0, 4, lambda _offset: None)
+                prepared = requests.Request(
+                    "PUT",
+                    "https://upload.invalid/session",
+                    data=body,
+                    headers={
+                        "Content-Length": "5",
+                        "Content-Type": "video/mp4",
+                        "Content-Range": "bytes 0-4/5",
+                    },
+                ).prepare()
+
+            self.assertEqual(prepared.headers["Content-Length"], "5")
+            self.assertNotIn("Transfer-Encoding", prepared.headers)
 
 
 class UploadHealthTests(unittest.TestCase):

@@ -167,19 +167,34 @@ def _call_progress(
         on_progress(pct)
 
 
+class _ByteStream:
+    """Sized iterator so requests does not add Transfer-Encoding: chunked."""
+
+    def __init__(self, fh, start: int, end: int, report: Callable[[int], None]):
+        self.fh = fh
+        self.start = start
+        self.end = end
+        self.report = report
+
+    def __len__(self) -> int:
+        return self.end - self.start + 1
+
+    def __iter__(self):
+        self.fh.seek(self.start)
+        remaining = len(self)
+        sent = self.start
+        while remaining > 0:
+            block = self.fh.read(min(UPLOAD_STREAM_BLOCK, remaining))
+            if not block:
+                break
+            remaining -= len(block)
+            sent += len(block)
+            self.report(sent)
+            yield block
+
+
 def _byte_stream(fh, start: int, end: int, report: Callable[[int], None]):
-    """Yield file bytes from start..end inclusive, calling report(sent_offset) per block."""
-    fh.seek(start)
-    remaining = end - start + 1
-    sent = start
-    while remaining > 0:
-        block = fh.read(min(UPLOAD_STREAM_BLOCK, remaining))
-        if not block:
-            break
-        remaining -= len(block)
-        sent += len(block)
-        report(sent)
-        yield block
+    return _ByteStream(fh, start, end, report)
 
 
 def _require_google():
