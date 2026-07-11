@@ -728,7 +728,7 @@ On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh
 | `--no-overlap` | Disable compose/upload pipeline in publish |
 | `--no-dashboard` | Disable live TTY progress table |
 
-Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-compose`**, **`--min-free-gb 20`**, compose/upload **pipeline overlap on**, live TTY dashboard (таблица: Status / **Progress** / Disk / YouTube + легенда внизу; **YouTube API reachability** — проверьте VPN перед upload). Types: **`Normal` + `Event`**.
+Autopilot defaults (no extra flags): SD OAuth, publish state on SD, **import inventory + merge status** on SD (`/.70mai/import/`), verbose merge log, `--force-restart` when run via watchdog, **`--prune-merged after-compose`**, **`--min-free-gb 20`**, compose/upload **pipeline overlap on**, live TTY dashboard (Status / Progress / Disk / **Path** / YouTube / Reason + легенда). Types: **`Normal` + `Event`**.
 
 On start, publish **sweeps** already-uploaded trips and deletes their leftover merged files (fixes the “skip already uploaded → never prune” gap).
 

@@ -13,6 +13,74 @@ from datetime import datetime
 from pathlib import Path
 
 STATUS_FILENAME = "autopilot_status.json"
+REASONS_FILENAME = "autopilot_trip_reasons.json"
+
+
+def trip_key(record_type: str, chunk_index: int, trip_index: int) -> str:
+    return f"{record_type}:{chunk_index}:{trip_index}"
+
+
+def reasons_path(temp_dir: Path) -> Path:
+    return temp_dir / REASONS_FILENAME
+
+
+def read_trip_reasons(temp_dir: Path) -> dict[str, dict]:
+    path = reasons_path(temp_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_trip_reason(
+    temp_dir: Path,
+    *,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+    reason: str,
+    phase: str = "",
+) -> None:
+    """Persist last stop/fail reason for a trip (shown in dashboard Reason column)."""
+    if not reason:
+        return
+    key = trip_key(record_type, chunk_index, trip_index)
+    reasons = read_trip_reasons(temp_dir)
+    reasons[key] = {
+        "reason": reason[:120],
+        "phase": phase,
+        "ts": datetime.now().isoformat(timespec="seconds"),
+    }
+    try:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        path = reasons_path(temp_dir)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(reasons, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def clear_trip_reason(
+    temp_dir: Path,
+    *,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+) -> None:
+    key = trip_key(record_type, chunk_index, trip_index)
+    reasons = read_trip_reasons(temp_dir)
+    if key not in reasons:
+        return
+    del reasons[key]
+    try:
+        path = reasons_path(temp_dir)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(reasons, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def status_path(temp_dir: Path) -> Path:
@@ -31,6 +99,7 @@ def write_status(
     percent: float | None = None,
     output_bytes: int | None = None,
     stalled: bool = False,
+    reason: str = "",
 ) -> None:
     """Atomic status update for the live dashboard (safe across processes)."""
     path = status_path(temp_dir)
@@ -45,12 +114,22 @@ def write_status(
         "percent": percent,
         "output_bytes": output_bytes,
         "stalled": stalled,
+        "reason": reason[:120] if reason else "",
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
+        if reason:
+            write_trip_reason(
+                temp_dir,
+                record_type=record_type,
+                chunk_index=chunk_index,
+                trip_index=trip_index,
+                reason=reason,
+                phase=phase,
+            )
     except OSError:
         pass
 
@@ -93,8 +172,46 @@ def _merged_bytes_for_trip(video_dir: Path, record_type: str, start, end) -> int
     return total
 
 
+def _compose_trip_path(temp_dir: Path, chunk_index: int, trip_index: int) -> Path:
+    return temp_dir / f"chunk_{chunk_index:02d}" / f"trip_{trip_index:02d}.mp4"
+
+
+def _rel_path(path: Path, base: Path | None = None) -> str:
+    base = (base or Path.cwd()).resolve()
+    try:
+        return str(path.resolve().relative_to(base))
+    except ValueError:
+        return str(path)
+
+
+def _resolve_local_path(
+    *,
+    temp_dir: Path,
+    video_dir: Path,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+    status: str,
+    composed_bytes: int,
+    merged_bytes: int,
+    base: Path | None = None,
+) -> str:
+    """Best local path for this trip row (composed MP4 or merged source dirs)."""
+    out = _compose_trip_path(temp_dir, chunk_index, trip_index)
+    if out.is_file():
+        return _rel_path(out, base)
+    if status in ("compose", "upload", "stall") or composed_bytes > 0:
+        return _rel_path(out, base)
+    if merged_bytes > 0:
+        root = _rel_path(video_dir / record_type, base)
+        return f"{root}/Front+Back"
+    if status == "done":
+        return "—"
+    return _rel_path(out, base)
+
+
 def _compose_bytes(temp_dir: Path, chunk_index: int, trip_index: int) -> int:
-    path = temp_dir / f"chunk_{chunk_index:02d}" / f"trip_{trip_index:02d}.mp4"
+    path = _compose_trip_path(temp_dir, chunk_index, trip_index)
     try:
         return path.stat().st_size if path.is_file() else 0
     except OSError:
@@ -111,17 +228,26 @@ def _fmt_gb(n: int) -> str:
 
 
 # Column widths for the trip table (cell content, excluding padding).
-_COL_WIDTHS = (3, 6, 22, 10, 8, 10, 10, 26)
-_COL_HEADERS = ("#", "Type", "Label", "Dur", "Status", "Progress", "Disk", "YouTube")
+_COL_WIDTHS = (3, 6, 16, 8, 7, 8, 6, 36, 14, 20)
+_COL_HEADERS = (
+    "#",
+    "Type",
+    "Label",
+    "Dur",
+    "Status",
+    "Progress",
+    "Disk",
+    "Path",
+    "YouTube",
+    "Reason",
+)
 
 _STATUS_LEGEND = (
-    "Статусы:  pending — в очереди  |  compose — кодирование (ffmpeg)  |  "
-    "upload — заливка на YouTube",
-    "          done — уже на YouTube  |  stall — encode завис  |  fail — ошибка",
-    "Диск:     merged N — исходники с SD  |  N G/M — готовый MP4  |  "
-    "pruned — загружено, исходники удалены  |  clean — пусто",
-    "Progress: N% — идёт encode  |  STALL N% — нет прогресса 5+ мин  |  "
-    "upload — заливается  |  done — готово  |  — — не активно",
+    "Статусы:  pending — в очереди  |  compose — кодирование  |  upload — заливка  |  "
+    "done — на YouTube  |  stall — завис  |  fail — ошибка",
+    "Progress: N% — encode  |  STALL N% — нет прогресса 5+ мин  |  upload/done/—",
+    "Path:     путь к MP4 в .publish_tmp/chunk_XX/  или Normal/Front+Back (исходники)  |  — = удалён",
+    "Reason:   почему остановился процесс  |  Disk: размер на диске",
 )
 
 
@@ -185,7 +311,11 @@ class TripRow:
     youtube_url: str | None = None
     disk: str = "—"
     progress: str = "—"
+    reason: str = "—"
+    local_path: str = "—"
     detail: str = ""
+    trip_start: datetime | None = None
+    trip_end: datetime | None = None
 
 
 @dataclass
@@ -195,6 +325,9 @@ class Dashboard:
     video_dir: Path = Path("video/Output")
     check_disk: Path = Path(".")
     min_free_gb: float = 20.0
+    source: Path | None = None
+    types: list[str] = field(default_factory=lambda: ["Normal"])
+    state_on_sd: bool = True
     enabled: bool = True
     _stop: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
@@ -215,9 +348,13 @@ class Dashboard:
         check_disk: Path,
         min_free_gb: float,
         enabled: bool = True,
+        source: Path | None = None,
+        types: list[str] | None = None,
+        state_on_sd: bool = True,
     ) -> Dashboard:
         from import_70mai import format_duration
         from publish_70mai import get_trip_state, trip_uploaded
+        from publish_state import youtube_watch_url
 
         rows: list[TripRow] = []
         for chunk in chunks:
@@ -237,7 +374,7 @@ class Dashboard:
                 if entry:
                     url = entry.get("youtube_url")
                     if not url and entry.get("video_id"):
-                        url = f"https://youtu.be/{entry['video_id']}"
+                        url = youtube_watch_url(entry["video_id"])
                 merged = _merged_bytes_for_trip(
                     video_dir, chunk.record_type, trip.start, trip.end
                 )
@@ -254,6 +391,16 @@ class Dashboard:
                 else:
                     disk = "clean"
                     status = "pending"
+                local_path = _resolve_local_path(
+                    temp_dir=temp_dir,
+                    video_dir=video_dir,
+                    record_type=chunk.record_type,
+                    chunk_index=chunk.index,
+                    trip_index=trip_idx,
+                    status=status,
+                    composed_bytes=composed,
+                    merged_bytes=merged,
+                )
                 rows.append(
                     TripRow(
                         key=key,
@@ -265,6 +412,9 @@ class Dashboard:
                         status=status,
                         youtube_url=url,
                         disk=disk,
+                        local_path=local_path,
+                        trip_start=trip.start,
+                        trip_end=trip.end,
                         detail=format_duration(trip.duration_sec),
                     )
                 )
@@ -274,6 +424,9 @@ class Dashboard:
             video_dir=video_dir,
             check_disk=check_disk,
             min_free_gb=min_free_gb,
+            source=source,
+            types=list(types or ["Normal"]),
+            state_on_sd=state_on_sd,
             enabled=enabled,
         )
 
@@ -304,8 +457,80 @@ class Dashboard:
     def _loop(self) -> None:
         while not self._stop.wait(1.0):
             self._refresh_youtube_reachability()
+            self._refresh_from_publish_state()
             self._refresh_from_status()
             self.render()
+
+    def _refresh_from_publish_state(self) -> None:
+        """Reload uploaded trips + YouTube URLs from SD/host publish state (source of truth)."""
+        if self.source is None:
+            return
+        st = read_status(self.temp_dir)
+        active_key: str | None = None
+        active_phase = ""
+        if st:
+            active_key = trip_key(
+                st.get("record_type", ""),
+                int(st.get("chunk_index") or 0),
+                int(st.get("trip_index") or 0),
+            )
+            active_phase = str(st.get("phase") or "")
+        try:
+            from publish_all_70mai import load_merged_publish_state
+            from publish_70mai import get_trip_state, trip_uploaded
+            from publish_state import youtube_watch_url
+
+            state = load_merged_publish_state(
+                self.source,
+                self.types,
+                self.temp_dir,
+                state_on_sd=self.state_on_sd,
+            )
+        except OSError:
+            return
+        for row in self.rows:
+            # Live compose/upload/stall — keep overlay from autopilot_status.json
+            if (
+                active_key == row.key
+                and active_phase in ("compose", "upload", "stall", "import")
+            ):
+                continue
+            if not trip_uploaded(
+                state, row.record_type, row.chunk_index, row.trip_index
+            ):
+                continue
+            entry = get_trip_state(
+                state, row.record_type, row.chunk_index, row.trip_index
+            )
+            url = None
+            if entry:
+                url = entry.get("youtube_url")
+                if not url and entry.get("video_id"):
+                    url = youtube_watch_url(entry["video_id"])
+            row.status = "done"
+            row.progress = "done"
+            row.reason = "—"
+            row.youtube_url = url
+            merged = 0
+            if row.trip_start is not None and row.trip_end is not None:
+                merged = _merged_bytes_for_trip(
+                    self.video_dir,
+                    row.record_type,
+                    row.trip_start,
+                    row.trip_end,
+                )
+            row.disk = "pruned" if merged == 0 else f"merged {_fmt_gb(merged)}"
+            row.local_path = _resolve_local_path(
+                temp_dir=self.temp_dir,
+                video_dir=self.video_dir,
+                record_type=row.record_type,
+                chunk_index=row.chunk_index,
+                trip_index=row.trip_index,
+                status="done",
+                composed_bytes=0,
+                merged_bytes=merged,
+                base=self.check_disk,
+            )
 
     def _refresh_youtube_reachability(self) -> None:
         now = time.monotonic()
@@ -323,12 +548,40 @@ class Dashboard:
 
     def _refresh_from_status(self) -> None:
         st = read_status(self.temp_dir)
+        reasons = read_trip_reasons(self.temp_dir)
         active_key: str | None = None
         if st:
-            active_key = (
-                f"{st.get('record_type')}:{st.get('chunk_index')}:{st.get('trip_index')}"
+            active_key = trip_key(
+                st.get("record_type", ""),
+                int(st.get("chunk_index") or 0),
+                int(st.get("trip_index") or 0),
             )
         for row in self.rows:
+            composed = _compose_bytes(
+                self.temp_dir, row.chunk_index, row.trip_index
+            )
+            merged_bytes = 0
+            if row.trip_start is not None and row.trip_end is not None:
+                merged_bytes = _merged_bytes_for_trip(
+                    self.video_dir,
+                    row.record_type,
+                    row.trip_start,
+                    row.trip_end,
+                )
+            row.local_path = _resolve_local_path(
+                temp_dir=self.temp_dir,
+                video_dir=self.video_dir,
+                record_type=row.record_type,
+                chunk_index=row.chunk_index,
+                trip_index=row.trip_index,
+                status=row.status,
+                composed_bytes=composed,
+                merged_bytes=merged_bytes,
+                base=self.check_disk,
+            )
+            saved = reasons.get(row.key, {})
+            saved_reason = saved.get("reason", "") if isinstance(saved, dict) else ""
+
             if active_key and row.key == active_key and st:
                 phase = st.get("phase") or row.status
                 row.status = phase
@@ -346,6 +599,15 @@ class Dashboard:
                     stalled=stalled,
                     is_active=True,
                 )
+                live_reason = (st.get("reason") or "").strip()
+                if live_reason:
+                    row.reason = live_reason
+                elif stalled:
+                    row.reason = "ffmpeg завис (нет прогресса)"
+                elif row.status in ("compose", "upload", "import"):
+                    row.reason = "—"
+                else:
+                    row.reason = saved_reason or "—"
                 if st.get("youtube_url"):
                     row.youtube_url = st["youtube_url"]
                 composed = _compose_bytes(
@@ -353,16 +615,20 @@ class Dashboard:
                 )
                 if phase == "done":
                     row.disk = "pruned" if "merged" not in row.disk else row.disk
+                    row.reason = "—"
                 elif phase in ("compose", "upload", "stall") and composed > 0:
                     row.disk = _fmt_gb(composed)
                 continue
 
             if row.status == "done":
                 row.progress = "done"
+                row.reason = "—"
             elif row.status == "fail":
                 row.progress = "fail"
+                row.reason = saved_reason or "ошибка"
             else:
                 row.progress = "—"
+                row.reason = saved_reason or "—"
 
     def render(self) -> None:
         if not self.enabled or self._tty is None:
@@ -418,7 +684,9 @@ class Dashboard:
                         row.status,
                         row.progress,
                         row.disk,
+                        row.local_path,
                         yt,
+                        row.reason,
                     ),
                     _COL_WIDTHS,
                 )

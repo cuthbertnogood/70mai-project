@@ -726,6 +726,9 @@ def main() -> int:
             check_disk=Path("."),
             min_free_gb=args.min_free_gb,
             enabled=not args.no_dashboard and not args.dry_run,
+            source=source,
+            types=args.types,
+            state_on_sd=state_on_sd,
         )
         dashboard.start()
         dashboard.render()

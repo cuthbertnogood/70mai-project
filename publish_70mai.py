@@ -667,7 +667,7 @@ def publish_and_upload_trips(
     With a pipeline, the upload of trip N runs in the background while trip N+1
     composes — wall time becomes max(encode, upload) instead of the sum.
     """
-    from autopilot_dashboard import write_status
+    from autopilot_dashboard import clear_trip_reason, write_status
 
     chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
     chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -738,6 +738,12 @@ def publish_and_upload_trips(
                 video_dir=video_dir,
                 prune_merged=prune_merged,
             )
+            clear_trip_reason(
+                temp_dir,
+                record_type=record_type,
+                chunk_index=chunk.index,
+                trip_index=trip_idx,
+            )
             write_status(
                 temp_dir,
                 record_type=record_type,
@@ -745,20 +751,46 @@ def publish_and_upload_trips(
                 trip_index=trip_idx,
                 phase="compose",
                 detail=format_duration(trip.duration_sec),
+                reason="",
             )
-            run_compose_2cam(
-                video_dir,
-                part_path,
-                wall_start=trip.start,
-                duration=trip.duration_sec,
-                audio_source=audio_source,
-                telemetry=telemetry,
-                gps_dir=gps_dir,
-                telemetry_map_size=telemetry_map_size,
-                record_type=record_type,
-                dry_run=False,
-                **profile_args,
-            )
+            try:
+                run_compose_2cam(
+                    video_dir,
+                    part_path,
+                    wall_start=trip.start,
+                    duration=trip.duration_sec,
+                    audio_source=audio_source,
+                    telemetry=telemetry,
+                    gps_dir=gps_dir,
+                    telemetry_map_size=telemetry_map_size,
+                    record_type=record_type,
+                    dry_run=False,
+                    **profile_args,
+                )
+            except subprocess.CalledProcessError as exc:
+                reason = f"ffmpeg exit {exc.returncode}"
+                write_status(
+                    temp_dir,
+                    record_type=record_type,
+                    chunk_index=chunk.index,
+                    trip_index=trip_idx,
+                    phase="fail",
+                    detail=reason,
+                    reason=reason,
+                )
+                raise
+            except RuntimeError as exc:
+                reason = str(exc)[:120]
+                write_status(
+                    temp_dir,
+                    record_type=record_type,
+                    chunk_index=chunk.index,
+                    trip_index=trip_idx,
+                    phase="fail",
+                    detail=reason[:80],
+                    reason=reason,
+                )
+                raise
             if prune_merged == "after-compose":
                 prune_merged_for_trip(video_dir, record_type, trip.start, trip.end)
         else:
@@ -829,6 +861,7 @@ def publish_and_upload_trips(
                     trip_index=trip_idx,
                     phase="fail",
                     detail=str(exc)[:80],
+                    reason=f"upload: {str(exc)[:100]}",
                 )
                 if diag_log:
                     log(f"  Diagnostics: {diag_log}")
@@ -869,6 +902,12 @@ def publish_and_upload_trips(
                     sync_card_youtube_inventory(state, state_store, **youtube_sync)
                 summary.uploaded += 1
                 summary.freed_bytes += freed
+            clear_trip_reason(
+                temp_dir,
+                record_type=record_type,
+                chunk_index=chunk.index,
+                trip_index=trip_idx,
+            )
             write_status(
                 temp_dir,
                 record_type=record_type,
@@ -877,6 +916,7 @@ def publish_and_upload_trips(
                 phase="done",
                 detail=f"youtu.be/{video_id}",
                 youtube_url=youtube_watch_url(video_id),
+                reason="",
             )
             if prune_merged == "after-upload":
                 prune_merged_for_trip(video_dir, record_type, trip.start, trip.end)
