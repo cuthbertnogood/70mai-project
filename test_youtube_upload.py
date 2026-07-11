@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import youtube_upload
@@ -97,6 +98,53 @@ class UploadRecoveryTests(unittest.TestCase):
                         on_progress=None,
                     )
             self.assertTrue(session.exists())
+
+    def test_chunk_put_declares_mp4_content_type(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "trip.mp4"
+            video.write_bytes(b"video")
+            session = root / "trip.upload.json"
+            seen_headers = {}
+
+            def request(_session, method, _url, **kwargs):
+                if method == "POST":
+                    return SimpleNamespace(
+                        status_code=200,
+                        headers={"Location": "https://upload.invalid/session"},
+                        text="",
+                    )
+                seen_headers.update(kwargs["headers"])
+                list(kwargs["data"])
+                return SimpleNamespace(
+                    status_code=201,
+                    headers={},
+                    text="",
+                    json=lambda: {"id": "video-id"},
+                )
+
+            with (
+                patch.object(youtube_upload, "_authorized_session", return_value=object()),
+                patch.object(youtube_upload, "_request_with_retries", side_effect=request),
+            ):
+                result = youtube_upload._upload_video_inner(
+                    video,
+                    title="test",
+                    description="",
+                    tags=None,
+                    privacy="private",
+                    category_id="22",
+                    credentials_path=root / "credentials.json",
+                    token_path=root / "token.json",
+                    session_path=session,
+                    resume=False,
+                    diag=None,
+                    on_progress=None,
+                )
+
+            self.assertEqual(result, "video-id")
+            self.assertEqual(seen_headers["Content-Type"], "video/mp4")
+            self.assertEqual(seen_headers["Content-Length"], "5")
 
 
 class UploadHealthTests(unittest.TestCase):

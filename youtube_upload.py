@@ -616,6 +616,7 @@ def _upload_video_inner(
                 )
             headers = {
                 "Content-Length": str(chunk_len),
+                "Content-Type": "video/mp4",
                 "Content-Range": f"bytes {offset}-{end}/{size}",
             }
             put_start = offset
