@@ -863,7 +863,7 @@ After YouTube upload, merged source MP4s in `video/Output/` can be deleted (raw 
 | *(default)* | Dry-run: list files and total size |
 | `--apply` | Delete matched files |
 | `--source` | SD mount (default: auto-detect `/Volumes/Untitled`) |
-| `--types` | Record types (default: `Normal Event`) |
+| `--types` | Record types (default: `Normal Event Parking`) |
 
 ```bash
 # Preview (~GB to free)

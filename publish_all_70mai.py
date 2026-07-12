@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Autopilot: SD card → import → compose 2-cam → YouTube → delete local MP4.
 
-Default types: Normal (trips) + Event (all events → one 2-cam YouTube video).
+Default types: Normal (trips) + Event + Parking (each Event/Parking → one 2-cam YouTube video).
 
 Run outside Cursor — one command after inserting the dashcam SD card:
 
@@ -59,7 +59,7 @@ def close_log_tee() -> None:
         _log_sink = None
 
 DEFAULT_SOURCE = Path("/Volumes/Untitled")
-DEFAULT_TYPES = ["Normal", "Event"]
+DEFAULT_TYPES = ["Normal", "Event", "Parking"]
 DEFAULT_VIDEO_DIR = Path("video/Output")
 DEFAULT_TEMP_DIR = Path("video/Output/.publish_tmp")
 DEFAULT_LOG = DEFAULT_TEMP_DIR / "publish_all.log"
@@ -544,7 +544,7 @@ def main() -> int:
         default=DEFAULT_TYPES,
         choices=["Normal", "Event", "Parking"],
         metavar="TYPE",
-        help="Record types to process (default: Normal Event — Event/Parking = one merged YouTube video each)",
+        help="Record types to process (default: Normal Event Parking — Event/Parking = one merged YouTube video each)",
     )
     parser.add_argument("--title", default="", help="YouTube base title (auto from SD date)")
     parser.add_argument("--video-dir", type=Path, default=DEFAULT_VIDEO_DIR)
@@ -650,7 +650,7 @@ def main() -> int:
         auth_on_sd = not args.no_auth_on_sd
         log(
             f"Autopilot: types={', '.join(args.types)} "
-            "(Event = merge all → one YouTube upload)"
+            "(Event/Parking = one merged YouTube video each)"
         )
         try:
             creds, token = AuthStore.ensure_ready(
@@ -685,7 +685,7 @@ def main() -> int:
         if pending == 0:
             if storage_summary is not None:
                 log(f"Card storage: {storage_summary}")
-            log("All trips/events already uploaded — nothing to do.")
+            log("All trips/events/parking already uploaded — nothing to do.")
             return 0
 
         import_store = None
