@@ -332,12 +332,24 @@ class MergeReporter:
         session_start: datetime | None = None,
     ) -> None:
         with self._lock:
+            prev = self._copy
+            started = str(prev.get("started") or "")
+            # New file or freshly activated → reset timer.
+            if active and (
+                not started
+                or file != str(prev.get("file") or "")
+                or not prev.get("active")
+            ):
+                started = datetime.now().isoformat(timespec="seconds")
+            if not active:
+                started = ""
             self._copy = {
                 "active": active,
                 "file": file,
                 "chunk": chunk,
                 "clip": clip,
                 "detail": detail,
+                "started": started,
             }
             if stage_ahead:
                 self._stage_ahead = stage_ahead
@@ -359,6 +371,16 @@ class MergeReporter:
         session_start: datetime | None = None,
     ) -> None:
         with self._lock:
+            prev = self._merge
+            started = str(prev.get("started") or "")
+            if active and (
+                not started
+                or file != str(prev.get("file") or "")
+                or not prev.get("active")
+            ):
+                started = datetime.now().isoformat(timespec="seconds")
+            if not active:
+                started = ""
             self._merge = {
                 "active": active,
                 "file": file,
@@ -366,6 +388,7 @@ class MergeReporter:
                 "clip": "",
                 "detail": detail,
                 "elapsed": elapsed,
+                "started": started,
             }
             if file:
                 self._current_name = file if active else ""
@@ -456,6 +479,7 @@ class MergeReporter:
                 "clip": "",
                 "detail": "concat from SSD",
                 "elapsed": "",
+                "started": datetime.now().isoformat(timespec="seconds"),
             }
             self.publish_status()
 
@@ -487,6 +511,7 @@ class MergeReporter:
                 "clip": "",
                 "detail": "idle",
                 "elapsed": "",
+                "started": "",
             }
             self._session_start = None
             self._summary(force=True)

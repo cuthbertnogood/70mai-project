@@ -482,7 +482,8 @@ _COL_HEADERS = ("№", "Поездка", "Длит", "Этап", "Размер",
 _STATUS_LEGEND = (
     "№ = видео N из M (очередь на YouTube)  |  ► = сейчас в работе",
     "Этап: ожидание → импорт N% → сборка N/M · N% → ↑ N/M · N% → ✓",
-    "Импорт: [copy] SD→SSD и [merge] concat идут параллельно (строки под «сейчас»)",
+    "Импорт: [copy] SD→SSD ∥ [merge] concat; ⏱ = сколько уже идёт текущий файл",
+    "процессы: pid + время жизни OS-процесса (autopilot/import/compose/upload/ffmpeg)",
     "Размер = MP4 на диске (— после upload; один temp-путь на chunk/trip)",
 )
 
@@ -641,6 +642,162 @@ def _short_reason(reason: str) -> str:
     return text[:80]
 
 
+def _human_etime_seconds(sec: int) -> str:
+    sec = max(0, int(sec))
+    days, rem = divmod(sec, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h {minutes:02d}m"
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _parse_ps_etime(etime: str) -> int:
+    """Parse macOS/Linux ``ps etime`` ([[dd-]hh:]mm:ss) → seconds."""
+    etime = etime.strip()
+    if not etime:
+        return 0
+    days = 0
+    rest = etime
+    if "-" in etime:
+        day_s, rest = etime.split("-", 1)
+        try:
+            days = int(day_s)
+        except ValueError:
+            days = 0
+    parts = rest.split(":")
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return 0
+    if len(nums) == 3:
+        h, m, s = nums
+    elif len(nums) == 2:
+        h, m, s = 0, nums[0], nums[1]
+    elif len(nums) == 1:
+        h, m, s = 0, 0, nums[0]
+    else:
+        return 0
+    return days * 86400 + h * 3600 + m * 60 + s
+
+
+_PROC_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("watchdog", re.compile(r"watch_publish_all_70mai", re.I)),
+    ("autopilot", re.compile(r"publish_all_70mai\.py", re.I)),
+    ("import", re.compile(r"import_70mai\.py", re.I)),
+    ("compose", re.compile(r"compose_(?:70mai|2cam_70mai)\.py", re.I)),
+    ("upload", re.compile(r"publish_70mai\.py", re.I)),
+    ("ffmpeg", re.compile(r"(?:^|[/\s])ffmpeg(?:\s|$)", re.I)),
+)
+
+
+def _classify_proc(cmd: str) -> tuple[str, str] | None:
+    """Return (role, short_tip) or None if not a pipeline process."""
+    if "autopilot_dashboard" in cmd:
+        return None
+    if "Cursor Helper" in cmd or "extension-host" in cmd:
+        return None
+    for role, pat in _PROC_RULES:
+        if not pat.search(cmd):
+            continue
+        m = re.search(
+            r"(import_70mai\.py|publish_all_70mai\.py|publish_70mai\.py|"
+            r"compose_[^\s]+\.py|watch_publish_all_70mai\.sh|ffmpeg)",
+            cmd,
+        )
+        tip = m.group(1) if m else role
+        if role == "ffmpeg":
+            if "concat" in cmd:
+                tip = "ffmpeg concat"
+            elif "-i" in cmd:
+                tip = "ffmpeg encode"
+        return role, tip
+    return None
+
+
+@dataclass(frozen=True)
+class PipelineProc:
+    pid: int
+    etime_sec: int
+    role: str
+    tip: str
+
+
+def list_pipeline_processes() -> list[PipelineProc]:
+    """Live OS processes related to autopilot (pid, runtime, role)."""
+    try:
+        out = subprocess.check_output(
+            ["ps", "ax", "-o", "pid=,etime=,command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    found: list[PipelineProc] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^(\d+)\s+(\S+)\s+(.*)$", line)
+        if not m:
+            continue
+        classified = _classify_proc(m.group(3))
+        if not classified:
+            continue
+        role, tip = classified
+        found.append(
+            PipelineProc(
+                pid=int(m.group(1)),
+                etime_sec=_parse_ps_etime(m.group(2)),
+                role=role,
+                tip=tip,
+            )
+        )
+    order = {
+        "autopilot": 0,
+        "import": 1,
+        "compose": 2,
+        "upload": 3,
+        "ffmpeg": 4,
+        "watchdog": 5,
+    }
+    found.sort(key=lambda p: (order.get(p.role, 9), -p.etime_sec, p.pid))
+    return found
+
+
+def _format_pipeline_processes(procs: list[PipelineProc], *, limit: int = 8) -> list[str]:
+    if not procs:
+        return ["  процессы: нет (автопилот не запущен?)"]
+    lines = ["  процессы:"]
+    for p in procs[:limit]:
+        lines.append(
+            f"    pid {p.pid:<6}  {_human_etime_seconds(p.etime_sec):>8}  "
+            f"{p.role:<9}  {p.tip}"
+        )
+    if len(procs) > limit:
+        lines.append(f"    … ещё {len(procs) - limit}")
+    return lines
+
+
+def _status_age_line(st: dict | None) -> str | None:
+    if not st:
+        return None
+    raw = st.get("ts")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        t0 = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    sec = max(0, int((datetime.now() - t0).total_seconds()))
+    phase = str(st.get("phase") or "?")
+    return f"  status.json: phase={phase}  обновлён {_human_etime_seconds(sec)} назад"
+
+
 def _format_import_conveyors(st: dict) -> list[str]:
     """Extra dashboard lines for dual [copy]/∥[merge] import pipeline."""
     lines: list[str] = []
@@ -651,6 +808,18 @@ def _format_import_conveyors(st: dict) -> list[str]:
     copy = conveyors.get("copy") if isinstance(conveyors.get("copy"), dict) else {}
     merge = conveyors.get("merge") if isinstance(conveyors.get("merge"), dict) else {}
 
+    def _age(info: dict) -> str:
+        started = str(info.get("started") or "").strip()
+        if not started:
+            return ""
+        try:
+            t0 = datetime.fromisoformat(started)
+            return _human_etime_seconds(
+                max(0, int((datetime.now() - t0).total_seconds()))
+            )
+        except ValueError:
+            return ""
+
     def _one(tag: str, info: dict) -> str | None:
         if not info:
             return None
@@ -660,7 +829,7 @@ def _format_import_conveyors(st: dict) -> list[str]:
         file_name = str(info.get("file") or "").strip()
         clip = str(info.get("clip") or "").strip()
         detail = str(info.get("detail") or "").strip()
-        elapsed = str(info.get("elapsed") or "").strip()
+        elapsed = str(info.get("elapsed") or "").strip() or _age(info)
         parts = [f"  {mark} [{tag}]"]
         if chunk:
             parts.append(chunk)
@@ -669,7 +838,7 @@ def _format_import_conveyors(st: dict) -> list[str]:
         if clip:
             parts.append(f"clip {clip}")
         if elapsed:
-            parts.append(elapsed)
+            parts.append(f"⏱ {elapsed}")
         if detail:
             parts.append(detail)
         if not active and not file_name and not detail:
@@ -685,7 +854,6 @@ def _format_import_conveyors(st: dict) -> list[str]:
     if merge_line:
         lines.append(merge_line)
     return lines
-
 
 def _stage_label(
     status: str,
@@ -1225,6 +1393,13 @@ class Dashboard:
             for cl in _format_import_conveyors(st):
                 for hl in _wrap_line(cl, term_cols):
                     lines.append(hl)
+        age = _status_age_line(st)
+        if age:
+            for hl in _wrap_line(age, term_cols):
+                lines.append(hl)
+        for pl in _format_pipeline_processes(list_pipeline_processes()):
+            for hl in _wrap_line(pl, term_cols):
+                lines.append(hl)
         for hl in _wrap_line(disk_line, term_cols):
             lines.append(hl)
         lines.append("")
