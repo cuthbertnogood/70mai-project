@@ -22,21 +22,26 @@ flowchart LR
 
 ## Что происходит по шагам
 
-### 1. Import — склейка с флешки
+### 1. Import — два конвейера параллельно
 
-Короткие клипы (~1 мин) с SD (`Normal` / `Event` / `Parking`, Front и Back) читаются с карты (обычно `/Volumes/Untitled`).
-
-Внутри одного чанка:
+Короткие клипы (~1 мин) с SD (`Normal` / `Event` / `Parking`, Front и Back).
 
 ```mermaid
-flowchart LR
-  A["Клипы на SD"] --> B["Копия на SSD<br/>пачками stage_batch_clips"]
-  B --> C["ffmpeg concat<br/>-c copy"]
-  C --> D["Готовый файл<br/>~chunk_clips минут"]
-  D --> E["Удалить<br/>минутные копии"]
+flowchart TB
+  SD["SD-карта"] --> COPY["Конвейер 1: [copy]<br/>SD → SSD"]
+  COPY --> Q["Очередь на SSD<br/>готовые чанки"]
+  Q --> MERGE["Конвейер 2: [merge]<br/>ffmpeg concat -c copy"]
+  MERGE --> OUT["video/Output/<br/>~10 мин файлы"]
+  MERGE --> DEL["Удалить минутные<br/>копии со SSD"]
+  COPY -.->|пока merge идёт| COPY
 ```
 
-На выходе: файлы вида `NO_…_F.mp4` / `…_B.mp4` в `video/Output/`.
+- **[copy]** копирует следующий чанк с флешки на SSD (вперёд до `prefetch_batches` чанков).
+- **[merge]** как только на SSD набрался полный чанк (`chunk_clips`), склеивает **с диска**, не читая SD.
+- Пока идёт склейка, copy уже тянет следующий чанк — поэтому не «сначала всё скопировать, потом всё склеить», а **overlap**.
+
+В логе ищите строки:
+`[copy] START … SD→SSD` → `[copy] DONE … queued for [merge]` → `[merge] START … enough clips on SSD` → `[merge] DONE`.
 
 ### 2. Compose — вертикальное видео
 
@@ -86,8 +91,8 @@ scripts/setup-venv.sh          # первый раз
 ```mermaid
 flowchart TB
   CFG["Правите 70mai_runtime.json"] --> Q{Когда подхватит?}
-  Q -->|stage_batch_clips, retries, prefetch| M["Сразу — следующий merge"]
-  Q -->|chunk_clips, probe_workers| G["Со следующей группы камеры"]
+  Q -->|stage_batch_clips, retries| M["Сразу — следующий copy/merge"]
+  Q -->|chunk_clips, prefetch_batches| G["Со следующей группы камеры"]
   Q -->|profile, min_free_gb, prune_merged| P["Перед следующим publish"]
   Q -->|chunk_minutes, merge_workers, gap| R["Нужен новый import / рестарт"]
 ```
