@@ -1286,7 +1286,10 @@ def main() -> None:
         "--profile",
         choices=sorted(PROFILES),
         default=DEFAULT_PROFILE,
-        help=f"Encoding profile (default: {DEFAULT_PROFILE} — hw encode, 6.5 Mbps, 1206px, 25fps)",
+        help=(
+            f"Encoding profile (default: {DEFAULT_PROFILE} — "
+            "hw encode, 5.0 Mbps, 1080px, 25fps)"
+        ),
     )
     parser.add_argument(
         "--hw-decode",

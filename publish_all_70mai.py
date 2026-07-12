@@ -916,59 +916,84 @@ def main() -> int:
                 retry_delay = float(
                     ap.get("import_merge_retry_delay_sec") or IMPORT_MERGE_RETRY_DELAY_SEC
                 )
-                import_cmd = [
-                    python,
-                    "import_70mai.py",
-                    "--source",
-                    str(source),
-                    "--types",
-                    ",".join(args.types),
-                    "--output",
-                    str(args.video_dir),
-                    "--gap-seconds",
-                    str(imp.get("gap_seconds") or args.session_gap),
-                    "--chunk-minutes",
-                    str(imp.get("chunk_minutes") or IMPORT_CHUNK_MINUTES),
-                    "--chunk-clips",
-                    str(int(imp.get("chunk_clips") or 10)),
-                    "--stage-batch-clips",
-                    str(int(imp.get("stage_batch_clips") or 10)),
-                    "--merge-workers",
-                    str(int(imp.get("merge_workers") or 1)),
-                ]
-                if state_on_sd:
-                    import_cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
-                import_cmd.extend(["--status-dir", str(args.temp_dir)])
-                from autopilot_dashboard import write_import_status
-
-                write_import_status(
-                    args.temp_dir,
-                    record_type=args.types[0] if args.types else "Normal",
-                    percent=0.0,
-                    detail="starting",
-                )
-                dashboard.render()
-                ec = 0
-                for import_attempt in range(1, retry_max + 1):
-                    # Re-read tunables between retries (edit JSON without full restart).
-                    log_config_if_changed(log)
-                    ec = run_step(
-                        import_cmd,
-                        log_path=args.log,
-                        dry_run=args.dry_run,
+                # Import only types that still have pending uploads — avoids
+                # re-merging already-published Event/Parking mega-files.
+                import_types: list[str] = []
+                for rt in args.types:
+                    rt_store = StateStore(
+                        source, args.temp_dir, rt, state_on_sd=state_on_sd
                     )
-                    if ec == 0:
-                        break
-                    if import_attempt < retry_max:
-                        log(
-                            f"Import had merge failure(s) — auto-retry "
-                            f"{import_attempt + 1}/{retry_max} "
-                            f"in {retry_delay}s…"
+                    rt_state = rt_store.load(resume=True, quiet=True)
+                    _, _, _, _, rt_pending = pending_trips(
+                        source,
+                        [rt],
+                        rt_state,
+                        ffprobe=ffprobe or "ffprobe",
+                        chunk_minutes=args.chunk_minutes,
+                        session_gap=args.session_gap,
+                    )
+                    if rt_pending > 0:
+                        import_types.append(rt)
+                    else:
+                        log(f"{rt}: all uploaded, skipping import")
+                if not import_types:
+                    log("Import: nothing pending — skip import step")
+                else:
+                    import_cmd = [
+                        python,
+                        "import_70mai.py",
+                        "--source",
+                        str(source),
+                        "--types",
+                        ",".join(import_types),
+                        "--output",
+                        str(args.video_dir),
+                        "--gap-seconds",
+                        str(imp.get("gap_seconds") or args.session_gap),
+                        "--chunk-minutes",
+                        str(imp.get("chunk_minutes") or IMPORT_CHUNK_MINUTES),
+                        "--chunk-clips",
+                        str(int(imp.get("chunk_clips") or 10)),
+                        "--stage-batch-clips",
+                        str(int(imp.get("stage_batch_clips") or 10)),
+                        "--merge-workers",
+                        str(int(imp.get("merge_workers") or 1)),
+                    ]
+                    if state_on_sd:
+                        import_cmd.extend(
+                            ["--state-on-sd", "--skip-inventory-refresh"]
                         )
-                        time.sleep(retry_delay)
-                if ec != 0:
-                    log(f"Import failed (exit {ec}) — see {args.log}")
-                    return ec
+                    import_cmd.extend(["--status-dir", str(args.temp_dir)])
+                    from autopilot_dashboard import write_import_status
+
+                    write_import_status(
+                        args.temp_dir,
+                        record_type=import_types[0],
+                        percent=0.0,
+                        detail="starting",
+                    )
+                    dashboard.render()
+                    ec = 0
+                    for import_attempt in range(1, retry_max + 1):
+                        # Re-read tunables between retries (edit JSON without full restart).
+                        log_config_if_changed(log)
+                        ec = run_step(
+                            import_cmd,
+                            log_path=args.log,
+                            dry_run=args.dry_run,
+                        )
+                        if ec == 0:
+                            break
+                        if import_attempt < retry_max:
+                            log(
+                                f"Import had merge failure(s) — auto-retry "
+                                f"{import_attempt + 1}/{retry_max} "
+                                f"in {retry_delay}s…"
+                            )
+                            time.sleep(retry_delay)
+                    if ec != 0:
+                        log(f"Import failed (exit {ec}) — see {args.log}")
+                        return ec
 
             for record_type in args.types:
                 type_store = StateStore(

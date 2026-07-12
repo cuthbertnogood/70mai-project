@@ -50,7 +50,13 @@ SKIP_BATCH_LOG = 5  # batch "skip (exists)" lines in log files
 MERGE_MAX_ATTEMPTS = 3
 MERGE_RETRY_DELAY_SEC = 3.0
 MIN_MERGE_BYTES = 10_000
-MERGE_DURATION_TOLERANCE = 0.85  # merged file must be >= 85% of source clips sum
+# Accept truncated-but-usable merges (kill/restart mid-concat) instead of
+# wiping and re-copying from SD. 0.75 ≈ still playable for dashcam chunks.
+MERGE_DURATION_TOLERANCE = 0.75
+# Soft floor: keep file if ≥ this fraction of expected duration AND size looks
+# non-trivial relative to duration (avoids tiny stubs).
+MERGE_DURATION_SOFT_TOLERANCE = 0.70
+MERGE_BYTES_PER_SEC_FLOOR = 50_000  # ~0.4 Mbps — below this, treat as corrupt stub
 MERGE_WORKERS = 1  # default 1: USB/SD seeks worse with parallel concat
 MERGE_HEARTBEAT_SEC = 30.0  # log while ffmpeg concat is silent
 PREFETCH_BLOCK = 4 * 1024 * 1024  # sequential read block for page-cache warmup
@@ -1234,20 +1240,38 @@ def is_valid_merge_output(
     ffprobe: str,
     expected_duration_sec: float,
 ) -> bool:
-    """True when output exists, is non-trivial size, and ffprobe duration looks sane."""
+    """True when output exists, is non-trivial size, and ffprobe duration looks sane.
+
+    Interrupted merges (kill mid-concat) often land at 70–85% of expected
+    duration with a sane file size — keep them instead of re-staging from SD.
+    """
     if not path.is_file():
         return False
     try:
-        if path.stat().st_size < MIN_MERGE_BYTES:
-            return False
+        size = path.stat().st_size
     except OSError:
+        return False
+    if size < MIN_MERGE_BYTES:
         return False
     duration = probe_duration_safe(path, ffprobe)
     if duration is None or duration < 0.5:
         return False
-    if expected_duration_sec > 0 and duration < expected_duration_sec * MERGE_DURATION_TOLERANCE:
-        return False
-    return True
+    if expected_duration_sec <= 0:
+        return True
+    ratio = duration / expected_duration_sec
+    if ratio >= MERGE_DURATION_TOLERANCE:
+        return True
+    # Soft accept: mostly complete + bitrate floor (not a tiny stub).
+    if (
+        ratio >= MERGE_DURATION_SOFT_TOLERANCE
+        and size >= duration * MERGE_BYTES_PER_SEC_FLOOR
+    ):
+        log(
+            f"  accept near-complete merge ({ratio:.0%} of expected "
+            f"{expected_duration_sec:.0f}s, {size / 1_000_000:.0f} MB): {path.name}"
+        )
+        return True
+    return False
 
 
 def _ffmpeg_merge_error(result: subprocess.CompletedProcess[str]) -> str:

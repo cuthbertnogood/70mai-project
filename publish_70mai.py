@@ -1234,8 +1234,8 @@ def main() -> None:
     ns = argparse.Namespace(
         profile=args.profile,
         hw=args.hw,
-        hw_quality=65,
-        width=1206,
+        hw_quality=50,  # balanced defaults; apply_profile overwrites
+        width=1080,
         crf=20,
         preset="medium",
         fps=25,
@@ -1250,6 +1250,13 @@ def main() -> None:
         ns.use_vt_scale = not args.no_vt_scale
     if args.codec:
         ns.codec = args.codec
+
+    profile_name = getattr(args, "profile", None) or "balanced"
+    log(
+        f"Compose profile: {profile_name} "
+        f"(width={ns.width}, bitrate={ns.hw_quality * 100}k, "
+        f"hw_decode={ns.hw_decode})"
+    )
 
     profile_args = dict(
         width=ns.width,

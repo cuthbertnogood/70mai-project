@@ -45,11 +45,15 @@ flowchart TB
 
 ### 2. Compose — вертикальное видео
 
-Front сверху, Back снизу → один ролик на поездку/чанк (профиль из конфига, по умолчанию `balanced`).
+Front сверху, Back снизу → один ролик на поездку/чанк (профиль из конфига, по умолчанию `balanced`: 1080px / 5000k).
+
+Короткие Normal-поездки (≤45 мин, несколько 10‑мин чанков) сначала **lossless pre-concat** в один файл на камеру, затем тот же 2-input `vstack`, что и Parking — без тяжёлого multi-input `filter_complex`.
 
 ### 3. Upload — YouTube
 
 Ролик уходит на канал (по умолчанию private). Размер кусков для загрузки задаёт `publish_chunk_minutes`.
+
+Autopilot **importирует только типы с pending upload** (уже залитые Event/Parking не трогает).
 
 ### 4. Очистка Mac
 
@@ -115,6 +119,7 @@ flowchart TB
 |----------|---------|
 | Что на карте | `python3 import_70mai.py --scan` |
 | Только план | `./scripts/publish_all_70mai.sh --dry-run` |
+| Отметить залитое | `python3 publish_70mai.py --types Parking --mark-uploaded 1:1:VIDEO_ID --state-on-sd --resume` |
 | Лог автопилота | `tail -f video/Output/.publish_tmp/publish_all.log` |
 | Лог watchdog | `tail -f video/Output/.publish_tmp/publish_all_watchdog.log` |
 | Отчёт по карте | `./scripts/generate_card_reports.sh` |

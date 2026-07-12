@@ -24,8 +24,99 @@ from compose_70mai import (
     run_ffmpeg_with_progress,
     scan_merged_clips,
 )
-from import_70mai import format_duration, parse_datetime
+from import_70mai import escape_concat_path, format_duration, parse_datetime
 from telemetry_overlay import render_telemetry_video, resolve_gps_sources, telemetry_requested
+
+# Short Normal trips: lossless pre-concat per camera → 2-input vstack (Parking-like).
+PRECONCAT_MAX_DURATION_SEC = 45 * 60
+
+
+def _preconcat_segments(
+    segments: list[Segment],
+    *,
+    work_dir: Path,
+    camera: str,
+) -> list[Segment]:
+    """Lossless-concat multi-chunk segments into one file (ss=0) for a lighter filter graph."""
+    if len(segments) <= 1:
+        return segments
+
+    parts_dir = work_dir / f"parts_{camera}"
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    part_paths: list[Path] = []
+    for i, seg in enumerate(segments):
+        part = parts_dir / f"{i:03d}.mp4"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{seg.ss:.3f}",
+            "-t",
+            f"{seg.duration:.3f}",
+            "-i",
+            str(seg.path),
+            "-c",
+            "copy",
+            str(part),
+        ]
+        subprocess.run(cmd, check=True)
+        part_paths.append(part)
+
+    list_path = work_dir / f"concat_{camera}.txt"
+    with list_path.open("w", encoding="utf-8") as fh:
+        for part in part_paths:
+            fh.write(f"file '{escape_concat_path(part)}'\n")
+
+    out = work_dir / f"{camera}_preconcat.mp4"
+    concat_cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_path),
+        "-c",
+        "copy",
+        str(out),
+    ]
+    subprocess.run(concat_cmd, check=True)
+    total = sum(seg.duration for seg in segments)
+    log(
+        f"Pre-concat {camera}: {len(segments)} segments → {out.name} "
+        f"({format_duration(total)})"
+    )
+    return [Segment(path=out, ss=0.0, duration=total)]
+
+
+def maybe_preconcat_short_trip(
+    front_segments: list[Segment],
+    back_segments: list[Segment],
+    *,
+    duration: float,
+    work_dir: Path,
+) -> tuple[list[Segment], list[Segment]]:
+    """For short multi-segment trips, collapse to 1+1 inputs before encode."""
+    if duration > PRECONCAT_MAX_DURATION_SEC:
+        return front_segments, back_segments
+    if len(front_segments) <= 1 and len(back_segments) <= 1:
+        return front_segments, back_segments
+    log(
+        f"Fast path: pre-concat segments "
+        f"(duration {format_duration(duration)} ≤ "
+        f"{format_duration(PRECONCAT_MAX_DURATION_SEC)})"
+    )
+    return (
+        _preconcat_segments(front_segments, work_dir=work_dir, camera="Front"),
+        _preconcat_segments(back_segments, work_dir=work_dir, camera="Back"),
+    )
 
 
 def build_filter_2cam(
@@ -222,6 +313,20 @@ def run_compose_2cam(
         back_clips, wall_start, duration, sync_offset_back
     )
 
+    preconcat_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if (
+        duration <= PRECONCAT_MAX_DURATION_SEC
+        and (len(front_segments) > 1 or len(back_segments) > 1)
+        and not dry_run
+    ):
+        preconcat_tmp = tempfile.TemporaryDirectory(prefix="70mai_preconcat_")
+        front_segments, back_segments = maybe_preconcat_short_trip(
+            front_segments,
+            back_segments,
+            duration=duration,
+            work_dir=Path(preconcat_tmp.name),
+        )
+
     log(f"Wall range:    {wall_start:%Y-%m-%d %H:%M:%S} -> {wall_end:%Y-%m-%d %H:%M:%S}")
     log(f"Duration:      {duration:g} sec ({format_duration(duration)})")
     log(f"Front offset:  {sync_offset_front:+g} sec")
@@ -314,6 +419,8 @@ def run_compose_2cam(
             log(f"\nDone: {output}")
             if telemetry_tmp is not None:
                 telemetry_tmp.cleanup()
+            if preconcat_tmp is not None:
+                preconcat_tmp.cleanup()
             return
         except subprocess.CalledProcessError as exc:
             last_error = exc
@@ -326,6 +433,8 @@ def run_compose_2cam(
 
     if telemetry_tmp is not None:
         telemetry_tmp.cleanup()
+    if preconcat_tmp is not None:
+        preconcat_tmp.cleanup()
 
     if last_error is not None:
         raise last_error
