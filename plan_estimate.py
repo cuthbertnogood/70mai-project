@@ -678,6 +678,15 @@ def main() -> None:
     if not args.no_write:
         append_plan_file(args.plan_file, md)
         log(f"Plan appended: {args.plan_file}")
+        cache = save_autopilot_plan(
+            Path("video/Output/.publish_tmp"),
+            source=args.source,
+            types=args.types,
+            chunks=chunks,
+            chunk_minutes=args.chunk_minutes,
+            session_gap=args.session_gap,
+        )
+        log(f"Dashboard plan cache: {cache}")
 
 
 if __name__ == "__main__":
