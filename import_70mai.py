@@ -1348,11 +1348,27 @@ def start_prefetch(paths: list[Path]) -> threading.Thread:
     return thread
 
 
-def _same_filesystem(a: Path, b: Path) -> bool:
+def _stat_dev(path: Path) -> int | None:
+    """st_dev for path, or nearest existing parent (output files may not exist yet)."""
+    cur = path
     try:
-        return a.resolve().stat().st_dev == b.resolve().stat().st_dev
+        cur = path.resolve()
     except OSError:
+        cur = path
+    for candidate in (cur, *cur.parents):
+        try:
+            return candidate.stat().st_dev
+        except OSError:
+            continue
+    return None
+
+
+def _same_filesystem(a: Path, b: Path) -> bool:
+    da = _stat_dev(a)
+    db = _stat_dev(b)
+    if da is None or db is None:
         return False
+    return da == db
 
 
 def _foreign_fs_sources(sources: list[Path], dest: Path) -> list[Path]:

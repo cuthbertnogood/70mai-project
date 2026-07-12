@@ -18,6 +18,18 @@ class StagingGuardTests(unittest.TestCase):
             self.assertTrue(_same_filesystem(src, dest))
             self.assertEqual(_foreign_fs_sources([src], dest), [])
 
+    def test_same_fs_when_dest_does_not_exist_yet(self) -> None:
+        """Concat guard must not treat missing output.mp4 as foreign FS."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage = root / ".merge_stage" / "chunk"
+            stage.mkdir(parents=True)
+            src = stage / "clip.MP4"
+            src.write_bytes(b"y")
+            dest = root / "NO_out.mp4"  # not created yet
+            self.assertTrue(_same_filesystem(src, dest))
+            self.assertEqual(_foreign_fs_sources([src], dest), [])
+
     def test_concat_refuses_foreign_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "out.mp4"
