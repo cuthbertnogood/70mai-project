@@ -638,6 +638,11 @@ def main() -> int:
 
         if last_sd_source is not None and source != last_sd_source:
             log(f"SD card changed: {last_sd_source} → {source}")
+            from publish_state import read_card_id
+
+            card_id = read_card_id(source)
+            if card_id:
+                log(f"  SD card ID: {card_id[:8]}…")
         last_sd_source = source
 
         ffprobe = shutil.which("ffprobe")
@@ -664,6 +669,12 @@ def main() -> int:
         except (FileNotFoundError, RuntimeError) as exc:
             log(str(exc))
             return 1
+
+        if state_on_sd and not args.dry_run:
+            from card_identity import refresh_card_identity
+            from publish_state import read_card_id
+
+            refresh_card_identity(source, read_card_id(source))
 
         import_label = "_".join(args.types)
         trips, chunks, dur_by_type, total, pending = aggregate_plan(

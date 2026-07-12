@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import uuid
 from pathlib import Path
 
 from import_70mai import log
@@ -19,6 +20,7 @@ SD_ROOT_DIR = ".70mai"
 SD_PUBLISH_DIR = ".70mai/publish"
 SD_AUTH_DIR = ".70mai/auth"
 SD_SESSIONS_SUBDIR = "sessions"
+CARD_ID_FILENAME = "card_id.txt"
 CREDENTIALS_FILENAME = "youtube_credentials.json"
 TOKEN_FILENAME = "youtube_token.json"
 LOCAL_CONFIG_DIR = Path.home() / ".config/70mai"
@@ -28,6 +30,11 @@ SD_README = """70mai portable data (auto-generated, refreshed on every run)
 
 auth/youtube_credentials.json      — OAuth Desktop client from Google Cloud (~1 KB)
 auth/youtube_token.json            — YouTube refresh token after browser login (~1 KB)
+
+card_id.txt                        — unique ID for this physical SD card (do not copy between cards)
+
+card_meta.json                     — clip inventory fingerprint (detect new footage on same card)
+card_label.txt                     — optional human name for this card (one line, e.g. "Dashcam A")
 
 publish/publish_Normal.state.json  — uploaded trips + YouTube video_id / URL
 publish/publish_Event.state.json   — same for the merged Event video
@@ -195,6 +202,104 @@ def sd_is_new_card(source: Path) -> bool:
     return not sd_root_dir(source).is_dir()
 
 
+def sd_card_id_path(source: Path) -> Path:
+    return sd_root_dir(source) / CARD_ID_FILENAME
+
+
+def read_card_id(source: Path) -> str | None:
+    path = sd_card_id_path(source)
+    if not path.is_file():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
+def _sd_has_uploaded_trips(source: Path) -> bool:
+    pub = sd_publish_dir(source)
+    if not pub.is_dir():
+        return False
+    for path in pub.glob("publish_*.state.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if any(p.get("uploaded") for p in data.get("trip_parts", [])):
+            return True
+    return False
+
+
+def get_or_create_card_id(source: Path, *, create: bool = True) -> str | None:
+    """Stable UUID per physical SD card (stored in /.70mai/card_id.txt)."""
+    existing = read_card_id(source)
+    if existing:
+        return existing
+    if not create:
+        return None
+    card_id = str(uuid.uuid4())
+    try:
+        sd_root_dir(source).mkdir(parents=True, exist_ok=True)
+        ensure_sd_readme(source)
+        sd_card_id_path(source).write_text(card_id + "\n", encoding="utf-8")
+        if _sd_has_uploaded_trips(source):
+            log(
+                f"Assigned SD card ID to existing uploads: {card_id[:8]}… "
+                f"({sd_card_id_path(source)})"
+            )
+        else:
+            log(f"Assigned SD card ID: {card_id[:8]}… ({sd_card_id_path(source)})")
+    except OSError as exc:
+        log(f"Warning: cannot write card ID on SD ({exc})")
+        return None
+    return card_id
+
+
+def empty_publish_state(
+    source: Path,
+    label: str,
+    *,
+    card_id: str | None = None,
+) -> dict:
+    state: dict = {
+        "source": str(source.resolve()),
+        "types": [label],
+        "trip_parts": [],
+        "parts": [],
+    }
+    if card_id:
+        state["card_id"] = card_id
+    return state
+
+
+def _local_state_from_other_card(
+    local: dict,
+    current_card_id: str | None,
+    sd: dict | None = None,
+) -> bool:
+    """True when host cache belongs to a different SD card."""
+    if not local.get("trip_parts"):
+        return False
+    if not current_card_id:
+        return False
+    local_id = local.get("card_id")
+    if local_id == current_card_id:
+        return False
+    if local_id is not None:
+        return True
+    # Legacy local cache without card_id
+    if sd and any(p.get("uploaded") for p in sd.get("trip_parts", [])):
+        return False
+    return True
+
+
+def _strip_local_uploads(local: dict) -> dict:
+    """Drop uploaded-trip cache from another card; keep other host fields."""
+    cleaned = dict(local)
+    cleaned["trip_parts"] = []
+    cleaned["parts"] = []
+    cleaned.pop("playlist_id", None)
+    return cleaned
+
+
 def _credentials_search_paths() -> list[Path]:
     paths = [local_credentials_path(), *PROJECT_CREDENTIALS_CANDIDATES]
     seen: set[str] = set()
@@ -305,6 +410,8 @@ class AuthStore:
                     f"Cannot create SD publish dir: {sd_publish_dir(source)} ({exc})"
                 ) from exc
 
+            card_id = get_or_create_card_id(source)
+
             for record_type in types:
                 sd_path = sd_state_path(source, record_type)
                 if dry_run:
@@ -316,12 +423,9 @@ class AuthStore:
                 if not sd_path.is_file():
                     save_state_file(
                         sd_path,
-                        {
-                            "source": str(source.resolve()),
-                            "types": [record_type],
-                            "trip_parts": [],
-                            "parts": [],
-                        },
+                        empty_publish_state(
+                            source, record_type, card_id=card_id
+                        ),
                     )
                     log(f"Initialized publish state on SD: {sd_path}")
 
@@ -396,13 +500,33 @@ class StateStore:
     def load(self, *, resume: bool, quiet: bool = False) -> dict:
         if not resume:
             return {}
+
         local = load_state_file(self.local_path)
         if not self.state_on_sd or self.sd_path is None:
             if local and not quiet:
                 log(f"State (local): {self.local_path}")
             return local
 
+        current_card_id = get_or_create_card_id(self.source)
         sd = load_state_file(self.sd_path)
+        if sd and current_card_id and not sd.get("card_id"):
+            sd["card_id"] = current_card_id
+
+        if _local_state_from_other_card(local, current_card_id, sd):
+            if not quiet:
+                old = local.get("card_id")
+                old_label = f"{old[:8]}…" if old else "none"
+                cur_label = f"{current_card_id[:8]}…" if current_card_id else "?"
+                log(
+                    f"Local publish cache is from another SD card ({old_label}) — "
+                    f"ignoring {len(local.get('trip_parts', []))} uploaded trip(s) "
+                    f"for card {cur_label}"
+                )
+            local = _strip_local_uploads(local)
+            if current_card_id:
+                local["card_id"] = current_card_id
+            save_state_file(self.local_path, local)
+
         if sd and local:
             merged = merge_publish_state(sd, local)
             if not quiet:
@@ -422,13 +546,22 @@ class StateStore:
             if not quiet:
                 log(f"Migrating local state → SD: {self.sd_path}")
         else:
-            return {}
+            merged = empty_publish_state(
+                self.source, self.label, card_id=current_card_id
+            )
+            return merged
 
+        if current_card_id:
+            merged["card_id"] = current_card_id
         return merged
 
     def save(self, data: dict) -> None:
         from datetime import datetime, timezone
 
+        if self.state_on_sd:
+            card_id = get_or_create_card_id(self.source)
+            if card_id:
+                data["card_id"] = card_id
         data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         save_state_file(self.local_path, data)
         if not self.state_on_sd or self.sd_path is None:

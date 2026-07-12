@@ -707,6 +707,9 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 /Volumes/Untitled/.70mai/
   auth/youtube_credentials.json   # OAuth Desktop client (~1 KB)
   auth/youtube_token.json         # refresh token after browser login (~1 KB)
+  card_id.txt                      — unique ID for this physical SD card
+  card_meta.json                   — clip fingerprint (same card vs new footage)
+  card_label.txt                   — optional human label (one line)
   import/card_inventory.json      # trips, dates, merge plan, per-clip YouTube links
   import/CARD_SUMMARY.txt         # what's on the card (human-readable)
   import/CARD_STORAGE.txt         # MP4 sizes by type (Normal/Event/Parking) + disk free
@@ -721,6 +724,10 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 `README.txt` on the card is **auto-refreshed on every run**: whenever the template in the project changes (new behavior, new files in `.70mai/`), the next import/publish/autopilot run rewrites it on the card, so the card always carries current instructions.
 
 On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh --wait` — no separate OAuth setup if the token on the card is still valid. Merged clips on host (`video/Output/`) are rebuilt by import if missing.
+
+**New / different SD card:** each card gets a unique `/.70mai/card_id.txt`. Host cache in `video/Output/.publish_tmp/publish_*.state.json` is **not** merged if its `card_id` differs from the inserted card — YouTube links from the old card will not appear on the dashboard. Do not copy `card_id.txt`, `card_meta.json`, or `publish/*.state.json` between cards (OAuth copy is OK). Optional `card_label.txt` (one line, e.g. `Dashcam A`) shows in logs.
+
+**Same card again with new recordings:** `card_id` stays the same; `card_meta.json` compares clip counts. Autopilot logs e.g. `New footage on same card: Normal +12 clips` and uploads **only pending** trips — already-uploaded trips stay skipped. Re-insert the card after a week of driving: only new trips go to YouTube.
 
 **Brand-new SD card (never uploaded):** autopilot detects missing `.70mai/`, creates the folder tree on the card, copies `youtube_credentials.json` from `~/.config/70mai/` (or `youtube_credentials.json` in the project root), opens the browser for YouTube OAuth if there is no token yet, initializes empty `publish_*.state.json`, then runs import → compose → upload. One-time host setup: save the Google Cloud Desktop OAuth JSON to `~/.config/70mai/youtube_credentials.json`.
 
