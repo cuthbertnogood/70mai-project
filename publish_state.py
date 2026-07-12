@@ -36,6 +36,8 @@ publish/sessions/*.upload.json     — resume interrupted uploads (~few KB each)
 import/card_inventory.json         — trips, date range, per-clip YouTube links
 import/import_*.state.json         — per-file merge status (host video/Output/)
 import/CARD_SUMMARY.txt            — human-readable card overview + YouTube URLs
+import/CARD_STORAGE.txt            — video/non-video sizes on card + disk free
+import/card_storage.json           — same (machine-readable)
 
 Insert this SD card on any Mac with the project + run:
   ./scripts/publish_all_70mai.sh --wait

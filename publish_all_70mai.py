@@ -466,6 +466,7 @@ def print_plan_summary(
     pending: int,
     state_paths: list[Path],
     inventory_summary: Path | None = None,
+    storage_summary: Path | None = None,
     check_disk: Path = Path("."),
     min_free_gb: float = 20.0,
     video_dir: Path = Path("video/Output"),
@@ -483,6 +484,8 @@ def print_plan_summary(
         log(f"  State: {names}")
     if inventory_summary is not None:
         log(f"  Card inventory: {inventory_summary}")
+    if storage_summary is not None:
+        log(f"  Card storage:   {storage_summary}")
     log(f"  Trips/events: {total_trips} total, {pending} pending upload")
     log(
         f"  Disk free: {free:.1f} GB "
@@ -672,7 +675,16 @@ def main() -> int:
             chunk_minutes=args.chunk_minutes,
             session_gap=args.session_gap,
         )
+
+        storage_summary = None
+        if state_on_sd and not args.dry_run:
+            from card_storage_stats import write_card_storage_stats
+
+            storage_summary = write_card_storage_stats(source)
+
         if pending == 0:
+            if storage_summary is not None:
+                log(f"Card storage: {storage_summary}")
             log("All trips/events already uploaded — nothing to do.")
             return 0
 
@@ -713,6 +725,7 @@ def main() -> int:
             pending=pending,
             state_paths=state_paths,
             inventory_summary=inventory_summary,
+            storage_summary=storage_summary,
             check_disk=Path("."),
             min_free_gb=args.min_free_gb,
             video_dir=args.video_dir,
