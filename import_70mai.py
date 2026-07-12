@@ -1330,6 +1330,15 @@ def _same_filesystem(a: Path, b: Path) -> bool:
         return False
 
 
+def _foreign_fs_sources(sources: list[Path], dest: Path) -> list[Path]:
+    """Sources that live on a different filesystem than dest (e.g. SD vs SSD)."""
+    bad: list[Path] = []
+    for src in sources:
+        if not _same_filesystem(src, dest):
+            bad.append(src)
+    return bad
+
+
 def stage_clips_locally(
     chunk: list[Clip],
     stage_dir: Path,
@@ -1388,6 +1397,17 @@ def _ffmpeg_concat_copy(
     heartbeat: str | None = None,
     on_heartbeat: Callable[[float], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    # Never stream concat off the SD when output is on another disk — that path
+    # is 5–10× slower and thrashing. Staging must copy SD→SSD first.
+    foreign = _foreign_fs_sources(sources, output_path)
+    if foreign:
+        sample = ", ".join(str(p) for p in foreign[:2])
+        more = f" (+{len(foreign) - 2} more)" if len(foreign) > 2 else ""
+        raise RuntimeError(
+            f"refusing ffmpeg concat from foreign filesystem "
+            f"({len(foreign)} clip(s) not on output disk). "
+            f"Stage SD→SSD first. Example: {sample}{more}"
+        )
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".txt",
@@ -1586,13 +1606,19 @@ def merge_clips(
                     f"({last_error or 'previous attempt failed'})"
                 )
                 time.sleep(retry_delay)
-            result = _ffmpeg_concat_copy(
-                ffmpeg,
-                sources,
-                dest,
-                heartbeat=label,
-                on_heartbeat=on_hb,
-            )
+            try:
+                result = _ffmpeg_concat_copy(
+                    ffmpeg,
+                    sources,
+                    dest,
+                    heartbeat=label,
+                    on_heartbeat=on_hb,
+                )
+            except RuntimeError as exc:
+                last_error = str(exc)
+                log(f"       ERROR: {last_error}")
+                dest.unlink(missing_ok=True)
+                return last_error
             if result.returncode != 0:
                 last_error = _ffmpeg_merge_error(result)
                 log(f"       ERROR: {last_error}")

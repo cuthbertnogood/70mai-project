@@ -181,9 +181,49 @@ def _orphan_ffmpeg_pids() -> list[int]:
             continue
         pid_s, cmd = parts
         lower = cmd.lower()
-        if "ffmpeg" not in lower:
+        if "python" in lower:
             continue
-        if ".publish_tmp" not in cmd and "/chunk_" not in cmd:
+        tokens = lower.split()
+        if not tokens or not (tokens[0] == "ffmpeg" or tokens[0].endswith("/ffmpeg")):
+            continue
+        # Compose trips under .publish_tmp, or import merges into video/Output.
+        if (
+            ".publish_tmp" not in cmd
+            and "/chunk_" not in cmd
+            and "video/Output" not in cmd
+            and ".merge_stage" not in cmd
+        ):
+            continue
+        try:
+            pids.append(int(pid_s))
+        except ValueError:
+            continue
+    return pids
+
+
+def _import_pids() -> list[int]:
+    """PIDs running import_70mai.py (orphans survive --force-restart of parent)."""
+    try:
+        out = subprocess.run(
+            ["ps", "ax", "-o", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    pids: list[int] = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid_s, cmd = parts
+        if "import_70mai" not in cmd:
+            continue
+        if "python" not in cmd.lower():
             continue
         try:
             pids.append(int(pid_s))
@@ -196,6 +236,13 @@ def kill_orphan_ffmpeg() -> None:
     pids = _orphan_ffmpeg_pids()
     if pids:
         _kill_pids(pids, label="orphan ffmpeg")
+
+
+def kill_orphan_import() -> None:
+    pids = _import_pids()
+    if pids:
+        _kill_pids(pids, label="import_70mai.py")
+    kill_orphan_ffmpeg()
 
 
 def _kill_pids(pids: list[int], *, label: str) -> None:
@@ -228,6 +275,7 @@ def ensure_publish_slot(
 ) -> None:
     """Wait for publish_70mai.py to finish; kill stale/orphan processes on timeout or --force-restart."""
     if force:
+        kill_orphan_import()
         kill_orphan_ffmpeg()
         pids = _publish_pids()
         if pids:
@@ -265,12 +313,17 @@ def acquire_lock(*, force: bool = False) -> None:
             if force:
                 log(f"Force-restart: killing autopilot pid {pid} (lock {LOCK_FILE})")
                 _kill_pids([pid], label="publish_all_70mai.py")
+                # Child import_70mai often survives parent kill — clear it too.
+                kill_orphan_import()
             else:
                 log(f"ERROR: another publish_all may be running (lock {LOCK_FILE}, pid {pid})")
                 raise SystemExit(1)
         elif pid and not _pid_alive(pid):
             log(f"Removing stale autopilot lock (pid {pid} not running)")
         LOCK_FILE.unlink(missing_ok=True)
+    if force:
+        # Even without a lock holder, wipe leftover import from a previous crash.
+        kill_orphan_import()
     LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
 

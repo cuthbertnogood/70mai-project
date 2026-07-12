@@ -87,7 +87,7 @@ kill_stale_ffmpeg() {
   local pid cmd killed=0
   while read -r pid cmd; do
     [[ -z "$pid" ]] && continue
-    if [[ "$cmd" == *ffmpeg* ]] && [[ "$cmd" == *".publish_tmp"* || "$cmd" == *"/chunk_"*"/trip_"* ]]; then
+    if [[ "$cmd" == *ffmpeg* ]] && [[ "$cmd" == *".publish_tmp"* || "$cmd" == *"/chunk_"*"/trip_"* || "$cmd" == *"video/Output"* || "$cmd" == *".merge_stage"* ]]; then
       log "Killing stale ffmpeg pid $pid"
       kill -TERM "$pid" 2>/dev/null || true
       killed=1
@@ -97,8 +97,30 @@ kill_stale_ffmpeg() {
     sleep 2
     while read -r pid cmd; do
       [[ -z "$pid" ]] && continue
-      if [[ "$cmd" == *ffmpeg* ]] && [[ "$cmd" == *".publish_tmp"* || "$cmd" == *"/chunk_"*"/trip_"* ]]; then
+      if [[ "$cmd" == *ffmpeg* ]] && [[ "$cmd" == *".publish_tmp"* || "$cmd" == *"/chunk_"*"/trip_"* || "$cmd" == *"video/Output"* || "$cmd" == *".merge_stage"* ]]; then
         pid_alive "$pid" && log "SIGKILL stale ffmpeg pid $pid" && kill -KILL "$pid" 2>/dev/null || true
+      fi
+    done < <(ps ax -o pid=,command= 2>/dev/null || true)
+  fi
+}
+
+kill_stale_import_70mai() {
+  local pid cmd killed=0
+  while read -r pid cmd; do
+    [[ -z "$pid" ]] && continue
+    if [[ "$cmd" == *import_70mai* ]] && [[ "$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')" == *python* ]]; then
+      log "Killing stale import_70mai.py pid $pid"
+      kill -TERM "$pid" 2>/dev/null || true
+      killed=1
+    fi
+  done < <(ps ax -o pid=,command= 2>/dev/null || true)
+  if [[ "$killed" == "1" ]]; then
+    sleep 3
+    while read -r pid cmd; do
+      [[ -z "$pid" ]] && continue
+      if [[ "$cmd" == *import_70mai* ]] && pid_alive "$pid"; then
+        log "SIGKILL import_70mai.py pid $pid"
+        kill -KILL "$pid" 2>/dev/null || true
       fi
     done < <(ps ax -o pid=,command= 2>/dev/null || true)
   fi
@@ -121,6 +143,7 @@ kill_stale_autopilot_holder() {
 
 cleanup_before_autopilot() {
   kill_stale_ffmpeg
+  kill_stale_import_70mai
   kill_stale_publish_70mai
   kill_stale_autopilot_holder
 }
