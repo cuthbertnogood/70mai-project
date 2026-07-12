@@ -280,6 +280,36 @@ def get_trip_state(
     return None
 
 
+def get_chunk_state(
+    state: dict, record_type: str, chunk_index: int
+) -> dict | None:
+    for part in state.get("parts", []):
+        if part.get("record_type") == record_type and part.get("index") == chunk_index:
+            return part
+    return None
+
+
+def is_row_uploaded(
+    state: dict, record_type: str, chunk_index: int, trip_index: int
+) -> bool:
+    """True when trip or whole chunk (Event/Parking) is uploaded."""
+    return trip_uploaded(
+        state, record_type, chunk_index, trip_index
+    ) or chunk_uploaded(state, record_type, chunk_index)
+
+
+def get_upload_entry(
+    state: dict, record_type: str, chunk_index: int, trip_index: int
+) -> dict | None:
+    trip = get_trip_state(state, record_type, chunk_index, trip_index)
+    if trip and trip.get("uploaded"):
+        return trip
+    chunk = get_chunk_state(state, record_type, chunk_index)
+    if chunk and chunk.get("uploaded"):
+        return chunk
+    return trip or chunk
+
+
 def parse_mark_uploaded(value: str) -> tuple[int, int, str]:
     parts = value.split(":", 2)
     if len(parts) != 3:
