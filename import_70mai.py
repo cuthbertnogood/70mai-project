@@ -266,30 +266,114 @@ class MergeReporter:
         self._current_record_type = ""
         self._current_name = ""
         self._session_start: datetime | None = None
+        self._copy: dict = {
+            "active": False,
+            "file": "",
+            "chunk": "",
+            "clip": "",
+            "detail": "",
+        }
+        self._merge: dict = {
+            "active": False,
+            "file": "",
+            "chunk": "",
+            "clip": "",
+            "detail": "",
+            "elapsed": "",
+        }
+        self._stage_ahead = ""
 
     def publish_status(self, *, elapsed_note: str = "") -> None:
-        """Push merge progress into autopilot_status.json for the live dashboard."""
+        """Push copy∥merge progress into autopilot_status.json for the live dashboard."""
         if not self.status_dir:
             return
-        current = min(self.done + (1 if self._current_name else 0), self.total)
-        pct = 100.0 * current / self.total
-        detail = f"{current}/{self.total}"
-        if self._current_name:
-            detail += f" · {self._current_name}"
-        if elapsed_note:
-            detail += f" · {elapsed_note}"
+        with self._lock:
+            merge_busy = bool(self._current_name) or bool(self._merge.get("active"))
+            current = min(self.done + (1 if merge_busy else 0), self.total)
+            pct = 100.0 * current / self.total
+            detail = f"{current}/{self.total}"
+            if self._current_name:
+                detail += f" · {self._current_name}"
+            if elapsed_note:
+                detail += f" · {elapsed_note}"
+                self._merge["elapsed"] = elapsed_note
+            conveyors = {
+                "copy": dict(self._copy),
+                "merge": dict(self._merge),
+            }
+            stage_ahead = self._stage_ahead
+            record_type = self._current_record_type or "Normal"
+            session_start = self._session_start
         try:
             from autopilot_dashboard import write_import_status
 
             write_import_status(
                 self.status_dir,
-                record_type=self._current_record_type or "Normal",
+                record_type=record_type,
                 percent=pct,
                 detail=detail,
-                session_start=self._session_start,
+                session_start=session_start,
+                conveyors=conveyors,
+                stage_ahead=stage_ahead or None,
             )
         except Exception:
             pass
+
+    def update_copy(
+        self,
+        *,
+        active: bool,
+        file: str = "",
+        chunk: str = "",
+        clip: str = "",
+        detail: str = "",
+        stage_ahead: str = "",
+        record_type: str = "",
+        session_start: datetime | None = None,
+    ) -> None:
+        with self._lock:
+            self._copy = {
+                "active": active,
+                "file": file,
+                "chunk": chunk,
+                "clip": clip,
+                "detail": detail,
+            }
+            if stage_ahead:
+                self._stage_ahead = stage_ahead
+            if record_type:
+                self._current_record_type = record_type
+            if session_start is not None:
+                self._session_start = session_start
+            self.publish_status()
+
+    def update_merge(
+        self,
+        *,
+        active: bool,
+        file: str = "",
+        chunk: str = "",
+        detail: str = "",
+        elapsed: str = "",
+        record_type: str = "",
+        session_start: datetime | None = None,
+    ) -> None:
+        with self._lock:
+            self._merge = {
+                "active": active,
+                "file": file,
+                "chunk": chunk,
+                "clip": "",
+                "detail": detail,
+                "elapsed": elapsed,
+            }
+            if file:
+                self._current_name = file if active else ""
+            if record_type:
+                self._current_record_type = record_type
+            if session_start is not None:
+                self._session_start = session_start
+            self.publish_status(elapsed_note=elapsed)
 
     def _flush_skips(self, *, force: bool = False) -> None:
         if self._skip_batch == 0:
@@ -365,6 +449,14 @@ class MergeReporter:
             self._current_name = output_name
             self._current_record_type = chunk[0].record_type if chunk else ""
             self._session_start = chunk[0].timestamp if chunk else None
+            self._merge = {
+                "active": True,
+                "file": output_name,
+                "chunk": f"{self.done + 1}/{self.total}",
+                "clip": "",
+                "detail": "concat from SSD",
+                "elapsed": "",
+            }
             self.publish_status()
 
     def finish_merge(
@@ -388,6 +480,14 @@ class MergeReporter:
                 self.merged += 1
                 log(f"       ✓ {size_mb:.0f} MB in {format_duration(elapsed)}")
             self._current_name = ""
+            self._merge = {
+                "active": False,
+                "file": "",
+                "chunk": f"{self.done}/{self.total}",
+                "clip": "",
+                "detail": "idle",
+                "elapsed": "",
+            }
             self._session_start = None
             self._summary(force=True)
             self.publish_status()
@@ -1236,6 +1336,7 @@ def stage_clips_locally(
     *,
     index_offset: int = 0,
     total_hint: int | None = None,
+    on_clip: Callable[[int, int, str], None] | None = None,
 ) -> list[Path]:
     """Copy chunk clips from SD to local stage_dir (sequential, one USB stream)."""
     stage_dir.mkdir(parents=True, exist_ok=True)
@@ -1245,6 +1346,11 @@ def stage_clips_locally(
         idx = index_offset + i + 1
         dest = stage_dir / clip.path.name
         src_size = clip.path.stat().st_size
+        if on_clip is not None:
+            try:
+                on_clip(idx, total, clip.path.name)
+            except Exception:
+                pass
         if dest.is_file() and dest.stat().st_size == src_size:
             log(f"  [copy] {idx}/{total}: {clip.path.name} (already on SSD)")
             staged.append(dest)
@@ -1758,14 +1864,27 @@ def _run_copy_merge_pipeline(
 
     def copy_worker() -> None:
         nonlocal staged_inflight
-        for session_idx, chunk, out_path in merge_jobs:
+        for job_i, (session_idx, chunk, out_path) in enumerate(merge_jobs, start=1):
             log_config_if_changed(log)
             live = import_settings()
             expected = sum(c.duration or 0.0 for c in chunk)
+            chunk_label = f"{job_i}/{len(merge_jobs)}"
+            sess_start = chunk[0].timestamp if chunk else None
+            rec_type = chunk[0].record_type if chunk else record_type
+
             if out_path.exists() and is_valid_merge_output(
                 out_path, ffprobe, expected
             ):
                 log(f"  [copy] skip (output exists): {out_path.name}")
+                if merge_reporter is not None:
+                    merge_reporter.update_copy(
+                        active=False,
+                        file=out_path.name,
+                        chunk=chunk_label,
+                        detail="skip exists",
+                        record_type=rec_type,
+                        session_start=sess_start,
+                    )
                 ready.put(("exists", session_idx, chunk, out_path, None, None))
                 continue
 
@@ -1777,6 +1896,15 @@ def _run_copy_merge_pipeline(
                     f"  [copy] not needed (already local FS): {out_path.name} "
                     f"— hand off {len(chunk)} clips to [merge]"
                 )
+                if merge_reporter is not None:
+                    merge_reporter.update_copy(
+                        active=False,
+                        file=out_path.name,
+                        chunk=chunk_label,
+                        detail="local FS",
+                        record_type=rec_type,
+                        session_start=sess_start,
+                    )
                 ready.put(
                     (
                         "ready",
@@ -1799,10 +1927,40 @@ def _run_copy_merge_pipeline(
                 total_mb = sum(c.path.stat().st_size for c in chunk) / 1_000_000
             except OSError:
                 pass
+            ahead_label = f"{inflight}/{ahead}"
             log(
                 f"  [copy] START {out_path.name}: {len(chunk)} clips "
-                f"(~{total_mb:.0f} MB) SD→SSD (staged ahead {inflight}/{ahead})"
+                f"(~{total_mb:.0f} MB) SD→SSD (staged ahead {ahead_label})"
             )
+            if merge_reporter is not None:
+                merge_reporter.update_copy(
+                    active=True,
+                    file=out_path.name,
+                    chunk=chunk_label,
+                    clip=f"0/{len(chunk)}",
+                    detail="SD→SSD",
+                    stage_ahead=ahead_label,
+                    record_type=rec_type,
+                    session_start=sess_start,
+                )
+
+            def _on_clip(idx: int, total: int, name: str, _out=out_path.name) -> None:
+                if merge_reporter is None:
+                    return
+                # Avoid flooding status JSON on huge Event/Parking merges.
+                if total > 20 and idx not in (1, total) and idx % 5 != 0:
+                    return
+                merge_reporter.update_copy(
+                    active=True,
+                    file=_out,
+                    chunk=chunk_label,
+                    clip=f"{idx}/{total}",
+                    detail=f"SD→SSD {name}",
+                    stage_ahead=ahead_label,
+                    record_type=rec_type,
+                    session_start=sess_start,
+                )
+
             t0 = time.monotonic()
             try:
                 batch = max(1, int(live.get("stage_batch_clips") or len(chunk) or 1))
@@ -1815,6 +1973,7 @@ def _run_copy_merge_pipeline(
                             stage_dir,
                             index_offset=offset,
                             total_hint=len(chunk),
+                            on_clip=_on_clip,
                         )
                     )
                 elapsed = time.monotonic() - t0
@@ -1822,13 +1981,40 @@ def _run_copy_merge_pipeline(
                     f"  [copy] DONE  {out_path.name}: {len(staged)} clips on SSD "
                     f"in {format_duration(elapsed)} — queued for [merge]"
                 )
+                if merge_reporter is not None:
+                    merge_reporter.update_copy(
+                        active=False,
+                        file=out_path.name,
+                        chunk=chunk_label,
+                        clip=f"{len(chunk)}/{len(chunk)}",
+                        detail="queued for merge",
+                        stage_ahead=ahead_label,
+                        record_type=rec_type,
+                        session_start=sess_start,
+                    )
                 ready.put(("ready", session_idx, chunk, out_path, stage_dir, staged))
             except OSError as exc:
                 log(f"  [copy] FAIL  {out_path.name}: {exc}")
+                if merge_reporter is not None:
+                    merge_reporter.update_copy(
+                        active=False,
+                        file=out_path.name,
+                        chunk=chunk_label,
+                        detail=f"FAIL {exc}",
+                        stage_ahead=ahead_label,
+                        record_type=rec_type,
+                        session_start=sess_start,
+                    )
                 ready.put(("copy_fail", session_idx, chunk, out_path, None, str(exc)))
                 with inflight_lock:
                     staged_inflight = max(0, staged_inflight - 1)
                 ahead_sem.release()
+        if merge_reporter is not None:
+            merge_reporter.update_copy(
+                active=False,
+                detail="copy queue empty",
+                stage_ahead=f"0/{ahead}",
+            )
         ready.put(stop)
 
     def do_merge(item: tuple) -> str:

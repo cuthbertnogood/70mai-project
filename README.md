@@ -69,10 +69,18 @@ Front сверху, Back снизу → один ролик на поездку/
 scripts/setup-venv.sh          # первый раз
 ./scripts/publish_all_70mai.sh --wait
 ./scripts/watch_publish_all_70mai.sh --wait   # то же + авто-рестарт
-./scripts/autopilot_dashboard.sh              # прогресс в другом окне
 ```
 
 Карта уже вставлена: те же команды без `--wait`.
+
+Прогресс в другом окне:
+
+```bash
+./scripts/autopilot_dashboard.sh
+```
+
+Во время import дашборд показывает параллельно:
+`► [copy] … SD→SSD` и `► [merge] … concat` (общий `%` + текущие файлы).
 
 ---
 

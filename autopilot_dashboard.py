@@ -106,6 +106,8 @@ def write_status(
     reason: str = "",
     card_id: str | None = None,
     session_start: str | None = None,
+    conveyors: dict | None = None,
+    stage_ahead: str | None = None,
 ) -> None:
     """Atomic status update for the live dashboard (safe across processes)."""
     path = status_path(temp_dir)
@@ -126,6 +128,10 @@ def write_status(
         data["card_id"] = card_id
     if session_start:
         data["session_start"] = session_start
+    if conveyors:
+        data["conveyors"] = conveyors
+    if stage_ahead:
+        data["stage_ahead"] = stage_ahead
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -151,6 +157,8 @@ def write_import_status(
     percent: float | None = None,
     detail: str = "",
     session_start: datetime | None = None,
+    conveyors: dict | None = None,
+    stage_ahead: str | None = None,
 ) -> None:
     """Dashboard progress while import_70mai merge is running (no trip indices yet)."""
     write_status(
@@ -164,6 +172,8 @@ def write_import_status(
         session_start=(
             session_start.isoformat(timespec="seconds") if session_start else None
         ),
+        conveyors=conveyors,
+        stage_ahead=stage_ahead,
     )
 
 
@@ -471,6 +481,7 @@ _COL_HEADERS = ("№", "Поездка", "Длит", "Этап", "Размер",
 _STATUS_LEGEND = (
     "№ = видео N из M (очередь на YouTube)  |  ► = сейчас в работе",
     "Этап: ожидание → импорт N% → сборка N/M · N% → ↑ N/M · N% → ✓",
+    "Импорт: [copy] SD→SSD и [merge] concat идут параллельно (строки под «сейчас»)",
     "Размер = MP4 на диске (— после upload; один temp-путь на chunk/trip)",
 )
 
@@ -627,6 +638,52 @@ def _short_reason(reason: str) -> str:
     if text.startswith("ffmpeg"):
         return text[:80]
     return text[:80]
+
+
+def _format_import_conveyors(st: dict) -> list[str]:
+    """Extra dashboard lines for dual [copy]/∥[merge] import pipeline."""
+    lines: list[str] = []
+    conveyors = st.get("conveyors")
+    if not isinstance(conveyors, dict):
+        return lines
+    ahead = str(st.get("stage_ahead") or "").strip()
+    copy = conveyors.get("copy") if isinstance(conveyors.get("copy"), dict) else {}
+    merge = conveyors.get("merge") if isinstance(conveyors.get("merge"), dict) else {}
+
+    def _one(tag: str, info: dict) -> str | None:
+        if not info:
+            return None
+        active = bool(info.get("active"))
+        mark = "►" if active else "·"
+        chunk = str(info.get("chunk") or "").strip()
+        file_name = str(info.get("file") or "").strip()
+        clip = str(info.get("clip") or "").strip()
+        detail = str(info.get("detail") or "").strip()
+        elapsed = str(info.get("elapsed") or "").strip()
+        parts = [f"  {mark} [{tag}]"]
+        if chunk:
+            parts.append(chunk)
+        if file_name:
+            parts.append(file_name)
+        if clip:
+            parts.append(f"clip {clip}")
+        if elapsed:
+            parts.append(elapsed)
+        if detail:
+            parts.append(detail)
+        if not active and not file_name and not detail:
+            parts.append("ожидание")
+        return "  ".join(parts)
+
+    copy_line = _one("copy", copy)
+    merge_line = _one("merge", merge)
+    if copy_line:
+        if ahead:
+            copy_line += f"  (ahead {ahead})"
+        lines.append(copy_line)
+    if merge_line:
+        lines.append(merge_line)
+    return lines
 
 
 def _stage_label(
@@ -1163,6 +1220,10 @@ class Dashboard:
         lines: list[str] = []
         for hl in _wrap_line(summary, term_cols):
             lines.append(hl)
+        if st and st.get("phase") == "import":
+            for cl in _format_import_conveyors(st):
+                for hl in _wrap_line(cl, term_cols):
+                    lines.append(hl)
         for hl in _wrap_line(disk_line, term_cols):
             lines.append(hl)
         lines.append("")
