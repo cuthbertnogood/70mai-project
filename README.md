@@ -10,26 +10,26 @@
 
 ```mermaid
 flowchart LR
-  SD["SD-карта"] --> IMP["1. Import<br/>только окно ролика"]
-  IMP --> COMP["2. Compose<br/>~2ч 2-cam"]
-  COMP --> YT["3. YouTube"]
-  YT --> DEL["4. Удалить<br/>merged + MP4"]
-  DEL --> IMP
+  SD["SD"] --> COPY["1a. Copy окно<br/>SD→SSD"]
+  COPY --> MERGE["1b. Concat<br/>на SSD"]
+  MERGE --> COMP["2. Compose ~2ч"]
+  COMP --> PRUNE["3. Удалить<br/>10-мин merges"]
+  PRUNE --> YT["4. YouTube"]
+  YT --> DEL["5. Удалить 2ч MP4"]
+  DEL --> SD
 ```
 
-Один цикл = **один ролик** (~120 мин поездок, или весь Event/Parking). Всю карту сразу не импортируем.
-
-Ручной `import_70mai.py --types Normal` без `--from`/`--to` **запрещён** (нужен `--full-card` только осознанно) — иначе снова забьёт диск, как 12.07.
+Один цикл = **один ролик** (~120 мин). С SD копируется только окно этого ролика; если склейки уже на SSD — copy/import skip.
 
 ---
 
 ## Что происходит по шагам
 
-1. **Import** — только окно chunk; если `NO_`/`PA_` склейки уже на SSD покрывают окно — **skip** (без копирования с SD).
+1. **Import (SD→SSD)** — `[copy]` клипы окна на SSD → `[merge]` concat локально. Уже есть `NO_`/`PA_` на SSD → skip.
 2. **Compose** — Front↑ Back↓ → один ~2ч MP4 (`balanced`).
-3. **Prune merges** — 10‑мин исходники на SSD удаляются **сразу после compose** (`after-compose`).
-4. **Upload** — ролик на YouTube; после успеха удаляется и 2ч MP4.
-5. Следующий pending chunk.
+3. **Prune merges** — 10‑мин файлы на SSD удаляются сразу после compose.
+4. **Upload** — YouTube; затем удаляется 2ч MP4.
+5. Следующий chunk.
 
 Статус/ссылки — в `/.70mai/` на SD.
 
@@ -65,7 +65,9 @@ Compose-профиль и запас диска — флаги autopilot:
 ./scripts/publish_all_70mai.sh --profile balanced --min-free-gb 20 --chunk-minutes 120
 ```
 
-`--prune-merged after-compose` (default) — 10‑мин склейки удаляются сразу после сборки 2ч ролика; 2ч MP4 — после YouTube.
+Import staging: [`70mai_runtime.json`](70mai_runtime.json) — `stage_batch_clips`, `chunk_clips`, `prefetch_batches`.
+
+`--prune-merged after-compose` (default) — 10‑мин склейки удаляются сразу после 2ч compose; 2ч MP4 — после YouTube.
 
 ---
 

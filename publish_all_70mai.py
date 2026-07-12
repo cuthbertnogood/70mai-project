@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Autopilot: SD card → per-~2h video → YouTube → delete locals.
+"""Autopilot: per-~2h video conveyor with SD→SSD staging.
 
 For each pending chunk (~120 min of trips, or one Event/Parking mega-file):
-  1. import only that time window — **skipped** if SSD already has the merges
-  2. compose 2-cam vertical MP4 (~2h)
-  3. delete 10-min merged sources immediately (after-compose)
-  4. upload to YouTube, then delete the composed MP4
+  1. if SSD merges already cover the window → skip import
+  2. else copy only that window SD→SSD, then concat on SSD
+  3. compose 2-cam ~2h MP4; delete 10-min merges (after-compose)
+  4. upload to YouTube; delete composed MP4
 
 Run: ./scripts/publish_all_70mai.sh --wait
 """
@@ -890,6 +890,9 @@ def main() -> int:
                                 "skip import (reuse, no SD copy)"
                             )
                         else:
+                            from runtime_config import import_settings
+
+                            imp = import_settings(force=True)
                             import_cmd = [
                                 python,
                                 "import_70mai.py",
@@ -900,11 +903,17 @@ def main() -> int:
                                 "--output",
                                 str(args.video_dir),
                                 "--gap-seconds",
-                                str(args.session_gap),
+                                str(imp.get("gap_seconds") or args.session_gap),
                                 "--chunk-minutes",
-                                str(IMPORT_CHUNK_MINUTES),
+                                str(imp.get("chunk_minutes") or IMPORT_CHUNK_MINUTES),
+                                "--chunk-clips",
+                                str(int(imp.get("chunk_clips") or 10)),
+                                "--stage-batch-clips",
+                                str(int(imp.get("stage_batch_clips") or 10)),
+                                "--merge-workers",
+                                str(int(imp.get("merge_workers") or 1)),
                             ]
-                            # Event/Parking = all clips → one file; Normal = this window only.
+                            # Event/Parking = all clips → one file; Normal = this ~2h window only.
                             if record_type not in SINGLE_VIDEO_TYPES:
                                 range_end = chunk.end + timedelta(seconds=1)
                                 import_cmd.extend(
@@ -919,6 +928,10 @@ def main() -> int:
                                 import_cmd.extend(
                                     ["--state-on-sd", "--skip-inventory-refresh"]
                                 )
+                            log(
+                                "  Import: SD→SSD stage, then concat "
+                                f"(window only for {record_type})"
+                            )
                             ec = 0
                             for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
                                 ec = run_step(
