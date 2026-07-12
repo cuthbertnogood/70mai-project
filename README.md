@@ -47,7 +47,8 @@ scripts/setup-venv.sh          # первый раз
 
 Карта уже вставлена: те же команды без `--wait`.
 
-Прогресс: `./scripts/autopilot_dashboard.sh`
+Прогресс: `./scripts/autopilot_dashboard.sh` — показывает конвейер ролика:
+`[copy] SD→SSD` → `[merge] 10-мин` → `[compose] Front↑+Back↓` → `[ролик] ~2ч YouTube`.
 
 ---
 ## Первый запуск YouTube

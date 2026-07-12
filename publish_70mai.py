@@ -788,7 +788,10 @@ def publish_and_upload_trips(
                 chunk_index=chunk.index,
                 trip_index=trip_idx,
                 phase="compose",
-                detail=format_duration(trip.duration_sec),
+                detail=(
+                    f"Front↑+Back↓ → trip_{trip_idx:02d}.mp4 "
+                    f"({format_duration(trip.duration_sec)})"
+                ),
                 reason="",
             )
             try:

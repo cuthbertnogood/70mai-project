@@ -480,11 +480,13 @@ def _fmt_gb(n: int) -> str:
 _COL_HEADERS = ("№", "Поездка", "Длит", "Этап", "Размер", "YouTube")
 
 _STATUS_LEGEND = (
-    "№ = видео N из M (очередь на YouTube)  |  ► = сейчас в работе",
-    "Этап: ожидание → импорт N% → сборка N/M · N% → ↑ N/M · N% → ✓",
-    "Импорт: [copy] SD→SSD ∥ [merge] concat; MB% = сколько уже скопировано/склеено",
-    "процессы: pid + время жизни OS-процесса (autopilot/import/compose/upload/ffmpeg)",
-    "Размер = MP4 на диске (— после upload; один temp-путь на chunk/trip)",
+    "№ = ролик N из M (очередь на YouTube)  |  ► = сейчас в работе",
+    "Конвейер одного ролика (~2ч):",
+    "  1) [copy]  SD→SSD          — клипы с карты на локальный диск",
+    "  2) [merge] 10-мин файлы    — concat Front/Back по ~10 мин",
+    "  3) [compose] Front↑+Back↓  — сборка 2-cam MP4 для YouTube",
+    "  4) [ролик]  ~2ч готов      — upload → ✓ (потом prune)",
+    "процессы: pid + время жизни (autopilot/import/compose/upload/ffmpeg)",
 )
 
 
@@ -798,15 +800,32 @@ def _status_age_line(st: dict | None) -> str | None:
     return f"  status.json: phase={phase}  обновлён {_human_etime_seconds(sec)} назад"
 
 
-def _format_import_conveyors(st: dict) -> list[str]:
-    """Extra dashboard lines for dual [copy]/∥[merge] import pipeline."""
-    lines: list[str] = []
-    conveyors = st.get("conveyors")
+def _format_pipeline_block(
+    st: dict | None,
+    rows: list,
+    *,
+    temp_dir: Path | None = None,
+) -> list[str]:
+    """Show the 4-stage conveyor: copy → merge 10m → compose F+B → 2h ролик."""
+    phase = str((st or {}).get("phase") or "").strip()
+    conveyors = (st or {}).get("conveyors") if isinstance(st, dict) else None
     if not isinstance(conveyors, dict):
-        return lines
-    ahead = str(st.get("stage_ahead") or "").strip()
+        conveyors = {}
     copy = conveyors.get("copy") if isinstance(conveyors.get("copy"), dict) else {}
     merge = conveyors.get("merge") if isinstance(conveyors.get("merge"), dict) else {}
+    ahead = str((st or {}).get("stage_ahead") or "").strip()
+    detail = str((st or {}).get("detail") or "").strip()
+    pct = (st or {}).get("percent") if isinstance(st, dict) else None
+    pct_s = f"{float(pct):.0f}%" if isinstance(pct, (int, float)) else ""
+
+    active_row = next(
+        (
+            r
+            for r in rows
+            if getattr(r, "status", "") in ("compose", "upload", "import", "stall", "oauth")
+        ),
+        None,
+    )
 
     def _age(info: dict) -> str:
         started = str(info.get("started") or "").strip()
@@ -820,45 +839,124 @@ def _format_import_conveyors(st: dict) -> list[str]:
         except ValueError:
             return ""
 
-    def _one(tag: str, info: dict) -> str | None:
-        if not info:
-            return None
-        active = bool(info.get("active"))
-        mark = "►" if active else "·"
+    def _lane_detail(info: dict) -> str:
+        parts: list[str] = []
         chunk = str(info.get("chunk") or "").strip()
         file_name = str(info.get("file") or "").strip()
         clip = str(info.get("clip") or "").strip()
-        detail = str(info.get("detail") or "").strip()
+        det = str(info.get("detail") or "").strip()
         elapsed = str(info.get("elapsed") or "").strip() or _age(info)
-        parts = [f"  {mark} [{tag}]"]
         if chunk:
             parts.append(chunk)
         if file_name:
             parts.append(file_name)
         if clip:
-            parts.append(f"clip {clip}")
+            parts.append(f"клип {clip}")
         bd = info.get("bytes_done")
         bt = info.get("bytes_total")
         if isinstance(bd, (int, float)) and isinstance(bt, (int, float)) and bt > 0:
-            pct = min(100.0, 100.0 * float(bd) / float(bt))
-            parts.append(f"{bd / 1_000_000:.0f}/{bt / 1_000_000:.0f} MB ({pct:.0f}%)")
+            p = min(100.0, 100.0 * float(bd) / float(bt))
+            parts.append(f"{bd / 1_000_000:.0f}/{bt / 1_000_000:.0f} MB ({p:.0f}%)")
         if elapsed:
             parts.append(f"⏱ {elapsed}")
-        if detail:
-            parts.append(detail)
-        if not active and not file_name and not detail:
-            parts.append("ожидание")
+        if det:
+            parts.append(det)
         return "  ".join(parts)
 
-    copy_line = _one("copy", copy)
-    merge_line = _one("merge", merge)
-    if copy_line:
-        if ahead:
-            copy_line += f"  (ahead {ahead})"
-        lines.append(copy_line)
-    if merge_line:
-        lines.append(merge_line)
-    return lines
+    copy_on = bool(copy.get("active"))
+    merge_on = bool(merge.get("active"))
+    compose_on = phase == "compose" or (
+        active_row is not None and active_row.status == "compose"
+    )
+    upload_on = phase == "upload" or (
+        active_row is not None and active_row.status == "upload"
+    )
+    import_on = phase == "import" or copy_on or merge_on
+    done_on = phase == "done" or (
+        active_row is not None and active_row.status == "done"
+    )
+
+    def _mark(step_on: bool, *, done: bool = False) -> str:
+        if step_on:
+            return "►"
+        if done:
+            return "✓"
+        return "·"
+
+    copy_done = (not import_on and phase in ("compose", "upload", "done")) or (
+        bool(copy) and not copy_on and merge_on
+    )
+    merge_done = phase in ("compose", "upload", "done")
+    compose_done = phase in ("upload", "done") or (
+        active_row is not None and active_row.status == "upload"
+    )
+    video_done = done_on
+
+    copy_txt = _lane_detail(copy) if copy else ""
+    if ahead and copy_txt:
+        copy_txt += f"  (ahead {ahead})"
+    if not copy_txt and import_on:
+        copy_txt = "ожидание / SD→SSD"
+    merge_txt = _lane_detail(merge) if merge else ""
+    if not merge_txt and import_on:
+        merge_txt = "ожидание / concat ~10 мин"
+    if pct_s and import_on:
+        if merge_txt:
+            merge_txt = f"{pct_s}  {merge_txt}"
+        else:
+            merge_txt = pct_s
+
+    compose_txt = ""
+    if compose_on:
+        compose_txt = "Front↑ + Back↓ → MP4"
+        if detail:
+            compose_txt += f"  ·  {detail}"
+        if pct_s:
+            compose_txt += f"  ·  {pct_s}"
+        if active_row is not None:
+            compose_txt += f"  ·  {_trip_display(active_row)}"
+    elif compose_done:
+        compose_txt = "готово"
+
+    video_txt = ""
+    if upload_on:
+        up_pct = None
+        if active_row is not None and active_row.percent is not None:
+            up_pct = float(active_row.percent)
+        elif active_row is not None and temp_dir is not None:
+            got = _read_upload_percent(temp_dir, active_row.trip_index)
+            up_pct = float(got) if got is not None else None
+        video_txt = "заливка ~2ч ролика на YouTube"
+        if isinstance(up_pct, (int, float)):
+            video_txt = f"заливка ~2ч  ·  {float(up_pct):.0f}%"
+        elif pct_s:
+            video_txt += f"  ·  {pct_s}"
+        if active_row is not None:
+            video_txt += f"  ·  {_trip_display(active_row)}"
+    elif video_done:
+        video_txt = "✓ ролик на YouTube"
+    elif compose_done or compose_on:
+        video_txt = "ждёт готовности MP4"
+    elif import_on:
+        video_txt = "после merge + compose"
+
+    return [
+        "Конвейер ролика (~2ч):",
+        f"  {_mark(copy_on, done=copy_done)} [copy]    SD→SSD"
+        + (f"  —  {copy_txt}" if copy_txt else ""),
+        f"  {_mark(merge_on, done=merge_done)} [merge]   10-мин файлы"
+        + (f"  —  {merge_txt}" if merge_txt else ""),
+        f"  {_mark(compose_on, done=compose_done)} [compose] Front↑+Back↓"
+        + (f"  —  {compose_txt}" if compose_txt else ""),
+        f"  {_mark(upload_on or video_done, done=video_done)} [ролик]   ~2ч YouTube"
+        + (f"  —  {video_txt}" if video_txt else ""),
+    ]
+
+
+def _format_import_conveyors(st: dict) -> list[str]:
+    """Backward-compatible alias (import-only lanes). Prefer _format_pipeline_block."""
+    return _format_pipeline_block(st, [])
+
 
 def _stage_label(
     status: str,
@@ -873,7 +971,7 @@ def _stage_label(
     if overall_index is not None and overall_total:
         pos = f"{overall_index}/{overall_total} "
     if status == "done":
-        return "✓"
+        return "✓ ролик"
     if status == "oauth":
         return f"{pos}OAuth вход".strip()
     if status == "fail":
@@ -884,16 +982,16 @@ def _stage_label(
         return f"{pos}ЗАВИС".strip()
     if status == "upload":
         if percent is not None:
-            return f"{pos}↑ {percent:.0f}%".strip()
-        return f"{pos}↑ …".strip()
+            return f"{pos}↑ 2ч {percent:.0f}%".strip()
+        return f"{pos}↑ 2ч …".strip()
     if status == "compose":
         if percent is not None:
-            return f"{pos}сборка {percent:.0f}%".strip()
-        return f"{pos}сборка …".strip()
+            return f"{pos}F+B {percent:.0f}%".strip()
+        return f"{pos}F+B сборка".strip()
     if status == "import":
         if percent is not None:
-            return f"{pos}импорт {percent:.0f}%".strip()
-        return f"{pos}импорт".strip() if pos else "импорт"
+            return f"{pos}10м {percent:.0f}%".strip()
+        return f"{pos}copy/merge".strip() if pos else "copy/merge"
     if status == "pending":
         return "ожидание"
     return status
@@ -1394,10 +1492,9 @@ class Dashboard:
         lines: list[str] = []
         for hl in _wrap_line(summary, term_cols):
             lines.append(hl)
-        if st and st.get("phase") == "import":
-            for cl in _format_import_conveyors(st):
-                for hl in _wrap_line(cl, term_cols):
-                    lines.append(hl)
+        for cl in _format_pipeline_block(st, self.rows, temp_dir=self.temp_dir):
+            for hl in _wrap_line(cl, term_cols):
+                lines.append(hl)
         age = _status_age_line(st)
         if age:
             for hl in _wrap_line(age, term_cols):
