@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Autopilot: SD card → per-~2h video → YouTube → delete merged sources.
+"""Autopilot: SD card → per-~2h video → YouTube → delete locals.
 
 For each pending chunk (~120 min of trips, or one Event/Parking mega-file):
-  1. import only that time window from the SD (not the whole card)
-  2. compose 2-cam vertical MP4
-  3. upload to YouTube
-  4. delete merged/composed locals (default --prune-merged after-upload)
+  1. import only that time window — **skipped** if SSD already has the merges
+  2. compose 2-cam vertical MP4 (~2h)
+  3. delete 10-min merged sources immediately (after-compose)
+  4. upload to YouTube, then delete the composed MP4
 
-Run outside Cursor — one command after inserting the dashcam SD card:
-
-  ./scripts/publish_all_70mai.sh --wait
+Run: ./scripts/publish_all_70mai.sh --wait
 """
 
 from __future__ import annotations
@@ -375,6 +373,33 @@ def chunk_is_done(state: dict, chunk) -> bool:
     )
 
 
+def chunk_merges_ready(video_dir: Path, chunk) -> bool:
+    """True when Front+Back merged files on SSD already cover every trip in chunk.
+
+    Reuses existing NO_/PA_/EV_ merges — no SD re-copy for that window.
+    """
+    from compose_70mai import plan_segments, scan_merged_clips
+
+    record_type = chunk.record_type
+    front = scan_merged_clips(
+        video_dir, "Front", record_type=record_type, probe=False
+    )
+    back = scan_merged_clips(
+        video_dir, "Back", record_type=record_type, probe=False
+    )
+    if not front or not back:
+        return False
+    for trip in chunk.trips:
+        try:
+            fs = plan_segments(front, trip.start, trip.duration_sec, 0.0)
+            bs = plan_segments(back, trip.start, trip.duration_sec, 0.0)
+        except (ValueError, OSError, RuntimeError):
+            return False
+        if not fs or not bs:
+            return False
+    return True
+
+
 def pending_trips(
     source: Path,
     types: list[str],
@@ -593,10 +618,11 @@ def main() -> int:
     parser.add_argument(
         "--prune-merged",
         choices=("off", "after-compose", "after-upload"),
-        default="after-upload",
+        default="after-compose",
         help=(
-            "Delete merged files once used (default: after-upload — "
-            "free disk only after YouTube confirms; after-compose = sooner)"
+            "Delete 10-min merges once used in the ~2h compose "
+            "(default: after-compose — free disk before upload; "
+            "after-upload = wait until YouTube confirms)"
         ),
     )
     parser.add_argument(
@@ -858,62 +884,63 @@ def main() -> int:
                     )
 
                     if not args.skip_import:
-                        import_cmd = [
-                            python,
-                            "import_70mai.py",
-                            "--source",
-                            str(source),
-                            "--types",
-                            record_type,
-                            "--output",
-                            str(args.video_dir),
-                            "--gap-seconds",
-                            str(args.session_gap),
-                            "--chunk-minutes",
-                            str(IMPORT_CHUNK_MINUTES),
-                        ]
-                        # Event/Parking = all clips → one file; Normal = this window only.
-                        if record_type not in SINGLE_VIDEO_TYPES:
-                            # Inclusive end: last clip timestamp can equal chunk.end.
-                            range_end = chunk.end + timedelta(seconds=1)
-                            import_cmd.extend(
-                                [
-                                    "--from",
-                                    chunk.start.strftime("%Y-%m-%d %H:%M:%S"),
-                                    "--to",
-                                    range_end.strftime("%Y-%m-%d %H:%M:%S"),
-                                ]
-                            )
-                        if record_type == "Normal" and "--from" not in import_cmd:
-                            raise RuntimeError(
-                                "Internal error: Normal import missing --from/--to"
-                            )
-                        if state_on_sd:
-                            import_cmd.extend(
-                                ["--state-on-sd", "--skip-inventory-refresh"]
-                            )
-                        ec = 0
-                        for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
-                            ec = run_step(
-                                import_cmd,
-                                log_path=args.log,
-                                dry_run=args.dry_run,
-                            )
-                            if ec == 0:
-                                break
-                            if import_attempt < IMPORT_MERGE_RETRY_MAX:
-                                log(
-                                    f"Import had merge failure(s) — auto-retry "
-                                    f"{import_attempt + 1}/{IMPORT_MERGE_RETRY_MAX} "
-                                    f"in {IMPORT_MERGE_RETRY_DELAY_SEC}s…"
-                                )
-                                time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
-                        if ec != 0:
+                        if chunk_merges_ready(args.video_dir, chunk):
                             log(
-                                f"Import failed for chunk {chunk.index} "
-                                f"(exit {ec}) — see {args.log}"
+                                "  SSD merges already cover this window — "
+                                "skip import (reuse, no SD copy)"
                             )
-                            return ec
+                        else:
+                            import_cmd = [
+                                python,
+                                "import_70mai.py",
+                                "--source",
+                                str(source),
+                                "--types",
+                                record_type,
+                                "--output",
+                                str(args.video_dir),
+                                "--gap-seconds",
+                                str(args.session_gap),
+                                "--chunk-minutes",
+                                str(IMPORT_CHUNK_MINUTES),
+                            ]
+                            # Event/Parking = all clips → one file; Normal = this window only.
+                            if record_type not in SINGLE_VIDEO_TYPES:
+                                range_end = chunk.end + timedelta(seconds=1)
+                                import_cmd.extend(
+                                    [
+                                        "--from",
+                                        chunk.start.strftime("%Y-%m-%d %H:%M:%S"),
+                                        "--to",
+                                        range_end.strftime("%Y-%m-%d %H:%M:%S"),
+                                    ]
+                                )
+                            if state_on_sd:
+                                import_cmd.extend(
+                                    ["--state-on-sd", "--skip-inventory-refresh"]
+                                )
+                            ec = 0
+                            for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
+                                ec = run_step(
+                                    import_cmd,
+                                    log_path=args.log,
+                                    dry_run=args.dry_run,
+                                )
+                                if ec == 0:
+                                    break
+                                if import_attempt < IMPORT_MERGE_RETRY_MAX:
+                                    log(
+                                        f"Import had merge failure(s) — auto-retry "
+                                        f"{import_attempt + 1}/{IMPORT_MERGE_RETRY_MAX} "
+                                        f"in {IMPORT_MERGE_RETRY_DELAY_SEC}s…"
+                                    )
+                                    time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
+                            if ec != 0:
+                                log(
+                                    f"Import failed for chunk {chunk.index} "
+                                    f"(exit {ec}) — see {args.log}"
+                                )
+                                return ec
 
                     # One YouTube video ≈ this chunk (trips concat if several short ones).
                     publish_cmd = [

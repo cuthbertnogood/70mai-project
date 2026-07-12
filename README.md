@@ -25,13 +25,13 @@ flowchart LR
 
 ## Что происходит по шагам
 
-1. **Import** — concat только для окна текущего chunk (`--from`/`--to`). Event/Parking — все клипы типа → один mega-файл.
-2. **Compose** — Front↑ Back↓, `balanced` (1080 / 5000k). Короткие поездки в chunk склеиваются в один MP4.
-3. **Upload** — один ролик на YouTube (private).
-4. **Prune** — удалить merged + composed (`--prune-merged after-upload` по умолчанию). Клипы на SD не трогаем.
+1. **Import** — только окно chunk; если `NO_`/`PA_` склейки уже на SSD покрывают окно — **skip** (без копирования с SD).
+2. **Compose** — Front↑ Back↓ → один ~2ч MP4 (`balanced`).
+3. **Prune merges** — 10‑мин исходники на SSD удаляются **сразу после compose** (`after-compose`).
+4. **Upload** — ролик на YouTube; после успеха удаляется и 2ч MP4.
 5. Следующий pending chunk.
 
-Статус/ссылки пишутся в `/.70mai/` на SD.
+Статус/ссылки — в `/.70mai/` на SD.
 
 ---
 
@@ -65,7 +65,7 @@ Compose-профиль и запас диска — флаги autopilot:
 ./scripts/publish_all_70mai.sh --profile balanced --min-free-gb 20 --chunk-minutes 120
 ```
 
-`--prune-merged after-upload` (default) — исходные merged удаляются после успешной заливки ролика.
+`--prune-merged after-compose` (default) — 10‑мин склейки удаляются сразу после сборки 2ч ролика; 2ч MP4 — после YouTube.
 
 ---
 
