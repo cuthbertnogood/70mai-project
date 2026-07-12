@@ -10,42 +10,26 @@
 
 ```mermaid
 flowchart LR
-  SD["SD-карта<br/>клипы ~1 мин"] --> IMP["1. Import<br/>склейка"]
-  IMP --> MERGED["Локально<br/>~10 мин Front/Back"]
-  MERGED --> COMP["2. Compose<br/>вертикальный 2-cam"]
-  COMP --> YT["3. YouTube<br/>upload"]
-  YT --> CLEAN["4. Очистка<br/>локальных файлов"]
-  YT --> META["5. Статус на SD<br/>.70mai/"]
+  SD["SD-карта"] --> IMP["1. Import<br/>только окно ролика"]
+  IMP --> COMP["2. Compose<br/>~2ч 2-cam"]
+  COMP --> YT["3. YouTube"]
+  YT --> DEL["4. Удалить<br/>merged + MP4"]
+  DEL --> IMP
 ```
+
+Один цикл = **один ролик** (~120 мин поездок, или весь Event/Parking). Всю карту сразу не импортируем.
 
 ---
 
 ## Что происходит по шагам
 
-### 1. Import — lossless concat
+1. **Import** — concat только для окна текущего chunk (`--from`/`--to`). Event/Parking — все клипы типа → один mega-файл.
+2. **Compose** — Front↑ Back↓, `balanced` (1080 / 5000k). Короткие поездки в chunk склеиваются в один MP4.
+3. **Upload** — один ролик на YouTube (private).
+4. **Prune** — удалить merged + composed (`--prune-merged after-upload` по умолчанию). Клипы на SD не трогаем.
+5. Следующий pending chunk.
 
-Короткие клипы (~1 мин) с SD (`Normal` / `Event` / `Parking`, Front и Back).
-
-- **Normal** → сессии → чанки ~10 мин (`ffmpeg concat -c copy`).
-- **Event / Parking** → все клипы камеры в **один** mega-файл.
-- Prefetch в page-cache; склейка читает клипы с SD (как ночной прогон Parking ~04:00).
-
-В логе: `ffmpeg concat -c copy …` / `merging …`.
-
-### 2. Compose — вертикальное видео
-
-Front сверху, Back снизу → один ролик на поездку/чанк (профиль по умолчанию `balanced`: 1080px / 5000k).
-
-### 3. Upload — YouTube
-
-Ролик уходит на канал (по умолчанию private).
-### 4. Очистка Mac
-
-После успешной загрузки (или после compose — см. `prune_merged`) временные склейки удаляются, чтобы освободить диск.
-
-### 5. Статус на флешке
-
-В `/.70mai/` на SD пишутся статусы, ссылки YouTube и краткий отчёт — можно продолжить на другом Mac.
+Статус/ссылки пишутся в `/.70mai/` на SD.
 
 ---
 
@@ -61,17 +45,9 @@ scripts/setup-venv.sh          # первый раз
 
 Карта уже вставлена: те же команды без `--wait`.
 
-Прогресс в другом окне:
-
-```bash
-./scripts/autopilot_dashboard.sh
-```
-
-Во время import дашборд показывает параллельно:
-`► [copy] … N/M MB (%)` и `► [merge] … N/M MB (%)`, плюс блок **процессы**.
+Прогресс: `./scripts/autopilot_dashboard.sh`
 
 ---
-
 ## Первый запуск YouTube
 
 Положите OAuth-файл в `~/.config/70mai/youtube_credentials.json` и при первом upload войдите в браузере.  
@@ -84,10 +60,10 @@ scripts/setup-venv.sh          # первый раз
 Compose-профиль и запас диска — флаги autopilot:
 
 ```bash
-./scripts/publish_all_70mai.sh --profile balanced --min-free-gb 20
+./scripts/publish_all_70mai.sh --profile balanced --min-free-gb 20 --chunk-minutes 120
 ```
 
-`70mai_runtime.json` сейчас не управляет import (возвращён алгоритм ~04:00: concat с SD + page-cache prefetch).
+`--prune-merged after-upload` (default) — исходные merged удаляются после успешной заливки ролика.
 
 ---
 

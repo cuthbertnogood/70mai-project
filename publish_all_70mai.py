@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Autopilot: SD card → import → compose 2-cam → YouTube → delete local MP4.
+"""Autopilot: SD card → per-~2h video → YouTube → delete merged sources.
 
-Default types: Normal (trips) + Event (all events → one 2-cam YouTube video).
+For each pending chunk (~120 min of trips, or one Event/Parking mega-file):
+  1. import only that time window from the SD (not the whole card)
+  2. compose 2-cam vertical MP4
+  3. upload to YouTube
+  4. delete merged/composed locals (default --prune-merged after-upload)
 
 Run outside Cursor — one command after inserting the dashcam SD card:
 
   ./scripts/publish_all_70mai.sh --wait
-
-Portable on SD (default): OAuth, publish state, import inventory + merge status
-under `/.70mai/`. Skips trips already uploaded (state on SD + local cache).
 """
 
 from __future__ import annotations
@@ -22,17 +23,17 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from import_70mai import format_log_line, log as _console_log
+from import_70mai import format_duration, format_log_line, log as _console_log
 from plan_estimate import (
     DEFAULT_SESSION_GAP,
     SINGLE_VIDEO_TYPES,
     format_youtube_quota_note,
     build_plan,
 )
-from publish_70mai import trip_uploaded
+from publish_70mai import chunk_uploaded, trip_uploaded
 from publish_state import AuthStore, StateStore
 
 _log_sink = None
@@ -362,6 +363,18 @@ def aggregate_plan(
     return all_trips, all_chunks, dur_by_type, total, pending
 
 
+def chunk_is_done(state: dict, chunk) -> bool:
+    """True if this ~2h chunk was already uploaded (chunk state or all trips)."""
+    if chunk_uploaded(state, chunk.record_type, chunk.index):
+        return True
+    if not chunk.trips:
+        return False
+    return all(
+        trip_uploaded(state, chunk.record_type, chunk.index, trip_idx)
+        for trip_idx, _ in enumerate(chunk.trips, start=1)
+    )
+
+
 def pending_trips(
     source: Path,
     types: list[str],
@@ -379,12 +392,9 @@ def pending_trips(
         session_gap=session_gap,
         ffprobe=ffprobe,
     )
-    total = sum(len(c.trips) for c in chunks)
-    pending = 0
-    for chunk in chunks:
-        for trip_idx, _trip in enumerate(chunk.trips, start=1):
-            if not trip_uploaded(state, chunk.record_type, chunk.index, trip_idx):
-                pending += 1
+    # Count pending *chunks* (one YouTube video each, ~target chunk_minutes).
+    total = len(chunks)
+    pending = sum(1 for chunk in chunks if not chunk_is_done(state, chunk))
     return trips, chunks, dur_by_type, total, pending
 
 
@@ -471,6 +481,7 @@ def print_plan_summary(
     video_dir: Path = Path("video/Output"),
     temp_dir: Path = Path("video/Output/.publish_tmp"),
     types: list[str] | None = None,
+    chunk_minutes: float = 120.0,
 ) -> None:
     from publish_70mai import free_disk_gb
 
@@ -483,7 +494,10 @@ def print_plan_summary(
         log(f"  State: {names}")
     if inventory_summary is not None:
         log(f"  Card inventory: {inventory_summary}")
-    log(f"  Trips/events: {total_trips} total, {pending} pending upload")
+    log(
+        f"  Videos (~{chunk_minutes:g} min target): "
+        f"{total_trips} total, {pending} pending upload"
+    )
     log(
         f"  Disk free: {free:.1f} GB "
         f"(reserve {min_free_gb:g} GB"
@@ -493,7 +507,7 @@ def print_plan_summary(
         f"  Autopilot video: {format_gb(usage['total'])} "
         f"(merged {format_gb(usage['merged'])}, "
         f"compose tmp {format_gb(usage['composed'])}) "
-        "— video files, freed as trips upload/prune"
+        "— freed after each ролик uploads (import→compose→YouTube→prune)"
     )
     for chunk in chunks:
         if chunk.record_type in SINGLE_VIDEO_TYPES:
@@ -579,10 +593,10 @@ def main() -> int:
     parser.add_argument(
         "--prune-merged",
         choices=("off", "after-compose", "after-upload"),
-        default="after-compose",
+        default="after-upload",
         help=(
-            "Delete merged files once used (default: after-compose; "
-            "after-upload = wait until YouTube confirms)"
+            "Delete merged files once used (default: after-upload — "
+            "free disk only after YouTube confirms; after-compose = sooner)"
         ),
     )
     parser.add_argument(
@@ -718,6 +732,7 @@ def main() -> int:
             video_dir=args.video_dir,
             temp_dir=args.temp_dir,
             types=args.types,
+            chunk_minutes=args.chunk_minutes,
         )
 
         from autopilot_dashboard import Dashboard, write_status
@@ -797,43 +812,8 @@ def main() -> int:
         failed = 0
 
         try:
-            if not args.skip_import:
-                import_cmd = [
-                    python,
-                    "import_70mai.py",
-                    "--source",
-                    str(source),
-                    "--types",
-                    ",".join(args.types),
-                    "--output",
-                    str(args.video_dir),
-                    "--gap-seconds",
-                    str(args.session_gap),
-                    "--chunk-minutes",
-                    str(IMPORT_CHUNK_MINUTES),
-                ]
-                if state_on_sd:
-                    import_cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
-                ec = 0
-                for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
-                    ec = run_step(
-                        import_cmd,
-                        log_path=args.log,
-                        dry_run=args.dry_run,
-                    )
-                    if ec == 0:
-                        break
-                    if import_attempt < IMPORT_MERGE_RETRY_MAX:
-                        log(
-                            f"Import had merge failure(s) — auto-retry "
-                            f"{import_attempt + 1}/{IMPORT_MERGE_RETRY_MAX} "
-                            f"in {IMPORT_MERGE_RETRY_DELAY_SEC}s…"
-                        )
-                        time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
-                if ec != 0:
-                    log(f"Import failed (exit {ec}) — see {args.log}")
-                    return ec
-
+            # Per-~2h chunk conveyor: import window → compose → YouTube → prune → next.
+            # Never import the whole SD card before the first upload.
             for record_type in args.types:
                 type_store = StateStore(
                     source, args.temp_dir, record_type, state_on_sd=state_on_sd
@@ -848,58 +828,140 @@ def main() -> int:
                     session_gap=args.session_gap,
                 )
                 if type_pending == 0:
-                    log(f"{record_type}: all uploaded, skipping publish")
+                    log(f"{record_type}: all uploaded, skipping")
                     continue
 
                 type_title = args.title or auto_title(type_trips)
-                log(f"\n>>> Publish {record_type}: {type_pending} pending")
-                publish_cmd = [
-                    python,
-                    "publish_70mai.py",
-                    "--source",
-                    str(source),
-                    "--types",
-                    record_type,
-                    "--video-dir",
-                    str(args.video_dir),
-                    "--temp-dir",
-                    str(args.temp_dir),
-                    "--per-trip-upload",
-                    "--resume",
-                    "--resume-upload",
-                    "--continue-on-error",
-                    "--state-on-sd" if state_on_sd else "--no-state-on-sd",
-                    "--credentials",
-                    str(creds),
-                    "--token",
-                    str(token),
-                    "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
-                    "--title",
-                    type_title,
-                    "--profile",
-                    args.profile,
-                    "--prune-merged",
-                    args.prune_merged,
-                    "--min-free-gb",
-                    str(args.min_free_gb),
-                ]
-                if args.upload_chunk_mb is not None:
-                    publish_cmd.extend(
-                        ["--upload-chunk-mb", str(args.upload_chunk_mb)]
-                    )
-                if args.no_overlap:
-                    publish_cmd.append("--no-overlap")
-                ec = run_step(
-                    publish_cmd,
-                    log_path=args.log,
-                    dry_run=args.dry_run,
+                log(
+                    f"\n>>> {record_type}: {type_pending} pending "
+                    f"~{args.chunk_minutes:g} min video(s)"
                 )
-                if ec != 0:
-                    failed = 1
+
+                for chunk in type_chunks:
+                    type_state = type_store.load(resume=True, quiet=True)
+                    if chunk_is_done(type_state, chunk):
+                        log(
+                            f"  Skip chunk {chunk.index} "
+                            f"({chunk.trip_labels}) — already uploaded"
+                        )
+                        continue
+
+                    log("")
                     log(
-                        f"Publish [{record_type}] finished with errors "
-                        f"(exit {ec}) — see {args.log}"
+                        f"=== Ролик {record_type} chunk {chunk.index}: "
+                        f"{format_duration(chunk.duration_sec)} | "
+                        f"{chunk.trip_labels} ==="
                     )
+                    log(
+                        f"  Window: {chunk.start:%Y-%m-%d %H:%M:%S} → "
+                        f"{chunk.end:%Y-%m-%d %H:%M:%S}"
+                    )
+
+                    if not args.skip_import:
+                        import_cmd = [
+                            python,
+                            "import_70mai.py",
+                            "--source",
+                            str(source),
+                            "--types",
+                            record_type,
+                            "--output",
+                            str(args.video_dir),
+                            "--gap-seconds",
+                            str(args.session_gap),
+                            "--chunk-minutes",
+                            str(IMPORT_CHUNK_MINUTES),
+                        ]
+                        # Event/Parking = all clips → one file; Normal = this window only.
+                        if record_type not in SINGLE_VIDEO_TYPES:
+                            # Inclusive end: last clip timestamp can equal chunk.end.
+                            range_end = chunk.end + timedelta(seconds=1)
+                            import_cmd.extend(
+                                [
+                                    "--from",
+                                    chunk.start.strftime("%Y-%m-%d %H:%M:%S"),
+                                    "--to",
+                                    range_end.strftime("%Y-%m-%d %H:%M:%S"),
+                                ]
+                            )
+                        if state_on_sd:
+                            import_cmd.extend(
+                                ["--state-on-sd", "--skip-inventory-refresh"]
+                            )
+                        ec = 0
+                        for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
+                            ec = run_step(
+                                import_cmd,
+                                log_path=args.log,
+                                dry_run=args.dry_run,
+                            )
+                            if ec == 0:
+                                break
+                            if import_attempt < IMPORT_MERGE_RETRY_MAX:
+                                log(
+                                    f"Import had merge failure(s) — auto-retry "
+                                    f"{import_attempt + 1}/{IMPORT_MERGE_RETRY_MAX} "
+                                    f"in {IMPORT_MERGE_RETRY_DELAY_SEC}s…"
+                                )
+                                time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
+                        if ec != 0:
+                            log(
+                                f"Import failed for chunk {chunk.index} "
+                                f"(exit {ec}) — see {args.log}"
+                            )
+                            return ec
+
+                    # One YouTube video ≈ this chunk (trips concat if several short ones).
+                    publish_cmd = [
+                        python,
+                        "publish_70mai.py",
+                        "--source",
+                        str(source),
+                        "--types",
+                        record_type,
+                        "--video-dir",
+                        str(args.video_dir),
+                        "--temp-dir",
+                        str(args.temp_dir),
+                        "--chunk-minutes",
+                        str(args.chunk_minutes),
+                        "--chunk",
+                        str(chunk.index),
+                        "--resume",
+                        "--resume-upload",
+                        "--continue-on-error",
+                        "--state-on-sd" if state_on_sd else "--no-state-on-sd",
+                        "--credentials",
+                        str(creds),
+                        "--token",
+                        str(token),
+                        "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
+                        "--title",
+                        type_title,
+                        "--profile",
+                        args.profile,
+                        "--prune-merged",
+                        args.prune_merged,
+                        "--min-free-gb",
+                        str(args.min_free_gb),
+                    ]
+                    if args.upload_chunk_mb is not None:
+                        publish_cmd.extend(
+                            ["--upload-chunk-mb", str(args.upload_chunk_mb)]
+                        )
+                    if args.no_overlap:
+                        publish_cmd.append("--no-overlap")
+                    ec = run_step(
+                        publish_cmd,
+                        log_path=args.log,
+                        dry_run=args.dry_run,
+                    )
+                    if ec != 0:
+                        failed = 1
+                        log(
+                            f"Publish [{record_type}] chunk {chunk.index} "
+                            f"finished with errors (exit {ec}) — see {args.log}"
+                        )
 
             log("")
             from publish_70mai import free_disk_gb
