@@ -233,6 +233,132 @@ def read_status(temp_dir: Path) -> dict | None:
         return None
 
 
+_LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+_MERGE_HB_RE = re.compile(
+    r"… merging ((?:NO|EV|PA)_\S+\.mp4) \(([^)]+)\)"
+)
+_MERGE_BAR_RE = re.compile(
+    r"Merge \[.*?\] (\d+)/(\d+) \(([\d.]+)%\)"
+)
+_MERGE_ARROW_RE = re.compile(r"→ ((?:NO|EV|PA)_\S+\.mp4)")
+_PREFIX_TO_TYPE = {"NO": "Normal", "EV": "Event", "PA": "Parking"}
+
+
+def _tail_text(path: Path, max_bytes: int = 96_000) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def read_import_progress_from_log(
+    temp_dir: Path, *, max_age_sec: float = 120.0
+) -> dict | None:
+    """Infer live import merge progress from publish_all.log heartbeats."""
+    text = _tail_text(temp_dir / "publish_all.log")
+    if not text:
+        return None
+    last_hb: tuple[datetime, str, str] | None = None
+    last_bar: tuple[datetime, int, int, float] | None = None
+    last_arrow: tuple[datetime, str] | None = None
+    for line in text.splitlines():
+        match_ts = _LOG_TS_RE.match(line)
+        if not match_ts:
+            continue
+        try:
+            ts = datetime.strptime(match_ts.group(1), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        match = _MERGE_HB_RE.search(line)
+        if match:
+            last_hb = (ts, match.group(1), match.group(2))
+        match = _MERGE_BAR_RE.search(line)
+        if match:
+            last_bar = (
+                ts,
+                int(match.group(1)),
+                int(match.group(2)),
+                float(match.group(3)),
+            )
+        match = _MERGE_ARROW_RE.search(line)
+        if match:
+            last_arrow = (ts, match.group(1))
+
+    filename = ""
+    elapsed_note = ""
+    latest_ts: datetime | None = None
+    if last_hb:
+        latest_ts, filename, elapsed_note = last_hb
+    elif last_arrow:
+        latest_ts, filename = last_arrow
+    elif last_bar:
+        latest_ts = last_bar[0]
+    else:
+        return None
+    if (datetime.now() - latest_ts).total_seconds() > max_age_sec:
+        return None
+
+    detail_parts: list[str] = []
+    percent: float | None = None
+    if last_bar:
+        percent = last_bar[3]
+        detail_parts.append(f"{last_bar[1]}/{last_bar[2]}")
+    if filename:
+        detail_parts.append(filename)
+    if elapsed_note:
+        detail_parts.append(elapsed_note)
+
+    prefix = filename[:2].upper() if filename else "NO"
+    record_type = _PREFIX_TO_TYPE.get(prefix, "Normal")
+    session_start = None
+    match = _MERGED_TS_RE.search(filename) if filename else None
+    if match:
+        try:
+            session_start = datetime.strptime(
+                match.group(1) + match.group(2), "%Y%m%d%H%M%S"
+            ).isoformat(timespec="seconds")
+        except ValueError:
+            session_start = None
+
+    return {
+        "ts": latest_ts.isoformat(timespec="seconds"),
+        "record_type": record_type,
+        "chunk_index": 0,
+        "trip_index": 0,
+        "phase": "import",
+        "detail": " · ".join(detail_parts),
+        "youtube_url": None,
+        "percent": percent,
+        "output_bytes": None,
+        "stalled": False,
+        "reason": "",
+        "session_start": session_start,
+    }
+
+
+def resolve_live_status(temp_dir: Path) -> dict | None:
+    """Prefer compose/upload status file; fall back to import heartbeats in the log."""
+    st = read_status(temp_dir)
+    phase = str((st or {}).get("phase") or "")
+    if phase in ("compose", "upload", "stall", "oauth"):
+        return st
+    log_st = read_import_progress_from_log(temp_dir)
+    if not log_st:
+        return st
+    if not st or phase != "import":
+        return log_st
+    try:
+        st_ts = datetime.fromisoformat(str(st.get("ts") or ""))
+        log_ts = datetime.fromisoformat(str(log_st.get("ts") or ""))
+    except ValueError:
+        return log_st
+    return log_st if log_ts >= st_ts else st
+
+
 def free_disk_gb(path: Path) -> float:
     try:
         return shutil.disk_usage(path).free / (1024**3)
@@ -756,10 +882,14 @@ class Dashboard:
             self.render()
 
     def _refresh_from_publish_state(self) -> None:
-        """Reload uploaded trips + YouTube URLs from SD/host publish state (source of truth)."""
+        """Reload uploaded trips + YouTube URLs from host publish state.
+
+        Uses the local cache only so a busy/unresponsive SD cannot freeze the UI.
+        Autopilot writes the same state to the host on every save.
+        """
         if self.source is None:
             return
-        st = read_status(self.temp_dir)
+        st = resolve_live_status(self.temp_dir)
         active_key = _status_active_key(self.rows, st)
         active_phase = str(st.get("phase") or "") if st else ""
         try:
@@ -771,7 +901,8 @@ class Dashboard:
                 self.source,
                 self.types,
                 self.temp_dir,
-                state_on_sd=self.state_on_sd,
+                # Local only: a busy SD must not freeze the dashboard refresh loop.
+                state_on_sd=False,
                 quiet=True,
             )
         except OSError:
@@ -850,7 +981,7 @@ class Dashboard:
         self._upload_health_detail = detail
 
     def _refresh_from_status(self) -> None:
-        st = read_status(self.temp_dir)
+        st = resolve_live_status(self.temp_dir)
         reasons = read_trip_reasons(self.temp_dir)
         active_key = _status_active_key(self.rows, st)
         for row in self.rows:
@@ -986,7 +1117,7 @@ class Dashboard:
             term_cols = 100
         col_widths = _column_widths(term_cols)
 
-        st = read_status(self.temp_dir)
+        st = resolve_live_status(self.temp_dir)
         active_key = _status_active_key(self.rows, st)
 
         total = len(self.rows)
@@ -1111,8 +1242,9 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Live autopilot dashboard (standalone). Reads autopilot_status.json, "
-            "publish state on SD, and compose file sizes — safe to restart anytime."
+            "Live autopilot dashboard (standalone). Prefers host-local "
+            "autopilot_plan.json + publish_*.state.json so a busy SD import "
+            "cannot freeze the UI. Use --scan-sd to rebuild the plan from the card."
         ),
     )
     parser.add_argument(
@@ -1137,7 +1269,12 @@ def main() -> int:
     parser.add_argument(
         "--no-state-on-sd",
         action="store_true",
-        help="Read publish state from host cache only",
+        help="Read publish state from host cache only (default for live refresh)",
+    )
+    parser.add_argument(
+        "--scan-sd",
+        action="store_true",
+        help="Rebuild trip plan by scanning the SD (slow/hangs while import runs)",
     )
     parser.add_argument(
         "--min-free-gb",
@@ -1160,50 +1297,72 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    from plan_estimate import load_autopilot_plan, save_autopilot_plan
+
+    source: Path | None
     if args.wait:
+        print("Waiting for SD card…", flush=True)
         source = wait_for_sd()
     elif args.source is not None:
         source = args.source.resolve()
     else:
         source = find_sd_card()
+
+    ffprobe = shutil.which("ffprobe") or "ffprobe"
+
+    chunks = None if args.scan_sd else load_autopilot_plan(args.temp_dir)
+    if chunks:
+        n_trips = sum(len(c.trips) for c in chunks)
+        print(
+            f"Loaded cached plan: {n_trips} trip(s) in {len(chunks)} chunk(s) "
+            f"({args.temp_dir / 'autopilot_plan.json'})",
+            flush=True,
+        )
+        if source is None:
+            source = Path("/Volumes/Untitled")
+    else:
         if source is None:
             print(
-                "SD card not found — use --source /Volumes/Untitled or --wait",
+                "SD card not found and no cached plan — "
+                "use --source /Volumes/Untitled, --wait, or run autopilot first",
                 file=sys.stderr,
             )
             return 1
+        print(
+            "No cached plan — scanning SD (may stall while import is busy)…",
+            flush=True,
+        )
+        _trips, chunks, _dur, _total, _pending = aggregate_plan(
+            source,
+            args.types,
+            args.temp_dir,
+            state_on_sd=not args.no_state_on_sd,
+            ffprobe=ffprobe,
+            chunk_minutes=IMPORT_CHUNK_MINUTES,
+            session_gap=args.session_gap,
+        )
+        if chunks:
+            save_autopilot_plan(
+                args.temp_dir,
+                source=source,
+                types=args.types,
+                chunks=chunks,
+                chunk_minutes=IMPORT_CHUNK_MINUTES,
+                session_gap=args.session_gap,
+            )
+            print(
+                f"Cached plan written: {args.temp_dir / 'autopilot_plan.json'}",
+                flush=True,
+            )
 
-    ffprobe = shutil.which("ffprobe") or "ffprobe"
-    state_on_sd = not args.no_state_on_sd
-
-    _trips, chunks, _dur, _total, _pending = aggregate_plan(
-        source,
-        args.types,
-        args.temp_dir,
-        state_on_sd=state_on_sd,
-        ffprobe=ffprobe,
-        chunk_minutes=IMPORT_CHUNK_MINUTES,
-        session_gap=args.session_gap,
-    )
     if not chunks:
         print("No trips in plan (empty SD or wrong --types?)", file=sys.stderr)
         return 1
 
-    if state_on_sd:
-        from card_identity import host_session_stale
-        from publish_state import (
-            clear_host_session,
-            read_card_id,
-            stamp_host_session,
-        )
-
-        card_id = read_card_id(source)
-        if host_session_stale(source, card_id, args.temp_dir):
-            clear_host_session(args.temp_dir)
-        stamp_host_session(args.temp_dir, card_id)
-
+    assert source is not None
+    print("Loading local publish state…", flush=True)
     merged_state = load_merged_publish_state(
-        source, args.types, args.temp_dir, state_on_sd=state_on_sd
+        source, args.types, args.temp_dir, state_on_sd=False, quiet=True
     )
     dashboard = Dashboard.from_plan(
         chunks,
@@ -1215,7 +1374,7 @@ def main() -> int:
         enabled=True,
         source=source,
         types=args.types,
-        state_on_sd=state_on_sd,
+        state_on_sd=False,
     )
     dashboard.refresh_interval = args.interval
     dashboard.start()

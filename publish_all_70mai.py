@@ -698,6 +698,18 @@ def main() -> int:
             chunk_minutes=args.chunk_minutes,
             session_gap=args.session_gap,
         )
+        if chunks:
+            from plan_estimate import save_autopilot_plan
+
+            plan_path = save_autopilot_plan(
+                args.temp_dir,
+                source=source,
+                types=args.types,
+                chunks=chunks,
+                chunk_minutes=args.chunk_minutes,
+                session_gap=args.session_gap,
+            )
+            log(f"Dashboard plan cache: {plan_path}")
 
         storage_summary = None
         if state_on_sd and not args.dry_run:

@@ -26,6 +26,7 @@ from import_70mai import (
 DEFAULT_CHUNK_MINUTES = 120
 DEFAULT_SESSION_GAP = 120.0
 DEFAULT_PLAN_FILE = Path("video/Output/publish_plan.md")
+AUTOPILOT_PLAN_FILENAME = "autopilot_plan.json"
 MB_PER_MIN_BALANCED = 37.5  # ~5 Mbps H.264 (balanced 1080w)
 YOUTUBE_DAILY_UPLOADS = 6
 # One 2-cam YouTube video for all clips of this type (no trip/chunk split).
@@ -77,6 +78,100 @@ class ChunkPlan:
             return f"поездка {self.trips[0].index}"
         nums = ", ".join(str(t.index) for t in self.trips)
         return f"поездки {nums}"
+
+
+def autopilot_plan_path(temp_dir: Path) -> Path:
+    return temp_dir / AUTOPILOT_PLAN_FILENAME
+
+
+def save_autopilot_plan(
+    temp_dir: Path,
+    *,
+    source: Path,
+    types: list[str],
+    chunks: list[ChunkPlan],
+    chunk_minutes: float,
+    session_gap: float,
+) -> Path:
+    """Host-local trip table for standalone dashboard (avoids re-scanning a busy SD)."""
+    payload = {
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "source": str(source),
+        "types": list(types),
+        "chunk_minutes": chunk_minutes,
+        "session_gap": session_gap,
+        "chunks": [
+            {
+                "record_type": chunk.record_type,
+                "index": chunk.index,
+                "trips": [
+                    {
+                        "record_type": trip.record_type,
+                        "index": trip.index,
+                        "start": trip.start.isoformat(timespec="seconds"),
+                        "end": trip.end.isoformat(timespec="seconds"),
+                        "clip_count": trip.clip_count,
+                        "duration_sec": trip.duration_sec,
+                    }
+                    for trip in chunk.trips
+                ],
+            }
+            for chunk in chunks
+        ],
+    }
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    path = autopilot_plan_path(temp_dir)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def load_autopilot_plan(temp_dir: Path) -> list[ChunkPlan] | None:
+    """Load cached chunk plan written by publish_all / plan_estimate."""
+    path = autopilot_plan_path(temp_dir)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    raw_chunks = data.get("chunks")
+    if not isinstance(raw_chunks, list) or not raw_chunks:
+        return None
+    chunks: list[ChunkPlan] = []
+    for raw in raw_chunks:
+        if not isinstance(raw, dict):
+            return None
+        trips: list[Trip] = []
+        for t in raw.get("trips") or []:
+            if not isinstance(t, dict):
+                return None
+            try:
+                trips.append(
+                    Trip(
+                        record_type=str(
+                            t.get("record_type") or raw.get("record_type") or ""
+                        ),
+                        index=int(t["index"]),
+                        start=datetime.fromisoformat(str(t["start"])),
+                        end=datetime.fromisoformat(str(t["end"])),
+                        clip_count=int(t.get("clip_count") or 0),
+                        duration_sec=float(t.get("duration_sec") or 0.0),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                return None
+        if not trips:
+            return None
+        chunks.append(
+            ChunkPlan(
+                record_type=str(raw.get("record_type") or trips[0].record_type),
+                index=int(raw.get("index") or 0),
+                trips=tuple(trips),
+            )
+        )
+    return chunks
 
 
 def probe_clips(clips: list[Clip], ffprobe: str) -> list[Clip]:

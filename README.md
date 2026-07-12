@@ -38,22 +38,23 @@
 scripts/setup-venv.sh
 ```
 
-Дальше — один скрипт (ждёт флешку, делает все шаги выше):
+Обычный запуск (ждёт флешку, делает все шаги выше):
 
 ```bash
 ./scripts/publish_all_70mai.sh --wait
 ```
 
-Карта уже вставлена:
-
-```bash
-./scripts/publish_all_70mai.sh
-```
-
-С автоперезапуском при сбое:
+С **watchdog** — то же самое, но при сбое перезапускает автопилот сам:
 
 ```bash
 ./scripts/watch_publish_all_70mai.sh --wait
+```
+
+Карта уже вставлена (без ожидания):
+
+```bash
+./scripts/publish_all_70mai.sh
+./scripts/watch_publish_all_70mai.sh
 ```
 
 Прогресс в другом окне терминала:
@@ -78,7 +79,9 @@ scripts/setup-venv.sh
 |----------|---------|
 | Посмотреть, что на карте | `python3 import_70mai.py --scan` |
 | Только план, без записи | `./scripts/publish_all_70mai.sh --dry-run` |
+| Запуск с watchdog | `./scripts/watch_publish_all_70mai.sh --wait` |
 | Лог автопилота | `tail -f video/Output/.publish_tmp/publish_all.log` |
+| Лог watchdog | `tail -f video/Output/.publish_tmp/publish_all_watchdog.log` |
 | Отчёт по карте (MD/CSV) | `./scripts/generate_card_reports.sh` |
 
 Цели проекта: [GOALS.md](GOALS.md). Технические детали: [детальное_описание.md](детальное_описание.md).
