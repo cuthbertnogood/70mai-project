@@ -83,6 +83,33 @@ scripts/setup-venv.sh
 | Лог автопилота | `tail -f video/Output/.publish_tmp/publish_all.log` |
 | Лог watchdog | `tail -f video/Output/.publish_tmp/publish_all_watchdog.log` |
 | Отчёт по карте (MD/CSV) | `./scripts/generate_card_reports.sh` |
-| Тюнинг import на ходу | Править [`70mai_runtime.json`](70mai_runtime.json) (`chunk_clips`, `stage_batch_clips`, …) |
+| Тюнинг на ходу | [`70mai_runtime.json`](70mai_runtime.json) — см. ниже |
+
+### Runtime-параметры (`70mai_runtime.json`)
+
+Файл: [`70mai_runtime.json`](70mai_runtime.json). Override: `video/Output/.publish_tmp/70mai_runtime.json`.  
+Полные таблицы: [детальное_описание.md — Runtime config](детальное_описание.md#runtime-config-70mai_runtimejson).
+
+| Параметр | Default | На лету |
+|----------|---------|---------|
+| `import.chunk_clips` | 10 | со **следующей группы камеры** |
+| `import.chunk_minutes` | 10 | **новый import** |
+| `import.stage_batch_clips` | 10 | **каждый merge** |
+| `import.gap_seconds` | 120 | **новый import** |
+| `import.merge_workers` | 1 | **новый import** |
+| `import.prefetch` | true | **каждый merge** / группа |
+| `import.prefetch_batches` | 2 | группа камеры |
+| `import.probe_workers` | 8 | группа камеры |
+| `import.merge_heartbeat_sec` | 30 | пока не в коде |
+| `import.merge_max_attempts` | 3 | **каждый merge** |
+| `import.merge_retry_delay_sec` | 3 | **каждый merge** |
+| `autopilot.publish_chunk_minutes` | 120 | **шаг publish** |
+| `autopilot.session_gap` | 120 | старт автопилота |
+| `autopilot.import_merge_retry_max` | 3 | старт блока import |
+| `autopilot.import_merge_retry_delay_sec` | 15 | старт блока import |
+| `autopilot.min_free_gb` | 20 | **шаг publish** |
+| `autopilot.profile` | balanced | **шаг publish** |
+| `autopilot.prune_merged` | after-compose | **шаг publish** |
+| `autopilot.sd_poll_sec` | 15 | пока не в коде |
 
 Цели проекта: [GOALS.md](GOALS.md). Технические детали: [детальное_описание.md](детальное_описание.md).
