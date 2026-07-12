@@ -50,9 +50,10 @@ MERGE_MAX_ATTEMPTS = 3
 MERGE_RETRY_DELAY_SEC = 3.0
 MIN_MERGE_BYTES = 10_000
 MERGE_DURATION_TOLERANCE = 0.85  # merged file must be >= 85% of source clips sum
-MERGE_WORKERS = 2  # Front + Back merged in parallel (I/O-bound concat)
+MERGE_WORKERS = 1  # default 1: USB/SD seeks worse with parallel concat
 MERGE_HEARTBEAT_SEC = 30.0  # log while ffmpeg concat is silent
 PREFETCH_BLOCK = 4 * 1024 * 1024  # sequential read block for page-cache warmup
+# Prefetch only helps when a single merge worker is reading the SD sequentially.
 LOG_TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -1205,6 +1206,46 @@ def start_prefetch(paths: list[Path]) -> threading.Thread:
     return thread
 
 
+def _same_filesystem(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve().stat().st_dev == b.resolve().stat().st_dev
+    except OSError:
+        return False
+
+
+def stage_clips_locally(chunk: list[Clip], stage_dir: Path) -> list[Path]:
+    """Copy chunk clips from SD to local stage_dir (sequential, one stream)."""
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    staged: list[Path] = []
+    total = len(chunk)
+    for idx, clip in enumerate(chunk, start=1):
+        dest = stage_dir / clip.path.name
+        src_size = clip.path.stat().st_size
+        if dest.is_file() and dest.stat().st_size == src_size:
+            log(f"       staging {idx}/{total}: {clip.path.name} (cached)")
+            staged.append(dest)
+            continue
+        partial = dest.with_suffix(dest.suffix + ".partial")
+        partial.unlink(missing_ok=True)
+        log(
+            f"       staging {idx}/{total}: {clip.path.name} "
+            f"({src_size / 1_000_000:.0f} MB)"
+        )
+        shutil.copyfile(clip.path, partial)
+        partial.replace(dest)
+        staged.append(dest)
+    return staged
+
+
+def cleanup_stage_dir(stage_dir: Path | None) -> None:
+    if stage_dir is None:
+        return
+    try:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def merge_clips(
     chunk: list[Clip],
     output_path: Path,
@@ -1297,6 +1338,32 @@ def merge_clips(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     merge_start = time.monotonic()
+
+    stage_dir: Path | None = None
+    concat_sources = [clip.path for clip in chunk]
+    # Copy SD clips to local disk first (sequential USB), concat from SSD, then
+    # delete staged minute clips. Skip staging when sources are already local.
+    if chunk and not _same_filesystem(chunk[0].path, output_path.parent):
+        stage_dir = output_path.parent / ".merge_stage" / output_path.stem
+        log(f"       staging {len(chunk)} clip(s) → {stage_dir.name}/ …")
+        try:
+            concat_sources = stage_clips_locally(chunk, stage_dir)
+        except OSError as exc:
+            cleanup_stage_dir(stage_dir)
+            log(f"       ERROR: staging failed: {exc}")
+            if reporter:
+                reporter.finish_merge(
+                    size_mb=0.0,
+                    elapsed=time.monotonic() - merge_start,
+                    pipeline=pipeline,
+                    failed=True,
+                )
+            elif merge_progress:
+                merge_progress.update("failed")
+                if pipeline:
+                    pipeline.merge_step()
+            return "failed"
+
     log("       ffmpeg concat -c copy …")
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -1304,8 +1371,8 @@ def merge_clips(
         delete=False,
         encoding="utf-8",
     ) as list_file:
-        for clip in chunk:
-            list_file.write(f"file '{escape_concat_path(clip.path)}'\n")
+        for src in concat_sources:
+            list_file.write(f"file '{escape_concat_path(src)}'\n")
         list_path = Path(list_file.name)
 
     try:
@@ -1418,6 +1485,7 @@ def merge_clips(
         return "failed"
     finally:
         list_path.unlink(missing_ok=True)
+        cleanup_stage_dir(stage_dir)
 
 
 def process_event_group(
@@ -1524,6 +1592,7 @@ def process_group(
     pipeline: PipelineProgress | None,
     import_store: object | None = None,
     assume_seconds: float | None = None,
+    merge_workers: int = MERGE_WORKERS,
 ) -> tuple[int, int, int, int]:
     if not clips:
         return 0, 0, 0, 0
@@ -1535,6 +1604,7 @@ def process_group(
     skipped = 0
     failed = 0
     planned = 0
+    workers = max(1, int(merge_workers))
 
     log(f"\n--- {record_type}/{camera}: {len(clips)} clips, {len(sessions)} sessions ---")
     if pipeline:
@@ -1600,11 +1670,10 @@ def process_group(
             out_path = output_dir / record_type / camera / output_name(chunk)
             merge_jobs.append((session_idx, chunk, out_path))
 
-    # Warm the page cache at most ~2 chunks ahead of the mergers so ffmpeg
-    # reads from RAM instead of the slow SD reader (bounded by a semaphore
-    # to avoid evicting data before it is consumed).
+    # Warm page cache only with a single merge worker — parallel merges +
+    # prefetch fight over the same USB/SD reader and slow throughput.
     prefetch_sem: threading.Semaphore | None = None
-    if not dry_run and len(merge_jobs) > 1:
+    if not dry_run and workers == 1 and len(merge_jobs) > 1:
         pending_batches = [
             [c.path for c in chunk]
             for _, chunk, out_path in merge_jobs
@@ -1643,11 +1712,13 @@ def process_group(
             if prefetch_sem is not None:
                 prefetch_sem.release()
 
-    if dry_run or MERGE_WORKERS <= 1 or len(merge_jobs) <= 1:
+    if dry_run or workers <= 1 or len(merge_jobs) <= 1:
+        if not dry_run and workers == 1 and len(merge_jobs) > 1:
+            log("  merging sequentially (1 worker; SD stage→concat→cleanup)")
         statuses = [run_job(job) for job in merge_jobs]
     else:
-        log(f"  merging with {MERGE_WORKERS} parallel workers")
-        with ThreadPoolExecutor(max_workers=MERGE_WORKERS) as pool:
+        log(f"  merging with {workers} parallel workers")
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             statuses = list(pool.map(run_job, merge_jobs))
 
     for status in statuses:
@@ -1819,6 +1890,16 @@ def main() -> int:
         type=float,
         default=10.0,
         help="Target chunk length in minutes",
+    )
+    parser.add_argument(
+        "--merge-workers",
+        type=int,
+        default=MERGE_WORKERS,
+        metavar="N",
+        help=(
+            "Parallel ffmpeg concat workers per camera group "
+            f"(default: {MERGE_WORKERS}; use 1 on USB/SD to avoid seek thrashing)"
+        ),
     )
     parser.add_argument(
         "--gap-seconds",
@@ -1999,6 +2080,11 @@ def main() -> int:
         log("Mode:    dry-run")
 
     log("Merge:   ffmpeg concat -c copy (lossless, no re-encode)")
+    log(
+        f"Workers: {max(1, args.merge_workers)} "
+        f"(prefetch={'on' if max(1, args.merge_workers) == 1 else 'off'}; "
+        "SD clips staged locally then deleted)"
+    )
     log(f"Probe:   {PROBE_WORKERS} parallel ffprobe workers")
 
     groups: list[tuple[str, str, list[Clip]]] = []
@@ -2109,6 +2195,7 @@ def main() -> int:
                 pipeline,
                 import_store,
                 assume_seconds=assume_seconds,
+                merge_workers=max(1, args.merge_workers),
             )
         total_merged += merged
         total_skipped += skipped
