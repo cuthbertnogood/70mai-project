@@ -846,6 +846,23 @@ def main() -> int:
 
         try:
             if not args.skip_import:
+                from runtime_config import (
+                    ensure_default_config_file,
+                    import_settings,
+                    autopilot_settings,
+                    log_config_if_changed,
+                )
+
+                ensure_default_config_file()
+                log_config_if_changed(log, force=True)
+                imp = import_settings(force=True)
+                ap = autopilot_settings(force=True)
+                retry_max = int(
+                    ap.get("import_merge_retry_max") or IMPORT_MERGE_RETRY_MAX
+                )
+                retry_delay = float(
+                    ap.get("import_merge_retry_delay_sec") or IMPORT_MERGE_RETRY_DELAY_SEC
+                )
                 import_cmd = [
                     python,
                     "import_70mai.py",
@@ -856,9 +873,15 @@ def main() -> int:
                     "--output",
                     str(args.video_dir),
                     "--gap-seconds",
-                    str(args.session_gap),
+                    str(imp.get("gap_seconds") or args.session_gap),
                     "--chunk-minutes",
-                    str(IMPORT_CHUNK_MINUTES),
+                    str(imp.get("chunk_minutes") or IMPORT_CHUNK_MINUTES),
+                    "--chunk-clips",
+                    str(int(imp.get("chunk_clips") or 10)),
+                    "--stage-batch-clips",
+                    str(int(imp.get("stage_batch_clips") or 10)),
+                    "--merge-workers",
+                    str(int(imp.get("merge_workers") or 1)),
                 ]
                 if state_on_sd:
                     import_cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
@@ -873,7 +896,9 @@ def main() -> int:
                 )
                 dashboard.render()
                 ec = 0
-                for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
+                for import_attempt in range(1, retry_max + 1):
+                    # Re-read tunables between retries (edit JSON without full restart).
+                    log_config_if_changed(log)
                     ec = run_step(
                         import_cmd,
                         log_path=args.log,
@@ -881,13 +906,13 @@ def main() -> int:
                     )
                     if ec == 0:
                         break
-                    if import_attempt < IMPORT_MERGE_RETRY_MAX:
+                    if import_attempt < retry_max:
                         log(
                             f"Import had merge failure(s) — auto-retry "
-                            f"{import_attempt + 1}/{IMPORT_MERGE_RETRY_MAX} "
-                            f"in {IMPORT_MERGE_RETRY_DELAY_SEC}s…"
+                            f"{import_attempt + 1}/{retry_max} "
+                            f"in {retry_delay}s…"
                         )
-                        time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
+                        time.sleep(retry_delay)
                 if ec != 0:
                     log(f"Import failed (exit {ec}) — see {args.log}")
                     return ec
@@ -910,6 +935,16 @@ def main() -> int:
                     continue
 
                 type_title = args.title or auto_title(type_trips)
+                from runtime_config import autopilot_settings, log_config_if_changed
+
+                log_config_if_changed(log)
+                ap = autopilot_settings()
+                profile = str(ap.get("profile") or args.profile)
+                prune = str(ap.get("prune_merged") or args.prune_merged)
+                min_free = float(ap.get("min_free_gb") or args.min_free_gb)
+                pub_chunk = float(
+                    ap.get("publish_chunk_minutes") or args.chunk_minutes
+                )
                 log(f"\n>>> Publish {record_type}: {type_pending} pending")
                 publish_cmd = [
                     python,
@@ -935,11 +970,13 @@ def main() -> int:
                     "--title",
                     type_title,
                     "--profile",
-                    args.profile,
+                    profile,
                     "--prune-merged",
-                    args.prune_merged,
+                    prune,
                     "--min-free-gb",
-                    str(args.min_free_gb),
+                    str(min_free),
+                    "--chunk-minutes",
+                    str(pub_chunk),
                 ]
                 if args.upload_chunk_mb is not None:
                     publish_cmd.extend(

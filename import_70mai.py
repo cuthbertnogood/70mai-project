@@ -1116,6 +1116,7 @@ def attach_durations(
     pipeline: PipelineProgress | None = None,
     assume_seconds: float | None = None,
     parallel_probe: bool = True,
+    workers: int = PROBE_WORKERS,
 ) -> list[Clip]:
     if assume_seconds is not None:
         for clip in clips:
@@ -1132,6 +1133,7 @@ def attach_durations(
             cache,
             progress,
             pipeline,
+            workers=max(1, int(workers)),
         )
     else:
         for clip in clips:
@@ -1155,15 +1157,29 @@ def attach_durations(
     ]
 
 
-def split_chunks(session: list[Clip], chunk_seconds: float) -> list[list[Clip]]:
+def split_chunks(
+    session: list[Clip],
+    chunk_seconds: float | None = None,
+    chunk_clips: int | None = None,
+) -> list[list[Clip]]:
+    """Pack clips into chunks by file count and/or duration."""
     if not session:
         return []
+    max_clips = int(chunk_clips) if chunk_clips and chunk_clips > 0 else 0
+    max_seconds = float(chunk_seconds) if chunk_seconds and chunk_seconds > 0 else 0.0
+    if max_clips <= 0 and max_seconds <= 0:
+        max_clips = 10
+
     chunks: list[list[Clip]] = []
     current: list[Clip] = []
     current_duration = 0.0
     for clip in session:
         duration = clip.duration or 0.0
-        if current and current_duration + duration > chunk_seconds:
+        would_exceed_count = bool(max_clips and current and len(current) >= max_clips)
+        would_exceed_time = bool(
+            max_seconds and current and current_duration + duration > max_seconds
+        )
+        if would_exceed_count or would_exceed_time:
             chunks.append(current)
             current = [clip]
             current_duration = duration
@@ -1213,12 +1229,19 @@ def _same_filesystem(a: Path, b: Path) -> bool:
         return False
 
 
-def stage_clips_locally(chunk: list[Clip], stage_dir: Path) -> list[Path]:
+def stage_clips_locally(
+    chunk: list[Clip],
+    stage_dir: Path,
+    *,
+    index_offset: int = 0,
+    total_hint: int | None = None,
+) -> list[Path]:
     """Copy chunk clips from SD to local stage_dir (sequential, one stream)."""
     stage_dir.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
-    total = len(chunk)
-    for idx, clip in enumerate(chunk, start=1):
+    total = total_hint if total_hint is not None else len(chunk)
+    for i, clip in enumerate(chunk):
+        idx = index_offset + i + 1
         dest = stage_dir / clip.path.name
         src_size = clip.path.stat().st_size
         if dest.is_file() and dest.stat().st_size == src_size:
@@ -1246,6 +1269,52 @@ def cleanup_stage_dir(stage_dir: Path | None) -> None:
         pass
 
 
+def _ffmpeg_concat_copy(
+    ffmpeg: str,
+    sources: list[Path],
+    output_path: Path,
+    *,
+    heartbeat: str | None = None,
+    on_heartbeat: Callable[[float], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".txt",
+        delete=False,
+        encoding="utf-8",
+    ) as list_file:
+        for src in sources:
+            list_file.write(f"file '{escape_concat_path(src)}'\n")
+        list_path = Path(list_file.name)
+    try:
+        return run_quiet_subprocess(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-probesize",
+                "1M",
+                "-analyzeduration",
+                "0",
+                "-i",
+                str(list_path),
+                "-c",
+                "copy",
+                str(output_path),
+            ],
+            heartbeat=heartbeat,
+            on_heartbeat=on_heartbeat,
+        )
+    finally:
+        list_path.unlink(missing_ok=True)
+
+
 def merge_clips(
     chunk: list[Clip],
     output_path: Path,
@@ -1261,6 +1330,9 @@ def merge_clips(
     camera: str = "",
     session_idx: int = 0,
     session_total: int = 0,
+    stage_batch_clips: int = 10,
+    merge_max_attempts: int | None = None,
+    merge_retry_delay_sec: float | None = None,
 ) -> str:
     expected_duration = sum(c.duration or 0.0 for c in chunk)
 
@@ -1338,129 +1410,30 @@ def merge_clips(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     merge_start = time.monotonic()
+    attempts = merge_max_attempts if merge_max_attempts is not None else MERGE_MAX_ATTEMPTS
+    retry_delay = (
+        merge_retry_delay_sec
+        if merge_retry_delay_sec is not None
+        else MERGE_RETRY_DELAY_SEC
+    )
+    batch_size = max(1, int(stage_batch_clips or len(chunk) or 1))
 
     stage_dir: Path | None = None
-    concat_sources = [clip.path for clip in chunk]
-    # Copy SD clips to local disk first (sequential USB), concat from SSD, then
-    # delete staged minute clips. Skip staging when sources are already local.
-    if chunk and not _same_filesystem(chunk[0].path, output_path.parent):
-        stage_dir = output_path.parent / ".merge_stage" / output_path.stem
-        log(f"       staging {len(chunk)} clip(s) → {stage_dir.name}/ …")
-        try:
-            concat_sources = stage_clips_locally(chunk, stage_dir)
-        except OSError as exc:
-            cleanup_stage_dir(stage_dir)
-            log(f"       ERROR: staging failed: {exc}")
-            if reporter:
-                reporter.finish_merge(
-                    size_mb=0.0,
-                    elapsed=time.monotonic() - merge_start,
-                    pipeline=pipeline,
-                    failed=True,
-                )
-            elif merge_progress:
-                merge_progress.update("failed")
-                if pipeline:
-                    pipeline.merge_step()
-            return "failed"
-
-    log("       ffmpeg concat -c copy …")
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".txt",
-        delete=False,
-        encoding="utf-8",
-    ) as list_file:
-        for src in concat_sources:
-            list_file.write(f"file '{escape_concat_path(src)}'\n")
-        list_path = Path(list_file.name)
-
-    try:
-        last_error = ""
-        for attempt in range(1, MERGE_MAX_ATTEMPTS + 1):
-            if attempt > 1:
-                log(
-                    f"       retry {attempt}/{MERGE_MAX_ATTEMPTS} "
-                    f"({last_error or 'previous attempt failed'})"
-                )
-                time.sleep(MERGE_RETRY_DELAY_SEC)
-
-            result = run_quiet_subprocess(
-                [
-                    ffmpeg,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    # Uniform dashcam clips: skip deep stream analysis for faster start
-                    "-probesize",
-                    "1M",
-                    "-analyzeduration",
-                    "0",
-                    "-i",
-                    str(list_path),
-                    "-c",
-                    "copy",
-                    str(output_path),
-                ],
-                heartbeat=f"merging {output_path.name}",
-                on_heartbeat=(
-                    (
-                        lambda elapsed: reporter.publish_status(
-                            elapsed_note=format_duration(elapsed)
-                        )
-                    )
-                    if reporter is not None
-                    else None
-                ),
+    need_stage = bool(chunk) and not _same_filesystem(chunk[0].path, output_path.parent)
+    on_hb = (
+        (
+            lambda elapsed: reporter.publish_status(
+                elapsed_note=format_duration(elapsed)
             )
-            if result.returncode != 0:
-                last_error = _ffmpeg_merge_error(result)
-                log(f"       ERROR: {last_error}")
-                output_path.unlink(missing_ok=True)
-                continue
+        )
+        if reporter is not None
+        else None
+    )
 
-            if not is_valid_merge_output(output_path, ffprobe, expected_duration):
-                last_error = "output failed ffprobe validation"
-                log(f"       ERROR: {last_error}")
-                output_path.unlink(missing_ok=True)
-                continue
-
-            size_mb = output_path.stat().st_size / 1_000_000
-            elapsed = time.monotonic() - merge_start
-            if import_store is not None:
-                import_store.record_merge(
-                    record_type=record_type,
-                    camera=camera,
-                    filename=output_path.name,
-                    status="merged",
-                    session_idx=session_idx,
-                    clip_count=len(chunk),
-                    size_mb=size_mb,
-                    elapsed_sec=elapsed,
-                )
-            if reporter:
-                reporter.finish_merge(
-                    size_mb=size_mb,
-                    elapsed=elapsed,
-                    pipeline=pipeline,
-                )
-            elif merge_progress:
-                merge_progress.update(
-                    f"done {size_mb:.0f} MB in {format_duration(elapsed)}"
-                )
-                if pipeline:
-                    pipeline.merge_step()
-            else:
-                log(f"  done: {size_mb:.0f} MB in {format_duration(elapsed)}")
-                if pipeline:
-                    pipeline.merge_step()
-            return "merged"
-
+    def _fail(msg: str) -> str:
+        log(f"       ERROR: {msg}")
+        output_path.unlink(missing_ok=True)
+        cleanup_stage_dir(stage_dir)
         if import_store is not None:
             import_store.record_merge(
                 record_type=record_type,
@@ -1483,8 +1456,136 @@ def merge_clips(
             if pipeline:
                 pipeline.merge_step()
         return "failed"
+
+    def _concat_sources(sources: list[Path], dest: Path, label: str) -> str | None:
+        """Return None on success, else error string."""
+        last_error = ""
+        for attempt in range(1, attempts + 1):
+            if attempt > 1:
+                log(
+                    f"       retry {attempt}/{attempts} "
+                    f"({last_error or 'previous attempt failed'})"
+                )
+                time.sleep(retry_delay)
+            result = _ffmpeg_concat_copy(
+                ffmpeg,
+                sources,
+                dest,
+                heartbeat=label,
+                on_heartbeat=on_hb,
+            )
+            if result.returncode != 0:
+                last_error = _ffmpeg_merge_error(result)
+                log(f"       ERROR: {last_error}")
+                dest.unlink(missing_ok=True)
+                continue
+            return None
+        return last_error or "ffmpeg concat failed"
+
+    try:
+        if need_stage:
+            stage_dir = output_path.parent / ".merge_stage" / output_path.stem
+            batches = [
+                chunk[i : i + batch_size] for i in range(0, len(chunk), batch_size)
+            ]
+            log(
+                f"       staging {len(chunk)} clip(s) in "
+                f"{len(batches)} batch(es) of ≤{batch_size} → {stage_dir.name}/ …"
+            )
+            if len(batches) == 1:
+                try:
+                    concat_sources = stage_clips_locally(
+                        chunk, stage_dir, total_hint=len(chunk)
+                    )
+                except OSError as exc:
+                    return _fail(f"staging failed: {exc}")
+                log("       ffmpeg concat -c copy …")
+                err = _concat_sources(
+                    concat_sources, output_path, f"merging {output_path.name}"
+                )
+                if err:
+                    return _fail(err)
+            else:
+                # stage_batch < chunk: copy batch → concat → delete batch → next
+                growing: Path | None = None
+                offset = 0
+                for batch_idx, batch in enumerate(batches, start=1):
+                    try:
+                        staged = stage_clips_locally(
+                            batch,
+                            stage_dir,
+                            index_offset=offset,
+                            total_hint=len(chunk),
+                        )
+                    except OSError as exc:
+                        if growing is not None:
+                            growing.unlink(missing_ok=True)
+                        return _fail(f"staging failed: {exc}")
+                    offset += len(batch)
+                    part_out = stage_dir / f"_partial_{batch_idx}.mp4"
+                    sources = ([growing] if growing is not None else []) + staged
+                    log(
+                        f"       ffmpeg concat batch {batch_idx}/{len(batches)} "
+                        f"({len(sources)} inputs) …"
+                    )
+                    err = _concat_sources(
+                        sources,
+                        part_out,
+                        f"merging {output_path.name} batch {batch_idx}/{len(batches)}",
+                    )
+                    for path in staged:
+                        path.unlink(missing_ok=True)
+                    if growing is not None:
+                        growing.unlink(missing_ok=True)
+                    if err:
+                        part_out.unlink(missing_ok=True)
+                        return _fail(err)
+                    growing = part_out
+                assert growing is not None
+                growing.replace(output_path)
+        else:
+            concat_sources = [clip.path for clip in chunk]
+            log("       ffmpeg concat -c copy …")
+            err = _concat_sources(
+                concat_sources, output_path, f"merging {output_path.name}"
+            )
+            if err:
+                return _fail(err)
+
+        if not is_valid_merge_output(output_path, ffprobe, expected_duration):
+            return _fail("output failed ffprobe validation")
+
+        size_mb = output_path.stat().st_size / 1_000_000
+        elapsed = time.monotonic() - merge_start
+        if import_store is not None:
+            import_store.record_merge(
+                record_type=record_type,
+                camera=camera,
+                filename=output_path.name,
+                status="merged",
+                session_idx=session_idx,
+                clip_count=len(chunk),
+                size_mb=size_mb,
+                elapsed_sec=elapsed,
+            )
+        if reporter:
+            reporter.finish_merge(
+                size_mb=size_mb,
+                elapsed=elapsed,
+                pipeline=pipeline,
+            )
+        elif merge_progress:
+            merge_progress.update(
+                f"done {size_mb:.0f} MB in {format_duration(elapsed)}"
+            )
+            if pipeline:
+                pipeline.merge_step()
+        else:
+            log(f"  done: {size_mb:.0f} MB in {format_duration(elapsed)}")
+            if pipeline:
+                pipeline.merge_step()
+        return "merged"
     finally:
-        list_path.unlink(missing_ok=True)
         cleanup_stage_dir(stage_dir)
 
 
@@ -1550,6 +1651,9 @@ def process_event_group(
         f"-> 1 file ({format_duration(total_duration)}) ==="
     )
 
+    from runtime_config import import_settings
+
+    live = import_settings()
     status = merge_clips(
         chunk,
         out_path,
@@ -1563,6 +1667,11 @@ def process_event_group(
         camera=camera,
         session_idx=1,
         session_total=1,
+        stage_batch_clips=int(live.get("stage_batch_clips") or 10),
+        merge_max_attempts=int(live.get("merge_max_attempts") or MERGE_MAX_ATTEMPTS),
+        merge_retry_delay_sec=float(
+            live.get("merge_retry_delay_sec") or MERGE_RETRY_DELAY_SEC
+        ),
     )
 
     merged = 1 if status == "merged" else 0
@@ -1593,10 +1702,15 @@ def process_group(
     import_store: object | None = None,
     assume_seconds: float | None = None,
     merge_workers: int = MERGE_WORKERS,
+    chunk_clips: int | None = None,
 ) -> tuple[int, int, int, int]:
     if not clips:
         return 0, 0, 0, 0
 
+    from runtime_config import import_settings, log_config_if_changed
+
+    log_config_if_changed(log)
+    settings = import_settings()
     record_type = clips[0].record_type
     camera = clips[0].camera
     sessions = split_sessions(clips, gap_seconds)
@@ -1604,7 +1718,17 @@ def process_group(
     skipped = 0
     failed = 0
     planned = 0
-    workers = max(1, int(merge_workers))
+    workers = max(
+        1, int(merge_workers if merge_workers is not None else settings["merge_workers"])
+    )
+    clips_per_chunk = (
+        int(chunk_clips)
+        if chunk_clips is not None
+        else int(settings.get("chunk_clips") or 0)
+    )
+    probe_workers = max(1, int(settings.get("probe_workers") or PROBE_WORKERS))
+    prefetch_on = bool(settings.get("prefetch", True)) and workers == 1
+    prefetch_batches = max(1, int(settings.get("prefetch_batches") or 2))
 
     log(f"\n--- {record_type}/{camera}: {len(clips)} clips, {len(sessions)} sessions ---")
     if pipeline:
@@ -1615,7 +1739,7 @@ def process_group(
         if assume_seconds is not None:
             log(f"  estimating {uncached_all} clip(s) at {assume_seconds:g}s each...")
         else:
-            log(f"  probing {uncached_all} clip(s) ({PROBE_WORKERS} parallel workers)...")
+            log(f"  probing {uncached_all} clip(s) ({probe_workers} parallel workers)...")
 
     attach_durations(
         clips,
@@ -1624,10 +1748,16 @@ def process_group(
         probe_progress,
         pipeline,
         assume_seconds=assume_seconds,
+        workers=probe_workers,
     )
 
     if pipeline:
         pipeline.set_phase("merging", f"{record_type}/{camera}")
+
+    log(
+        f"  chunking: ≤{clips_per_chunk or '∞'} clips"
+        f", ≤{(chunk_seconds or 0) / 60:g} min"
+    )
 
     session_chunks: list[tuple[int, list[Clip], list[list[Clip]]]] = []
     for session_idx, session in enumerate(sessions, start=1):
@@ -1642,7 +1772,11 @@ def process_group(
             )
             for clip in session
         ]
-        chunks = split_chunks(session_with_duration, chunk_seconds)
+        chunks = split_chunks(
+            session_with_duration,
+            chunk_seconds=chunk_seconds,
+            chunk_clips=clips_per_chunk,
+        )
         session_chunks.append((session_idx, session_with_duration, chunks))
 
     total_chunk_files = sum(len(chunks) for _, _, chunks in session_chunks)
@@ -1673,26 +1807,30 @@ def process_group(
     # Warm page cache only with a single merge worker — parallel merges +
     # prefetch fight over the same USB/SD reader and slow throughput.
     prefetch_sem: threading.Semaphore | None = None
-    if not dry_run and workers == 1 and len(merge_jobs) > 1:
+    if not dry_run and prefetch_on and len(merge_jobs) > 1:
         pending_batches = [
             [c.path for c in chunk]
             for _, chunk, out_path in merge_jobs
             if not out_path.exists()
         ]
         if pending_batches:
-            prefetch_sem = threading.Semaphore(2)
+            prefetch_sem = threading.Semaphore(prefetch_batches)
 
             def _prefetch_loop(
                 batches=pending_batches, sem=prefetch_sem
             ) -> None:
                 for batch in batches:
                     sem.acquire()
+                    if not import_settings().get("prefetch", True):
+                        break
                     _prefetch_files(batch)
 
             threading.Thread(target=_prefetch_loop, daemon=True).start()
 
     def run_job(job: tuple[int, list[Clip], Path]) -> str:
         session_idx, chunk, out_path = job
+        log_config_if_changed(log)
+        live = import_settings()
         try:
             return merge_clips(
                 chunk,
@@ -1707,6 +1845,13 @@ def process_group(
                 camera=camera,
                 session_idx=session_idx,
                 session_total=len(sessions),
+                stage_batch_clips=int(live.get("stage_batch_clips") or 10),
+                merge_max_attempts=int(
+                    live.get("merge_max_attempts") or MERGE_MAX_ATTEMPTS
+                ),
+                merge_retry_delay_sec=float(
+                    live.get("merge_retry_delay_sec") or MERGE_RETRY_DELAY_SEC
+                ),
             )
         finally:
             if prefetch_sem is not None:
@@ -1868,6 +2013,15 @@ def parse_types_and_cameras(
 
 
 def main() -> int:
+    from runtime_config import (
+        ensure_default_config_file,
+        import_settings,
+        log_config_if_changed,
+    )
+
+    ensure_default_config_file()
+    imp_defaults = import_settings(force=True)
+
     parser = argparse.ArgumentParser(
         description="Import and merge 70mai SD card clips into longer videos.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1888,13 +2042,27 @@ def main() -> int:
     parser.add_argument(
         "--chunk-minutes",
         type=float,
-        default=10.0,
-        help="Target chunk length in minutes",
+        default=float(imp_defaults.get("chunk_minutes") or 10.0),
+        help="Max chunk length in minutes (with --chunk-clips)",
+    )
+    parser.add_argument(
+        "--chunk-clips",
+        type=int,
+        default=int(imp_defaults.get("chunk_clips") or 10),
+        metavar="N",
+        help="Max source clips per merged file (default from 70mai_runtime.json)",
+    )
+    parser.add_argument(
+        "--stage-batch-clips",
+        type=int,
+        default=int(imp_defaults.get("stage_batch_clips") or 10),
+        metavar="N",
+        help="How many clips to copy to SSD per staging batch (hot-reloaded from JSON)",
     )
     parser.add_argument(
         "--merge-workers",
         type=int,
-        default=MERGE_WORKERS,
+        default=int(imp_defaults.get("merge_workers") or MERGE_WORKERS),
         metavar="N",
         help=(
             "Parallel ffmpeg concat workers per camera group "
@@ -1904,7 +2072,7 @@ def main() -> int:
     parser.add_argument(
         "--gap-seconds",
         type=float,
-        default=120.0,
+        default=float(imp_defaults.get("gap_seconds") or 120.0),
         help="Start new session if gap between clips exceeds this",
     )
     parser.add_argument(
@@ -2065,12 +2233,18 @@ def main() -> int:
 
     ffmpeg = find_tool("ffmpeg")
     ffprobe = find_tool("ffprobe")
-    chunk_seconds = args.chunk_minutes * 60.0
+    log_config_if_changed(log, force=True)
+    live = import_settings()
+    # CLI wins for this process start; JSON hot-reloads stage_batch / retries mid-run.
+    chunk_minutes = float(args.chunk_minutes)
+    chunk_clips = int(args.chunk_clips)
+    chunk_seconds = chunk_minutes * 60.0
     run_start = time.monotonic()
 
     log(f"Source:  {args.source}")
     log(f"Output:  {args.output}")
-    log(f"Chunk:   {args.chunk_minutes:g} min")
+    log(f"Chunk:   ≤{chunk_clips} clips / ≤{chunk_minutes:g} min")
+    log(f"Stage:   {args.stage_batch_clips} clips/batch (live from JSON)")
     log(f"Gap:     {args.gap_seconds:g} sec")
     log(f"Types:   {', '.join(record_types)}")
     log(f"Cameras: {', '.join(cameras)}")
@@ -2082,10 +2256,10 @@ def main() -> int:
     log("Merge:   ffmpeg concat -c copy (lossless, no re-encode)")
     log(
         f"Workers: {max(1, args.merge_workers)} "
-        f"(prefetch={'on' if max(1, args.merge_workers) == 1 else 'off'}; "
+        f"(prefetch={'on' if live.get('prefetch') and max(1, args.merge_workers) == 1 else 'off'}; "
         "SD clips staged locally then deleted)"
     )
-    log(f"Probe:   {PROBE_WORKERS} parallel ffprobe workers")
+    log(f"Probe:   {int(live.get('probe_workers') or PROBE_WORKERS)} parallel ffprobe workers")
 
     groups: list[tuple[str, str, list[Clip]]] = []
     total_clips = 0
@@ -2104,8 +2278,11 @@ def main() -> int:
     total_outputs = 0
     for _, _, clips in groups:
         for session in split_sessions(clips, args.gap_seconds):
-            session_seconds = len(session) * 60
-            total_outputs += max(1, -(-session_seconds // int(chunk_seconds)))
+            if chunk_clips > 0:
+                total_outputs += max(1, -(-len(session) // chunk_clips))
+            else:
+                session_seconds = len(session) * 60
+                total_outputs += max(1, -(-session_seconds // int(chunk_seconds or 600)))
 
     log(f"\nFound {total_clips} clips in {len(groups)} group(s)")
     log(f"Estimated output files: ~{total_outputs}")
@@ -2196,6 +2373,7 @@ def main() -> int:
                 import_store,
                 assume_seconds=assume_seconds,
                 merge_workers=max(1, args.merge_workers),
+                chunk_clips=chunk_clips,
             )
         total_merged += merged
         total_skipped += skipped

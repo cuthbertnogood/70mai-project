@@ -1,0 +1,25 @@
+{
+  "import": {
+    "chunk_clips": 10,
+    "chunk_minutes": 10,
+    "stage_batch_clips": 10,
+    "gap_seconds": 120,
+    "merge_workers": 1,
+    "prefetch": true,
+    "prefetch_batches": 2,
+    "probe_workers": 8,
+    "merge_heartbeat_sec": 30,
+    "merge_max_attempts": 3,
+    "merge_retry_delay_sec": 3
+  },
+  "autopilot": {
+    "publish_chunk_minutes": 120,
+    "session_gap": 120,
+    "import_merge_retry_max": 3,
+    "import_merge_retry_delay_sec": 15,
+    "min_free_gb": 20,
+    "profile": "balanced",
+    "prune_merged": "after-compose",
+    "sd_poll_sec": 15
+  }
+}

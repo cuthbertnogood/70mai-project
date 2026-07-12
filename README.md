@@ -12,7 +12,7 @@
    Клипы с SD (`Normal` / `Event` / `Parking`, камеры Front и Back) читаются с карты (обычно `/Volumes/Untitled`).
 
 2. **Склеиваем в куски по ~10 минут**  
-   Короткие клипы (~1 мин) сначала копируются с SD на локальный диск, склеиваются в один файл по камере, затем минутные копии удаляются. По умолчанию один поток (`--merge-workers 1`), чтобы не тормозить USB.
+   Короткие клипы (~1 мин) сначала копируются с SD на локальный диск пачками (`stage_batch_clips`), склеиваются (`chunk_clips`), затем минутные копии удаляются. Параметры в [`70mai_runtime.json`](70mai_runtime.json) — можно менять на ходу (import перечитывает перед каждым merge).
 
 3. **Собираем вертикальное видео Front + Back**  
    Две камеры в одном кадре: сверху передняя, снизу задняя.
@@ -83,5 +83,6 @@ scripts/setup-venv.sh
 | Лог автопилота | `tail -f video/Output/.publish_tmp/publish_all.log` |
 | Лог watchdog | `tail -f video/Output/.publish_tmp/publish_all_watchdog.log` |
 | Отчёт по карте (MD/CSV) | `./scripts/generate_card_reports.sh` |
+| Тюнинг import на ходу | Править [`70mai_runtime.json`](70mai_runtime.json) (`chunk_clips`, `stage_batch_clips`, …) |
 
 Цели проекта: [GOALS.md](GOALS.md). Технические детали: [детальное_описание.md](детальное_описание.md).
