@@ -884,6 +884,10 @@ def main() -> int:
                                     range_end.strftime("%Y-%m-%d %H:%M:%S"),
                                 ]
                             )
+                        if record_type == "Normal" and "--from" not in import_cmd:
+                            raise RuntimeError(
+                                "Internal error: Normal import missing --from/--to"
+                            )
                         if state_on_sd:
                             import_cmd.extend(
                                 ["--state-on-sd", "--skip-inventory-refresh"]

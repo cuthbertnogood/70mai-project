@@ -1850,6 +1850,14 @@ def main() -> int:
         action="store_true",
         help="Skip card inventory build (autopilot already wrote CARD_SUMMARY.txt)",
     )
+    parser.add_argument(
+        "--full-card",
+        action="store_true",
+        help=(
+            "Allow merging all Normal clips on the card (can fill the disk). "
+            "Autopilot never uses this — it imports one ~2h window at a time."
+        ),
+    )
     args = parser.parse_args()
 
     range_start = args.range_from
@@ -1874,6 +1882,22 @@ def main() -> int:
     record_types, cameras = parse_types_and_cameras(args.types, args.cameras)
     if not args.source.is_dir():
         raise SystemExit(f"Source not found: {args.source}")
+
+    # Guard: Normal without a time window fills the disk (today's ENOSPC failure).
+    # Event/Parking intentionally merge the whole type into one file.
+    has_window = range_start is not None or range_end is not None
+    if (
+        "Normal" in record_types
+        and not has_window
+        and not args.full_card
+        and not args.scan
+    ):
+        raise SystemExit(
+            "Refusing full-card Normal import (would fill the disk). "
+            "Pass --from/--to (or --date + times) for one window, "
+            "or --full-card only if you really mean it. "
+            "Autopilot uses per-~2h windows automatically."
+        )
 
     if args.scan:
         if args.dry_run:
