@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Autopilot: SD card → import → compose 2-cam → YouTube → delete local MP4.
 
-Default types: Normal (trips) + Event + Parking (each Event/Parking → one 2-cam YouTube video).
+Default types: Normal (trips) + Event (all events → one 2-cam YouTube video).
 
 Run outside Cursor — one command after inserting the dashcam SD card:
 
@@ -181,49 +181,9 @@ def _orphan_ffmpeg_pids() -> list[int]:
             continue
         pid_s, cmd = parts
         lower = cmd.lower()
-        if "python" in lower:
+        if "ffmpeg" not in lower:
             continue
-        tokens = lower.split()
-        if not tokens or not (tokens[0] == "ffmpeg" or tokens[0].endswith("/ffmpeg")):
-            continue
-        # Compose trips under .publish_tmp, or import merges into video/Output.
-        if (
-            ".publish_tmp" not in cmd
-            and "/chunk_" not in cmd
-            and "video/Output" not in cmd
-            and ".merge_stage" not in cmd
-        ):
-            continue
-        try:
-            pids.append(int(pid_s))
-        except ValueError:
-            continue
-    return pids
-
-
-def _import_pids() -> list[int]:
-    """PIDs running import_70mai.py (orphans survive --force-restart of parent)."""
-    try:
-        out = subprocess.run(
-            ["ps", "ax", "-o", "pid=,command="],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return []
-    pids: list[int] = []
-    for line in out.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split(None, 1)
-        if len(parts) < 2:
-            continue
-        pid_s, cmd = parts
-        if "import_70mai" not in cmd:
-            continue
-        if "python" not in cmd.lower():
+        if ".publish_tmp" not in cmd and "/chunk_" not in cmd:
             continue
         try:
             pids.append(int(pid_s))
@@ -236,13 +196,6 @@ def kill_orphan_ffmpeg() -> None:
     pids = _orphan_ffmpeg_pids()
     if pids:
         _kill_pids(pids, label="orphan ffmpeg")
-
-
-def kill_orphan_import() -> None:
-    pids = _import_pids()
-    if pids:
-        _kill_pids(pids, label="import_70mai.py")
-    kill_orphan_ffmpeg()
 
 
 def _kill_pids(pids: list[int], *, label: str) -> None:
@@ -275,7 +228,6 @@ def ensure_publish_slot(
 ) -> None:
     """Wait for publish_70mai.py to finish; kill stale/orphan processes on timeout or --force-restart."""
     if force:
-        kill_orphan_import()
         kill_orphan_ffmpeg()
         pids = _publish_pids()
         if pids:
@@ -313,17 +265,12 @@ def acquire_lock(*, force: bool = False) -> None:
             if force:
                 log(f"Force-restart: killing autopilot pid {pid} (lock {LOCK_FILE})")
                 _kill_pids([pid], label="publish_all_70mai.py")
-                # Child import_70mai often survives parent kill — clear it too.
-                kill_orphan_import()
             else:
                 log(f"ERROR: another publish_all may be running (lock {LOCK_FILE}, pid {pid})")
                 raise SystemExit(1)
         elif pid and not _pid_alive(pid):
             log(f"Removing stale autopilot lock (pid {pid} not running)")
         LOCK_FILE.unlink(missing_ok=True)
-    if force:
-        # Even without a lock holder, wipe leftover import from a previous crash.
-        kill_orphan_import()
     LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
 
@@ -519,7 +466,6 @@ def print_plan_summary(
     pending: int,
     state_paths: list[Path],
     inventory_summary: Path | None = None,
-    storage_summary: Path | None = None,
     check_disk: Path = Path("."),
     min_free_gb: float = 20.0,
     video_dir: Path = Path("video/Output"),
@@ -537,8 +483,6 @@ def print_plan_summary(
         log(f"  State: {names}")
     if inventory_summary is not None:
         log(f"  Card inventory: {inventory_summary}")
-    if storage_summary is not None:
-        log(f"  Card storage:   {storage_summary}")
     log(f"  Trips/events: {total_trips} total, {pending} pending upload")
     log(
         f"  Disk free: {free:.1f} GB "
@@ -597,7 +541,7 @@ def main() -> int:
         default=DEFAULT_TYPES,
         choices=["Normal", "Event", "Parking"],
         metavar="TYPE",
-        help="Record types to process (default: Normal Event Parking — Event/Parking = one merged YouTube video each)",
+        help="Record types to process (default: Normal Event — Event/Parking = one merged YouTube video each)",
     )
     parser.add_argument("--title", default="", help="YouTube base title (auto from SD date)")
     parser.add_argument("--video-dir", type=Path, default=DEFAULT_VIDEO_DIR)
@@ -691,11 +635,6 @@ def main() -> int:
 
         if last_sd_source is not None and source != last_sd_source:
             log(f"SD card changed: {last_sd_source} → {source}")
-            from publish_state import read_card_id
-
-            card_id = read_card_id(source)
-            if card_id:
-                log(f"  SD card ID: {card_id[:8]}…")
         last_sd_source = source
 
         ffprobe = shutil.which("ffprobe")
@@ -708,7 +647,7 @@ def main() -> int:
         auth_on_sd = not args.no_auth_on_sd
         log(
             f"Autopilot: types={', '.join(args.types)} "
-            "(Event/Parking = one merged YouTube video each)"
+            "(Event = merge all → one YouTube upload)"
         )
         try:
             creds, token = AuthStore.ensure_ready(
@@ -723,24 +662,6 @@ def main() -> int:
             log(str(exc))
             return 1
 
-        if state_on_sd and not args.dry_run:
-            from card_identity import host_session_stale, refresh_card_identity
-            from publish_state import (
-                clear_host_session,
-                read_card_id,
-                stamp_host_session,
-            )
-
-            card_id = read_card_id(source)
-            if host_session_stale(source, card_id, args.temp_dir):
-                clear_host_session(args.temp_dir)
-                log(
-                    "Cleared stale host session cache "
-                    "(new SD card or upload state mismatch)"
-                )
-            refresh_card_identity(source, card_id)
-            stamp_host_session(args.temp_dir, card_id)
-
         import_label = "_".join(args.types)
         trips, chunks, dur_by_type, total, pending = aggregate_plan(
             source,
@@ -751,29 +672,8 @@ def main() -> int:
             chunk_minutes=args.chunk_minutes,
             session_gap=args.session_gap,
         )
-        if chunks:
-            from plan_estimate import save_autopilot_plan
-
-            plan_path = save_autopilot_plan(
-                args.temp_dir,
-                source=source,
-                types=args.types,
-                chunks=chunks,
-                chunk_minutes=args.chunk_minutes,
-                session_gap=args.session_gap,
-            )
-            log(f"Dashboard plan cache: {plan_path}")
-
-        storage_summary = None
-        if state_on_sd and not args.dry_run:
-            from card_storage_stats import write_card_storage_stats
-
-            storage_summary = write_card_storage_stats(source)
-
         if pending == 0:
-            if storage_summary is not None:
-                log(f"Card storage: {storage_summary}")
-            log("All trips/events/parking already uploaded — nothing to do.")
+            log("All trips/events already uploaded — nothing to do.")
             return 0
 
         import_store = None
@@ -813,7 +713,6 @@ def main() -> int:
             pending=pending,
             state_paths=state_paths,
             inventory_summary=inventory_summary,
-            storage_summary=storage_summary,
             check_disk=Path("."),
             min_free_gb=args.min_free_gb,
             video_dir=args.video_dir,
@@ -899,101 +798,41 @@ def main() -> int:
 
         try:
             if not args.skip_import:
-                from runtime_config import (
-                    ensure_default_config_file,
-                    import_settings,
-                    autopilot_settings,
-                    log_config_if_changed,
-                )
-
-                ensure_default_config_file()
-                log_config_if_changed(log, force=True)
-                imp = import_settings(force=True)
-                ap = autopilot_settings(force=True)
-                retry_max = int(
-                    ap.get("import_merge_retry_max") or IMPORT_MERGE_RETRY_MAX
-                )
-                retry_delay = float(
-                    ap.get("import_merge_retry_delay_sec") or IMPORT_MERGE_RETRY_DELAY_SEC
-                )
-                # Import only types that still have pending uploads — avoids
-                # re-merging already-published Event/Parking mega-files.
-                import_types: list[str] = []
-                for rt in args.types:
-                    rt_store = StateStore(
-                        source, args.temp_dir, rt, state_on_sd=state_on_sd
+                import_cmd = [
+                    python,
+                    "import_70mai.py",
+                    "--source",
+                    str(source),
+                    "--types",
+                    ",".join(args.types),
+                    "--output",
+                    str(args.video_dir),
+                    "--gap-seconds",
+                    str(args.session_gap),
+                    "--chunk-minutes",
+                    str(IMPORT_CHUNK_MINUTES),
+                ]
+                if state_on_sd:
+                    import_cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
+                ec = 0
+                for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
+                    ec = run_step(
+                        import_cmd,
+                        log_path=args.log,
+                        dry_run=args.dry_run,
                     )
-                    rt_state = rt_store.load(resume=True, quiet=True)
-                    _, _, _, _, rt_pending = pending_trips(
-                        source,
-                        [rt],
-                        rt_state,
-                        ffprobe=ffprobe or "ffprobe",
-                        chunk_minutes=args.chunk_minutes,
-                        session_gap=args.session_gap,
-                    )
-                    if rt_pending > 0:
-                        import_types.append(rt)
-                    else:
-                        log(f"{rt}: all uploaded, skipping import")
-                if not import_types:
-                    log("Import: nothing pending — skip import step")
-                else:
-                    import_cmd = [
-                        python,
-                        "import_70mai.py",
-                        "--source",
-                        str(source),
-                        "--types",
-                        ",".join(import_types),
-                        "--output",
-                        str(args.video_dir),
-                        "--gap-seconds",
-                        str(imp.get("gap_seconds") or args.session_gap),
-                        "--chunk-minutes",
-                        str(imp.get("chunk_minutes") or IMPORT_CHUNK_MINUTES),
-                        "--chunk-clips",
-                        str(int(imp.get("chunk_clips") or 10)),
-                        "--stage-batch-clips",
-                        str(int(imp.get("stage_batch_clips") or 10)),
-                        "--merge-workers",
-                        str(int(imp.get("merge_workers") or 1)),
-                    ]
-                    if state_on_sd:
-                        import_cmd.extend(
-                            ["--state-on-sd", "--skip-inventory-refresh"]
+                    if ec == 0:
+                        break
+                    if import_attempt < IMPORT_MERGE_RETRY_MAX:
+                        log(
+                            f"Import had merge failure(s) — auto-retry "
+                            f"{import_attempt + 1}/{IMPORT_MERGE_RETRY_MAX} "
+                            f"in {IMPORT_MERGE_RETRY_DELAY_SEC}s…"
                         )
-                    import_cmd.extend(["--status-dir", str(args.temp_dir)])
-                    from autopilot_dashboard import write_import_status
-
-                    write_import_status(
-                        args.temp_dir,
-                        record_type=import_types[0],
-                        percent=0.0,
-                        detail="starting",
-                    )
-                    dashboard.render()
-                    ec = 0
-                    for import_attempt in range(1, retry_max + 1):
-                        # Re-read tunables between retries (edit JSON without full restart).
-                        log_config_if_changed(log)
-                        ec = run_step(
-                            import_cmd,
-                            log_path=args.log,
-                            dry_run=args.dry_run,
-                        )
-                        if ec == 0:
-                            break
-                        if import_attempt < retry_max:
-                            log(
-                                f"Import had merge failure(s) — auto-retry "
-                                f"{import_attempt + 1}/{retry_max} "
-                                f"in {retry_delay}s…"
-                            )
-                            time.sleep(retry_delay)
-                    if ec != 0:
-                        log(f"Import failed (exit {ec}) — see {args.log}")
-                        return ec
+                        time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
+                if ec != 0:
+                    log(f"Import failed (exit {ec}) — see {args.log}")
+                    return ec
 
             for record_type in args.types:
                 type_store = StateStore(
@@ -1013,16 +852,6 @@ def main() -> int:
                     continue
 
                 type_title = args.title or auto_title(type_trips)
-                from runtime_config import autopilot_settings, log_config_if_changed
-
-                log_config_if_changed(log)
-                ap = autopilot_settings()
-                profile = str(ap.get("profile") or args.profile)
-                prune = str(ap.get("prune_merged") or args.prune_merged)
-                min_free = float(ap.get("min_free_gb") or args.min_free_gb)
-                pub_chunk = float(
-                    ap.get("publish_chunk_minutes") or args.chunk_minutes
-                )
                 log(f"\n>>> Publish {record_type}: {type_pending} pending")
                 publish_cmd = [
                     python,
@@ -1048,13 +877,11 @@ def main() -> int:
                     "--title",
                     type_title,
                     "--profile",
-                    profile,
+                    args.profile,
                     "--prune-merged",
-                    prune,
+                    args.prune_merged,
                     "--min-free-gb",
-                    str(min_free),
-                    "--chunk-minutes",
-                    str(pub_chunk),
+                    str(args.min_free_gb),
                 ]
                 if args.upload_chunk_mb is not None:
                     publish_cmd.extend(

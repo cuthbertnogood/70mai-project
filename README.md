@@ -22,39 +22,23 @@ flowchart LR
 
 ## Что происходит по шагам
 
-### 1. Import — два конвейера параллельно
+### 1. Import — lossless concat
 
 Короткие клипы (~1 мин) с SD (`Normal` / `Event` / `Parking`, Front и Back).
 
-```mermaid
-flowchart TB
-  SD["SD-карта"] --> COPY["Конвейер 1: [copy]<br/>SD → SSD"]
-  COPY --> Q["Очередь на SSD<br/>готовые чанки"]
-  Q --> MERGE["Конвейер 2: [merge]<br/>ffmpeg concat -c copy"]
-  MERGE --> OUT["video/Output/<br/>~10 мин файлы"]
-  MERGE --> DEL["Удалить минутные<br/>копии со SSD"]
-  COPY -.->|пока merge идёт| COPY
-```
+- **Normal** → сессии → чанки ~10 мин (`ffmpeg concat -c copy`).
+- **Event / Parking** → все клипы камеры в **один** mega-файл.
+- Prefetch в page-cache; склейка читает клипы с SD (как ночной прогон Parking ~04:00).
 
-- **[copy]** копирует следующий чанк с флешки на SSD (вперёд до `prefetch_batches` чанков).
-- **[merge]** как только на SSD набрался полный чанк (`chunk_clips`), склеивает **с диска**, не читая SD.
-- Пока идёт склейка, copy уже тянет следующий чанк — поэтому не «сначала всё скопировать, потом всё склеить», а **overlap**.
-
-В логе ищите строки:
-`[copy] START … SD→SSD` → `[copy] DONE … queued for [merge]` → `[merge] START … enough clips on SSD` → `[merge] DONE`.
+В логе: `ffmpeg concat -c copy …` / `merging …`.
 
 ### 2. Compose — вертикальное видео
 
-Front сверху, Back снизу → один ролик на поездку/чанк (профиль из конфига, по умолчанию `balanced`: 1080px / 5000k).
-
-Короткие Normal-поездки (≤45 мин, несколько 10‑мин чанков) сначала **lossless pre-concat** в один файл на камеру, затем тот же 2-input `vstack`, что и Parking — без тяжёлого multi-input `filter_complex`.
+Front сверху, Back снизу → один ролик на поездку/чанк (профиль по умолчанию `balanced`: 1080px / 5000k).
 
 ### 3. Upload — YouTube
 
-Ролик уходит на канал (по умолчанию private). Размер кусков для загрузки задаёт `publish_chunk_minutes`.
-
-Autopilot **importирует только типы с pending upload** (уже залитые Event/Parking не трогает).
-
+Ролик уходит на канал (по умолчанию private).
 ### 4. Очистка Mac
 
 После успешной загрузки (или после compose — см. `prune_merged`) временные склейки удаляются, чтобы освободить диск.
@@ -95,21 +79,15 @@ scripts/setup-venv.sh          # первый раз
 
 ---
 
-## Тюнинг на ходу
+## Тюнинг
 
-Параметры — в [`70mai_runtime.json`](70mai_runtime.json)  
-(или override: `video/Output/.publish_tmp/70mai_runtime.json`).
+Compose-профиль и запас диска — флаги autopilot:
 
-```mermaid
-flowchart TB
-  CFG["Правите 70mai_runtime.json"] --> Q{Когда подхватит?}
-  Q -->|stage_batch_clips, retries| M["Сразу — следующий copy/merge"]
-  Q -->|chunk_clips, prefetch_batches| G["Со следующей группы камеры"]
-  Q -->|profile, min_free_gb, prune_merged| P["Перед следующим publish"]
-  Q -->|chunk_minutes, merge_workers, gap| R["Нужен новый import / рестарт"]
+```bash
+./scripts/publish_all_70mai.sh --profile balanced --min-free-gb 20
 ```
 
-Полная таблица всех ключей: [Runtime config](детальное_описание.md#runtime-config-70mai_runtimejson).
+`70mai_runtime.json` сейчас не управляет import (возвращён алгоритм ~04:00: concat с SD + page-cache prefetch).
 
 ---
 
