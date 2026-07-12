@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -82,6 +83,7 @@ def run_quiet_subprocess(
     *,
     heartbeat: str | None = None,
     heartbeat_sec: float = MERGE_HEARTBEAT_SEC,
+    on_heartbeat: Callable[[float], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess with captured output; optional periodic heartbeat logs."""
     proc = subprocess.Popen(
@@ -95,7 +97,13 @@ def run_quiet_subprocess(
     while proc.poll() is None:
         now = time.monotonic()
         if heartbeat and now >= next_beat:
-            log(f"       … {heartbeat} ({format_duration(now - start)})")
+            elapsed = now - start
+            log(f"       … {heartbeat} ({format_duration(elapsed)})")
+            if on_heartbeat is not None:
+                try:
+                    on_heartbeat(elapsed)
+                except Exception:
+                    pass
             next_beat = now + heartbeat_sec
         time.sleep(1)
     stdout, stderr = proc.communicate()
@@ -239,7 +247,7 @@ class PipelineProgress:
 class MergeReporter:
     """Merge-phase logging: batched skips, per-file detail, running totals."""
 
-    def __init__(self, total: int) -> None:
+    def __init__(self, total: int, status_dir: Path | None = None) -> None:
         self.total = max(total, 1)
         self.done = 0
         self.merged = 0
@@ -252,6 +260,34 @@ class MergeReporter:
         self._skip_first_name = ""
         self._last_summary_done = 0
         self._lock = threading.RLock()
+        self.status_dir = status_dir
+        self._current_record_type = ""
+        self._current_name = ""
+        self._session_start: datetime | None = None
+
+    def publish_status(self, *, elapsed_note: str = "") -> None:
+        """Push merge progress into autopilot_status.json for the live dashboard."""
+        if not self.status_dir:
+            return
+        current = min(self.done + (1 if self._current_name else 0), self.total)
+        pct = 100.0 * current / self.total
+        detail = f"{current}/{self.total}"
+        if self._current_name:
+            detail += f" · {self._current_name}"
+        if elapsed_note:
+            detail += f" · {elapsed_note}"
+        try:
+            from autopilot_dashboard import write_import_status
+
+            write_import_status(
+                self.status_dir,
+                record_type=self._current_record_type or "Normal",
+                percent=pct,
+                detail=detail,
+                session_start=self._session_start,
+            )
+        except Exception:
+            pass
 
     def _flush_skips(self, *, force: bool = False) -> None:
         if self._skip_batch == 0:
@@ -324,6 +360,10 @@ class MergeReporter:
                 log(f"       clips: {', '.join(c.path.name for c in chunk)}")
             else:
                 log(f"       clips: {chunk[0].path.name} … {chunk[-1].path.name}")
+            self._current_name = output_name
+            self._current_record_type = chunk[0].record_type if chunk else ""
+            self._session_start = chunk[0].timestamp if chunk else None
+            self.publish_status()
 
     def finish_merge(
         self,
@@ -345,7 +385,10 @@ class MergeReporter:
             else:
                 self.merged += 1
                 log(f"       ✓ {size_mb:.0f} MB in {format_duration(elapsed)}")
+            self._current_name = ""
+            self._session_start = None
             self._summary(force=True)
+            self.publish_status()
         if pipeline:
             pipeline.merge_step()
 
@@ -1298,6 +1341,15 @@ def merge_clips(
                     str(output_path),
                 ],
                 heartbeat=f"merging {output_path.name}",
+                on_heartbeat=(
+                    (
+                        lambda elapsed: reporter.publish_status(
+                            elapsed_note=format_duration(elapsed)
+                        )
+                    )
+                    if reporter is not None
+                    else None
+                ),
             )
             if result.returncode != 0:
                 last_error = _ffmpeg_merge_error(result)
@@ -1850,6 +1902,12 @@ def main() -> int:
         action="store_true",
         help="Skip card inventory build (autopilot already wrote CARD_SUMMARY.txt)",
     )
+    parser.add_argument(
+        "--status-dir",
+        type=Path,
+        default=None,
+        help="Write autopilot_status.json here during merge (live dashboard)",
+    )
     args = parser.parse_args()
 
     range_start = args.range_from
@@ -1973,7 +2031,19 @@ def main() -> int:
     probe_progress = (
         None if assume_seconds is not None else ProgressTracker(total_clips, "Probe")
     )
-    merge_reporter = MergeReporter(max(total_outputs, 1))
+    merge_reporter = MergeReporter(max(total_outputs, 1), status_dir=args.status_dir)
+    if args.status_dir is not None:
+        try:
+            from autopilot_dashboard import write_import_status
+
+            write_import_status(
+                args.status_dir,
+                record_type=record_types[0] if record_types else "Normal",
+                percent=0.0,
+                detail="starting",
+            )
+        except Exception:
+            pass
     pipeline = PipelineProgress(total_clips, max(total_outputs, 1))
 
     label = "_".join(record_types)

@@ -850,6 +850,16 @@ def main() -> int:
                 ]
                 if state_on_sd:
                     import_cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
+                import_cmd.extend(["--status-dir", str(args.temp_dir)])
+                from autopilot_dashboard import write_import_status
+
+                write_import_status(
+                    args.temp_dir,
+                    record_type=args.types[0] if args.types else "Normal",
+                    percent=0.0,
+                    detail="starting",
+                )
+                dashboard.render()
                 ec = 0
                 for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
                     ec = run_step(

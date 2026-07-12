@@ -105,6 +105,7 @@ def write_status(
     stalled: bool = False,
     reason: str = "",
     card_id: str | None = None,
+    session_start: str | None = None,
 ) -> None:
     """Atomic status update for the live dashboard (safe across processes)."""
     path = status_path(temp_dir)
@@ -123,6 +124,8 @@ def write_status(
     }
     if card_id:
         data["card_id"] = card_id
+    if session_start:
+        data["session_start"] = session_start
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -139,6 +142,87 @@ def write_status(
             )
     except OSError:
         pass
+
+
+def write_import_status(
+    temp_dir: Path,
+    *,
+    record_type: str,
+    percent: float | None = None,
+    detail: str = "",
+    session_start: datetime | None = None,
+) -> None:
+    """Dashboard progress while import_70mai merge is running (no trip indices yet)."""
+    write_status(
+        temp_dir,
+        record_type=record_type,
+        chunk_index=0,
+        trip_index=0,
+        phase="import",
+        detail=detail,
+        percent=percent,
+        session_start=(
+            session_start.isoformat(timespec="seconds") if session_start else None
+        ),
+    )
+
+
+_MERGED_TS_RE = re.compile(
+    r"(?:NO|EV|PA)_(\d{8})-(\d{6})_",
+    re.IGNORECASE,
+)
+
+
+def _parse_import_session_start(st: dict) -> datetime | None:
+    raw = st.get("session_start")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return datetime.fromisoformat(raw.strip())
+        except ValueError:
+            pass
+    detail = str(st.get("detail") or "")
+    match = _MERGED_TS_RE.search(detail)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def _find_import_row(rows: list[TripRow], st: dict) -> TripRow | None:
+    """Map import merge status onto a plan trip (by type + clip timestamp)."""
+    record_type = str(st.get("record_type") or "")
+    candidates = [r for r in rows if r.record_type == record_type and r.status != "done"]
+    if not candidates:
+        candidates = [r for r in rows if r.record_type == record_type]
+    if not candidates:
+        return None
+    if record_type in ("Event", "Parking"):
+        return candidates[0]
+    ts = _parse_import_session_start(st)
+    if ts is None:
+        return candidates[0]
+    for row in candidates:
+        if row.trip_start is None or row.trip_end is None:
+            continue
+        if row.trip_start <= ts <= row.trip_end:
+            return row
+    return candidates[0]
+
+
+def _status_active_key(rows: list[TripRow], st: dict | None) -> str | None:
+    if not st:
+        return None
+    phase = str(st.get("phase") or "")
+    if phase == "import":
+        matched = _find_import_row(rows, st)
+        return matched.key if matched else None
+    return trip_key(
+        st.get("record_type", ""),
+        int(st.get("chunk_index") or 0),
+        int(st.get("trip_index") or 0),
+    )
 
 
 def read_status(temp_dir: Path) -> dict | None:
@@ -260,7 +344,7 @@ _COL_HEADERS = ("№", "Поездка", "Длит", "Этап", "Размер",
 
 _STATUS_LEGEND = (
     "№ = видео N из M (очередь на YouTube)  |  ► = сейчас в работе",
-    "Этап: ожидание → сборка N/M · N% → ↑ N/M · N% → ✓",
+    "Этап: ожидание → импорт N% → сборка N/M · N% → ↑ N/M · N% → ✓",
     "Размер = MP4 на диске (— после upload; один temp-путь на chunk/trip)",
 )
 
@@ -450,6 +534,8 @@ def _stage_label(
             return f"{pos}сборка {percent:.0f}%".strip()
         return f"{pos}сборка …".strip()
     if status == "import":
+        if percent is not None:
+            return f"{pos}импорт {percent:.0f}%".strip()
         return f"{pos}импорт".strip() if pos else "импорт"
     if status == "pending":
         return "ожидание"
@@ -674,15 +760,8 @@ class Dashboard:
         if self.source is None:
             return
         st = read_status(self.temp_dir)
-        active_key: str | None = None
-        active_phase = ""
-        if st:
-            active_key = trip_key(
-                st.get("record_type", ""),
-                int(st.get("chunk_index") or 0),
-                int(st.get("trip_index") or 0),
-            )
-            active_phase = str(st.get("phase") or "")
+        active_key = _status_active_key(self.rows, st)
+        active_phase = str(st.get("phase") or "") if st else ""
         try:
             from publish_all_70mai import load_merged_publish_state
             from publish_70mai import get_upload_entry, is_row_uploaded
@@ -773,13 +852,7 @@ class Dashboard:
     def _refresh_from_status(self) -> None:
         st = read_status(self.temp_dir)
         reasons = read_trip_reasons(self.temp_dir)
-        active_key: str | None = None
-        if st:
-            active_key = trip_key(
-                st.get("record_type", ""),
-                int(st.get("chunk_index") or 0),
-                int(st.get("trip_index") or 0),
-            )
+        active_key = _status_active_key(self.rows, st)
         for row in self.rows:
             composed = _row_compose_bytes(
                 self.temp_dir, row, active_key=active_key
@@ -845,6 +918,8 @@ class Dashboard:
                     row.youtube_url = st["youtube_url"]
                 if phase in ("compose", "upload", "stall") and composed > 0:
                     row.disk = _fmt_gb(composed)
+                elif phase == "import" and merged_bytes > 0:
+                    row.disk = f"merged {_fmt_gb(merged_bytes)}"
                 continue
 
             if row.status == "done":
@@ -859,6 +934,9 @@ class Dashboard:
                 row.stalled = False
                 row.reason = saved_reason or "ошибка"
             else:
+                # Import maps across trips as merge advances; clear stale overlay.
+                if row.status == "import":
+                    row.status = "pending"
                 total = len(self.rows)
                 row.progress = _stage_label(
                     row.status,
@@ -909,13 +987,7 @@ class Dashboard:
         col_widths = _column_widths(term_cols)
 
         st = read_status(self.temp_dir)
-        active_key: str | None = None
-        if st:
-            active_key = trip_key(
-                st.get("record_type", ""),
-                int(st.get("chunk_index") or 0),
-                int(st.get("trip_index") or 0),
-            )
+        active_key = _status_active_key(self.rows, st)
 
         total = len(self.rows)
         summary = f"YouTube: {done}/{total} загружено"
@@ -934,8 +1006,20 @@ class Dashboard:
                     overall_index=ar.overall_index or None,
                     overall_total=total,
                 )
-                parts.append(f"{stage} · {_trip_display(ar)}")
+                extra = ""
+                if ar.status == "import" and st and (st.get("detail") or "").strip():
+                    extra = f" · {str(st.get('detail')).strip()}"
+                parts.append(f"{stage} · {_trip_display(ar)}{extra}")
             summary += "  |  сейчас: " + ", ".join(parts)
+        elif st and st.get("phase") == "import":
+            pct = st.get("percent")
+            detail = str(st.get("detail") or "").strip()
+            stage = "импорт"
+            if isinstance(pct, (int, float)):
+                stage = f"импорт {float(pct):.0f}%"
+            summary += "  |  сейчас: " + stage
+            if detail:
+                summary += f" · {detail}"
         else:
             summary += "  |  сейчас: ожидание"
 
