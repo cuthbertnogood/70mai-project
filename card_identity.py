@@ -177,7 +177,53 @@ def count_uploaded_trips(source: Path) -> int:
         except (OSError, json.JSONDecodeError):
             continue
         total += sum(1 for p in data.get("trip_parts", []) if p.get("uploaded"))
+        total += sum(1 for p in data.get("parts", []) if p.get("uploaded"))
     return total
+
+
+def host_session_stale(source: Path, card_id: str | None, temp_dir: Path) -> bool:
+    """True when host dashboard cache should be dropped (new card / stale done)."""
+    from publish_state import (
+        HOST_STATUS_FILENAME,
+        is_uploaded_on_sd,
+        read_host_session_card_id,
+    )
+
+    previous = read_card_meta(source)
+    has_session_files = (
+        (temp_dir / HOST_STATUS_FILENAME).is_file()
+        or (temp_dir / "autopilot_trip_reasons.json").is_file()
+        or read_host_session_card_id(temp_dir) is not None
+    )
+    if card_id and (not previous or previous.get("card_id") != card_id):
+        return has_session_files
+
+    session_id = read_host_session_card_id(temp_dir)
+    if card_id and session_id and session_id != card_id:
+        return True
+
+    status_path = temp_dir / HOST_STATUS_FILENAME
+    if not status_path.is_file():
+        return False
+    try:
+        st = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(st, dict):
+        return False
+
+    if card_id and st.get("card_id") and st["card_id"] != card_id:
+        return True
+
+    if st.get("phase") == "done" and st.get("youtube_url"):
+        record_type = str(st.get("record_type") or "")
+        chunk_index = int(st.get("chunk_index") or 0)
+        trip_index = int(st.get("trip_index") or 0)
+        if record_type and not is_uploaded_on_sd(
+            source, record_type, chunk_index, trip_index
+        ):
+            return True
+    return False
 
 
 def refresh_card_identity(source: Path, card_id: str | None) -> dict | None:

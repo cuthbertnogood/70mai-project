@@ -214,6 +214,12 @@ def read_card_id(source: Path) -> str | None:
     return value or None
 
 
+def _state_has_uploads(data: dict) -> bool:
+    if any(p.get("uploaded") for p in data.get("trip_parts", [])):
+        return True
+    return any(p.get("uploaded") for p in data.get("parts", []))
+
+
 def _sd_has_uploaded_trips(source: Path) -> bool:
     pub = sd_publish_dir(source)
     if not pub.is_dir():
@@ -223,9 +229,56 @@ def _sd_has_uploaded_trips(source: Path) -> bool:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if any(p.get("uploaded") for p in data.get("trip_parts", [])):
+        if _state_has_uploads(data):
             return True
     return False
+
+
+HOST_SESSION_CARD_ID = "session_card_id.txt"
+HOST_STATUS_FILENAME = "autopilot_status.json"
+HOST_REASONS_FILENAME = "autopilot_trip_reasons.json"
+
+
+def clear_host_session(temp_dir: Path) -> None:
+    """Drop host-only dashboard overlay from a previous card or stale run."""
+    for name in (HOST_STATUS_FILENAME, HOST_REASONS_FILENAME):
+        path = temp_dir / name
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def stamp_host_session(temp_dir: Path, card_id: str | None) -> None:
+    if not card_id:
+        return
+    path = temp_dir / HOST_SESSION_CARD_ID
+    try:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(card_id + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def read_host_session_card_id(temp_dir: Path) -> str | None:
+    path = temp_dir / HOST_SESSION_CARD_ID
+    if not path.is_file():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
+def is_uploaded_on_sd(
+    source: Path,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+) -> bool:
+    from publish_70mai import is_row_uploaded
+
+    sd = load_state_file(sd_state_path(source, record_type))
+    return is_row_uploaded(sd, record_type, chunk_index, trip_index)
 
 
 def get_or_create_card_id(source: Path, *, create: bool = True) -> str | None:
@@ -270,13 +323,19 @@ def empty_publish_state(
     return state
 
 
+def _local_has_upload_cache(local: dict) -> bool:
+    if _state_has_uploads(local):
+        return True
+    return False
+
+
 def _local_state_from_other_card(
     local: dict,
     current_card_id: str | None,
     sd: dict | None = None,
 ) -> bool:
     """True when host cache belongs to a different SD card."""
-    if not local.get("trip_parts"):
+    if not _local_has_upload_cache(local):
         return False
     if not current_card_id:
         return False
@@ -286,7 +345,7 @@ def _local_state_from_other_card(
     if local_id is not None:
         return True
     # Legacy local cache without card_id
-    if sd and any(p.get("uploaded") for p in sd.get("trip_parts", [])):
+    if sd and _state_has_uploads(sd):
         return False
     return True
 
@@ -526,6 +585,7 @@ class StateStore:
             if current_card_id:
                 local["card_id"] = current_card_id
             save_state_file(self.local_path, local)
+            clear_host_session(self.temp_dir)
 
         if sd and local:
             merged = merge_publish_state(sd, local)

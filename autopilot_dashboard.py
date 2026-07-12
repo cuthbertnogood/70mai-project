@@ -15,6 +15,9 @@ from pathlib import Path
 
 STATUS_FILENAME = "autopilot_status.json"
 REASONS_FILENAME = "autopilot_trip_reasons.json"
+LIVE_STATUS_PHASES = frozenset(
+    {"compose", "upload", "stall", "import", "oauth"}
+)
 
 
 def trip_key(record_type: str, chunk_index: int, trip_index: int) -> str:
@@ -101,6 +104,7 @@ def write_status(
     output_bytes: int | None = None,
     stalled: bool = False,
     reason: str = "",
+    card_id: str | None = None,
 ) -> None:
     """Atomic status update for the live dashboard (safe across processes)."""
     path = status_path(temp_dir)
@@ -117,6 +121,8 @@ def write_status(
         "stalled": stalled,
         "reason": reason[:120] if reason else "",
     }
+    if card_id:
+        data["card_id"] = card_id
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -539,7 +545,7 @@ class Dashboard:
     ) -> Dashboard:
         from import_70mai import format_duration
         from plan_estimate import SINGLE_VIDEO_TYPES
-        from publish_70mai import get_trip_state, trip_uploaded
+        from publish_70mai import get_upload_entry, is_row_uploaded
         from publish_state import youtube_watch_url
 
         rows: list[TripRow] = []
@@ -554,10 +560,10 @@ class Dashboard:
                 else:
                     label = f"trip {trip.index} {trip.start:%m-%d %H:%M}"
                 key = f"{chunk.record_type}:{chunk.index}:{trip_idx}"
-                uploaded = trip_uploaded(
+                uploaded = is_row_uploaded(
                     state, chunk.record_type, chunk.index, trip_idx
                 )
-                entry = get_trip_state(
+                entry = get_upload_entry(
                     state, chunk.record_type, chunk.index, trip_idx
                 )
                 url = None
@@ -679,7 +685,7 @@ class Dashboard:
             active_phase = str(st.get("phase") or "")
         try:
             from publish_all_70mai import load_merged_publish_state
-            from publish_70mai import get_trip_state, trip_uploaded
+            from publish_70mai import get_upload_entry, is_row_uploaded
             from publish_state import youtube_watch_url
 
             state = load_merged_publish_state(
@@ -698,11 +704,11 @@ class Dashboard:
                 and active_phase in ("compose", "upload", "stall", "import", "oauth")
             ):
                 continue
-            if not trip_uploaded(
+            if not is_row_uploaded(
                 state, row.record_type, row.chunk_index, row.trip_index
             ):
                 continue
-            entry = get_trip_state(
+            entry = get_upload_entry(
                 state, row.record_type, row.chunk_index, row.trip_index
             )
             url = None
@@ -803,6 +809,8 @@ class Dashboard:
 
             if active_key and row.key == active_key and st:
                 phase = st.get("phase") or row.status
+                if phase not in LIVE_STATUS_PHASES:
+                    continue
                 row.status = phase
                 stalled = bool(st.get("stalled"))
                 if stalled:
@@ -833,12 +841,9 @@ class Dashboard:
                     row.reason = "—"
                 else:
                     row.reason = saved_reason or "—"
-                if st.get("youtube_url"):
+                if phase == "upload" and st.get("youtube_url"):
                     row.youtube_url = st["youtube_url"]
-                if phase == "done":
-                    row.disk = "pruned" if "merged" not in row.disk else row.disk
-                    row.reason = "—"
-                elif phase in ("compose", "upload", "stall") and composed > 0:
+                if phase in ("compose", "upload", "stall") and composed > 0:
                     row.disk = _fmt_gb(composed)
                 continue
 
@@ -1099,6 +1104,19 @@ def main() -> int:
     if not chunks:
         print("No trips in plan (empty SD or wrong --types?)", file=sys.stderr)
         return 1
+
+    if state_on_sd:
+        from card_identity import host_session_stale
+        from publish_state import (
+            clear_host_session,
+            read_card_id,
+            stamp_host_session,
+        )
+
+        card_id = read_card_id(source)
+        if host_session_stale(source, card_id, args.temp_dir):
+            clear_host_session(args.temp_dir)
+        stamp_host_session(args.temp_dir, card_id)
 
     merged_state = load_merged_publish_state(
         source, args.types, args.temp_dir, state_on_sd=state_on_sd

@@ -105,6 +105,48 @@ class CardStateIsolationTests(unittest.TestCase):
             state = store.load(resume=True, quiet=True)
             self.assertEqual(len(state.get("trip_parts", [])), 2)
 
+    def test_new_card_ignores_local_chunk_upload_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "card"
+            source.mkdir()
+            temp = root / "tmp"
+            temp.mkdir()
+            card_id = get_or_create_card_id(source)
+            assert card_id
+
+            sd_path = sd_state_path(source, "Parking")
+            save_state_file(
+                sd_path,
+                empty_publish_state(source, "Parking", card_id=card_id),
+            )
+
+            local_path = temp / "publish_Parking.state.json"
+            save_state_file(
+                local_path,
+                {
+                    "source": str(source),
+                    "card_id": "old-card-uuid-2222",
+                    "parts": [
+                        {
+                            "record_type": "Parking",
+                            "index": 1,
+                            "video_id": "lUy-Y6DwCEM",
+                            "uploaded": True,
+                        }
+                    ],
+                },
+            )
+            (temp / "autopilot_status.json").write_text(
+                '{"phase":"done","youtube_url":"https://youtu.be/lUy-Y6DwCEM"}',
+                encoding="utf-8",
+            )
+
+            store = StateStore(source, temp, "Parking", state_on_sd=True)
+            state = store.load(resume=True, quiet=True)
+            self.assertEqual(state.get("parts"), [])
+            self.assertFalse((temp / "autopilot_status.json").is_file())
+
     def test_card_id_file_created_on_sd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "card"

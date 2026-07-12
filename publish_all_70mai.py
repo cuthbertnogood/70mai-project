@@ -671,10 +671,22 @@ def main() -> int:
             return 1
 
         if state_on_sd and not args.dry_run:
-            from card_identity import refresh_card_identity
-            from publish_state import read_card_id
+            from card_identity import host_session_stale, refresh_card_identity
+            from publish_state import (
+                clear_host_session,
+                read_card_id,
+                stamp_host_session,
+            )
 
-            refresh_card_identity(source, read_card_id(source))
+            card_id = read_card_id(source)
+            if host_session_stale(source, card_id, args.temp_dir):
+                clear_host_session(args.temp_dir)
+                log(
+                    "Cleared stale host session cache "
+                    "(new SD card or upload state mismatch)"
+                )
+            refresh_card_identity(source, card_id)
+            stamp_host_session(args.temp_dir, card_id)
 
         import_label = "_".join(args.types)
         trips, chunks, dur_by_type, total, pending = aggregate_plan(

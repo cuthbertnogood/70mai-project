@@ -725,7 +725,7 @@ One script for use **outside Cursor** (Terminal.app, double-click wrapper, cron)
 
 On another host: install project, insert SD, run `./scripts/publish_all_70mai.sh --wait` — no separate OAuth setup if the token on the card is still valid. Merged clips on host (`video/Output/`) are rebuilt by import if missing.
 
-**New / different SD card:** each card gets a unique `/.70mai/card_id.txt`. Host cache in `video/Output/.publish_tmp/publish_*.state.json` is **not** merged if its `card_id` differs from the inserted card — YouTube links from the old card will not appear on the dashboard. Do not copy `card_id.txt`, `card_meta.json`, or `publish/*.state.json` between cards (OAuth copy is OK). Optional `card_label.txt` (one line, e.g. `Dashcam A`) shows in logs.
+**New / different SD card:** each card gets a unique `/.70mai/card_id.txt`. Host cache in `video/Output/.publish_tmp/publish_*.state.json` is **not** merged if its `card_id` differs from the inserted card — YouTube links from the old card will not appear on the dashboard. Stale `autopilot_status.json` from a previous run is cleared automatically when it disagrees with SD publish state. Do not copy `card_id.txt`, `card_meta.json`, or `publish/*.state.json` between cards (OAuth copy is OK). Optional `card_label.txt` (one line, e.g. `Dashcam A`) shows in logs.
 
 **Same card again with new recordings:** `card_id` stays the same; `card_meta.json` compares clip counts. Autopilot logs e.g. `New footage on same card: Normal +12 clips` and uploads **only pending** trips — already-uploaded trips stay skipped. Re-insert the card after a week of driving: only new trips go to YouTube.
 
