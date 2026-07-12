@@ -482,7 +482,7 @@ _COL_HEADERS = ("№", "Поездка", "Длит", "Этап", "Размер",
 _STATUS_LEGEND = (
     "№ = видео N из M (очередь на YouTube)  |  ► = сейчас в работе",
     "Этап: ожидание → импорт N% → сборка N/M · N% → ↑ N/M · N% → ✓",
-    "Импорт: [copy] SD→SSD ∥ [merge] concat; ⏱ = сколько уже идёт текущий файл",
+    "Импорт: [copy] SD→SSD ∥ [merge] concat; MB% = сколько уже скопировано/склеено",
     "процессы: pid + время жизни OS-процесса (autopilot/import/compose/upload/ffmpeg)",
     "Размер = MP4 на диске (— после upload; один temp-путь на chunk/trip)",
 )
@@ -837,6 +837,11 @@ def _format_import_conveyors(st: dict) -> list[str]:
             parts.append(file_name)
         if clip:
             parts.append(f"clip {clip}")
+        bd = info.get("bytes_done")
+        bt = info.get("bytes_total")
+        if isinstance(bd, (int, float)) and isinstance(bt, (int, float)) and bt > 0:
+            pct = min(100.0, 100.0 * float(bd) / float(bt))
+            parts.append(f"{bd / 1_000_000:.0f}/{bt / 1_000_000:.0f} MB ({pct:.0f}%)")
         if elapsed:
             parts.append(f"⏱ {elapsed}")
         if detail:

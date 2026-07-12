@@ -330,6 +330,8 @@ class MergeReporter:
         stage_ahead: str = "",
         record_type: str = "",
         session_start: datetime | None = None,
+        bytes_done: int | None = None,
+        bytes_total: int | None = None,
     ) -> None:
         with self._lock:
             prev = self._copy
@@ -343,6 +345,19 @@ class MergeReporter:
                 started = datetime.now().isoformat(timespec="seconds")
             if not active:
                 started = ""
+            bd = (
+                int(bytes_done)
+                if bytes_done is not None
+                else int(prev.get("bytes_done") or 0)
+            )
+            bt = (
+                int(bytes_total)
+                if bytes_total is not None
+                else int(prev.get("bytes_total") or 0)
+            )
+            if not active and bytes_done is None:
+                bd = 0
+                bt = 0
             self._copy = {
                 "active": active,
                 "file": file,
@@ -350,6 +365,8 @@ class MergeReporter:
                 "clip": clip,
                 "detail": detail,
                 "started": started,
+                "bytes_done": bd,
+                "bytes_total": bt,
             }
             if stage_ahead:
                 self._stage_ahead = stage_ahead
@@ -369,6 +386,10 @@ class MergeReporter:
         elapsed: str = "",
         record_type: str = "",
         session_start: datetime | None = None,
+        bytes_done: int | None = None,
+        bytes_total: int | None = None,
+        clips_done: int | None = None,
+        clips_total: int | None = None,
     ) -> None:
         with self._lock:
             prev = self._merge
@@ -381,14 +402,40 @@ class MergeReporter:
                 started = datetime.now().isoformat(timespec="seconds")
             if not active:
                 started = ""
+            bd = (
+                int(bytes_done)
+                if bytes_done is not None
+                else int(prev.get("bytes_done") or 0)
+            )
+            bt = (
+                int(bytes_total)
+                if bytes_total is not None
+                else int(prev.get("bytes_total") or 0)
+            )
+            cd = (
+                int(clips_done)
+                if clips_done is not None
+                else int(prev.get("clips_done") or 0)
+            )
+            ct = (
+                int(clips_total)
+                if clips_total is not None
+                else int(prev.get("clips_total") or 0)
+            )
+            if not active and bytes_done is None:
+                bd = bt = cd = ct = 0
             self._merge = {
                 "active": active,
                 "file": file,
                 "chunk": chunk,
-                "clip": "",
+                "clip": f"{cd}/{ct}" if ct else "",
                 "detail": detail,
                 "elapsed": elapsed,
                 "started": started,
+                "bytes_done": bd,
+                "bytes_total": bt,
+                "clips_done": cd,
+                "clips_total": ct,
             }
             if file:
                 self._current_name = file if active else ""
@@ -1386,23 +1433,35 @@ def stage_clips_locally(
     *,
     index_offset: int = 0,
     total_hint: int | None = None,
-    on_clip: Callable[[int, int, str], None] | None = None,
+    bytes_base: int = 0,
+    total_bytes: int = 0,
+    on_clip: Callable[[int, int, str, int, int], None] | None = None,
 ) -> list[Path]:
     """Copy chunk clips from SD to local stage_dir (sequential, one USB stream)."""
     stage_dir.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
     total = total_hint if total_hint is not None else len(chunk)
+    if total_bytes <= 0:
+        try:
+            total_bytes = sum(c.path.stat().st_size for c in chunk) + max(0, bytes_base)
+        except OSError:
+            total_bytes = 0
+    done_bytes = max(0, int(bytes_base))
     for i, clip in enumerate(chunk):
         idx = index_offset + i + 1
         dest = stage_dir / clip.path.name
-        src_size = clip.path.stat().st_size
-        if on_clip is not None:
-            try:
-                on_clip(idx, total, clip.path.name)
-            except Exception:
-                pass
-        if dest.is_file() and dest.stat().st_size == src_size:
+        try:
+            src_size = clip.path.stat().st_size
+        except OSError:
+            src_size = 0
+        if dest.is_file() and src_size and dest.stat().st_size == src_size:
             log(f"  [copy] {idx}/{total}: {clip.path.name} (already on SSD)")
+            done_bytes += src_size
+            if on_clip is not None:
+                try:
+                    on_clip(idx, total, clip.path.name, done_bytes, total_bytes)
+                except Exception:
+                    pass
             staged.append(dest)
             continue
         partial = dest.with_suffix(dest.suffix + ".partial")
@@ -1411,12 +1470,24 @@ def stage_clips_locally(
             f"  [copy] {idx}/{total}: {clip.path.name} "
             f"({src_size / 1_000_000:.0f} MB) SD→SSD"
         )
+        if on_clip is not None:
+            try:
+                on_clip(idx, total, clip.path.name, done_bytes, total_bytes)
+            except Exception:
+                pass
         t0 = time.monotonic()
         shutil.copyfile(clip.path, partial)
         partial.replace(dest)
+        done_bytes += src_size
         log(
-            f"  [copy] {idx}/{total}: ok in {format_duration(time.monotonic() - t0)}"
+            f"  [copy] {idx}/{total}: ok in {format_duration(time.monotonic() - t0)} "
+            f"({done_bytes / 1_000_000:.0f}/{total_bytes / 1_000_000:.0f} MB)"
         )
+        if on_clip is not None:
+            try:
+                on_clip(idx, total, clip.path.name, done_bytes, total_bytes)
+            except Exception:
+                pass
         staged.append(dest)
     return staged
 
@@ -1600,15 +1671,50 @@ def merge_clips(
         and bool(chunk)
         and not _same_filesystem(chunk[0].path, output_path.parent)
     )
-    on_hb = (
-        (
-            lambda elapsed: reporter.publish_status(
-                elapsed_note=format_duration(elapsed)
+
+    def _source_bytes(paths: list[Path]) -> int:
+        total = 0
+        for p in paths:
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+        return total
+
+    def _hb_factory(sources: list[Path], dest: Path) -> Callable[[float], None] | None:
+        if reporter is None:
+            return None
+        expected = _source_bytes(sources)
+        clips_n = len(sources)
+
+        def _hb(elapsed: float) -> None:
+            out_b = 0
+            try:
+                if dest.is_file():
+                    out_b = dest.stat().st_size
+            except OSError:
+                pass
+            clips_done = 0
+            if expected > 0 and out_b > 0:
+                clips_done = min(
+                    clips_n, max(0, int(round(clips_n * out_b / expected)))
+                )
+            reporter.update_merge(
+                active=True,
+                file=dest.name,
+                chunk=f"{reporter.done + 1}/{reporter.total}",
+                detail="concat from SSD",
+                elapsed=format_duration(elapsed),
+                record_type=record_type
+                or (chunk[0].record_type if chunk else ""),
+                session_start=chunk[0].timestamp if chunk else None,
+                bytes_done=out_b,
+                bytes_total=expected,
+                clips_done=clips_done,
+                clips_total=clips_n,
             )
-        )
-        if reporter is not None
-        else None
-    )
+
+        return _hb
 
     def _fail(msg: str) -> str:
         log(f"       ERROR: {msg}")
@@ -1640,6 +1746,21 @@ def merge_clips(
     def _concat_sources(sources: list[Path], dest: Path, label: str) -> str | None:
         """Return None on success, else error string."""
         last_error = ""
+        on_hb = _hb_factory(sources, dest)
+        if reporter is not None:
+            expected = _source_bytes(sources)
+            reporter.update_merge(
+                active=True,
+                file=dest.name,
+                chunk=f"{reporter.done + 1}/{reporter.total}",
+                detail="concat from SSD",
+                record_type=record_type or (chunk[0].record_type if chunk else ""),
+                session_start=chunk[0].timestamp if chunk else None,
+                bytes_done=0,
+                bytes_total=expected,
+                clips_done=0,
+                clips_total=len(sources),
+            )
         for attempt in range(1, attempts + 1):
             if attempt > 1:
                 log(
@@ -2009,9 +2130,24 @@ def _run_copy_merge_pipeline(
                     stage_ahead=ahead_label,
                     record_type=rec_type,
                     session_start=sess_start,
+                    bytes_done=0,
+                    bytes_total=int(total_mb * 1_000_000),
                 )
 
-            def _on_clip(idx: int, total: int, name: str, _out=out_path.name) -> None:
+            chunk_total_bytes = 0
+            try:
+                chunk_total_bytes = sum(c.path.stat().st_size for c in chunk)
+            except OSError:
+                chunk_total_bytes = int(total_mb * 1_000_000)
+
+            def _on_clip(
+                idx: int,
+                total: int,
+                name: str,
+                done_b: int,
+                tot_b: int,
+                _out=out_path.name,
+            ) -> None:
                 if merge_reporter is None:
                     return
                 # Avoid flooding status JSON on huge Event/Parking merges.
@@ -2026,12 +2162,15 @@ def _run_copy_merge_pipeline(
                     stage_ahead=ahead_label,
                     record_type=rec_type,
                     session_start=sess_start,
+                    bytes_done=done_b,
+                    bytes_total=tot_b or chunk_total_bytes,
                 )
 
             t0 = time.monotonic()
             try:
                 batch = max(1, int(live.get("stage_batch_clips") or len(chunk) or 1))
                 staged: list[Path] = []
+                bytes_base = 0
                 for offset in range(0, len(chunk), batch):
                     part = chunk[offset : offset + batch]
                     staged.extend(
@@ -2040,9 +2179,15 @@ def _run_copy_merge_pipeline(
                             stage_dir,
                             index_offset=offset,
                             total_hint=len(chunk),
+                            bytes_base=bytes_base,
+                            total_bytes=chunk_total_bytes,
                             on_clip=_on_clip,
                         )
                     )
+                    try:
+                        bytes_base += sum(c.path.stat().st_size for c in part)
+                    except OSError:
+                        pass
                 elapsed = time.monotonic() - t0
                 log(
                     f"  [copy] DONE  {out_path.name}: {len(staged)} clips on SSD "
@@ -2058,6 +2203,8 @@ def _run_copy_merge_pipeline(
                         stage_ahead=ahead_label,
                         record_type=rec_type,
                         session_start=sess_start,
+                        bytes_done=chunk_total_bytes,
+                        bytes_total=chunk_total_bytes,
                     )
                 ready.put(("ready", session_idx, chunk, out_path, stage_dir, staged))
             except OSError as exc:
