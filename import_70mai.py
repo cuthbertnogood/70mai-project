@@ -1349,8 +1349,17 @@ def start_prefetch(paths: list[Path]) -> threading.Thread:
 
 
 def _same_filesystem(a: Path, b: Path) -> bool:
+    """True if a and b (or their parent dirs) are on the same filesystem device.
+
+    Robust to passing a target *file* that does not exist yet (common for merge output_path).
+    We compare the filesystem of the containing directory.
+    """
     try:
-        return a.resolve().stat().st_dev == b.resolve().stat().st_dev
+        def _fs_dev(p: Path) -> int:
+            # Use parent if this is (or will be) a file rather than a directory
+            q = p if (p.exists() and p.is_dir()) else p.parent
+            return q.resolve().stat().st_dev
+        return _fs_dev(a) == _fs_dev(b)
     except OSError:
         return False
 
@@ -1424,7 +1433,8 @@ def _ffmpeg_concat_copy(
 ) -> subprocess.CompletedProcess[str]:
     # Never stream concat off the SD when output is on another disk — that path
     # is 5–10× slower and thrashing. Staging must copy SD→SSD first.
-    foreign = _foreign_fs_sources(sources, output_path)
+    # Compare against the *directory* (output_path may not exist yet).
+    foreign = _foreign_fs_sources(sources, output_path.parent)
     if foreign:
         sample = ", ".join(str(p) for p in foreign[:2])
         more = f" (+{len(foreign) - 2} more)" if len(foreign) > 2 else ""
