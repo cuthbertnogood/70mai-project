@@ -598,6 +598,7 @@ def publish_chunk(
             telemetry=telemetry,
             gps_dir=gps_dir,
             telemetry_map_size=telemetry_map_size,
+            record_type=chunk.record_type,
             dry_run=False,
             **profile_args,
         )
