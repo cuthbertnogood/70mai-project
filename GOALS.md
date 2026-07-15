@@ -39,11 +39,11 @@
 
 ## Шаг 3 — публикация 2-cam на YouTube
 
-- **`plan_estimate.py`** — pre-flight: поездки, куски, `publish_plan.md`
-- **`compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
-- **`publish_70mai.py`** — trip chunks → compose → YouTube → delete; `--per-trip-upload`, `--upload-only`, `--resume-upload`, `--mark-uploaded`
-- **`youtube_upload.py`** — OAuth + resumable upload (256 MB chunks по умолчанию, `--upload-chunk-mb 0` = один PUT, `.upload.json` resume) + playlist
-- **`youtube_upload_diagnostics.py`** + **`scripts/analyze_youtube_upload.py`** — JSONL diag log + failure analysis
+- **`lib/plan_estimate.py`** — pre-flight: поездки, куски, `publish_plan.md`
+- **`lib/compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
+- **`lib/publish_70mai.py`** — trip chunks → compose → YouTube → delete; `--per-trip-upload`, `--upload-only`, `--resume-upload`, `--mark-uploaded`
+- **`lib/youtube_upload.py`** — OAuth + resumable upload (256 MB chunks по умолчанию, `--upload-chunk-mb 0` = один PUT, `.upload.json` resume) + playlist
+- **`lib/youtube_upload_diagnostics.py`** + **`scripts/analyze_youtube_upload.py`** — JSONL diag log + failure analysis
 - По умолчанию загрузка **private** (не public/unlisted)
 
 Target chunk: **2 ч по поездкам** (короткие поездки склеиваются; длинная ≥2 ч — solo).

@@ -297,6 +297,9 @@ def run_step(
         log("(dry-run — skipped)")
         return 0
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    lib_dir = str(Path(__file__).resolve().parent)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = lib_dir if not existing else f"{lib_dir}:{existing}"
     with log_path.open("a", encoding="utf-8") as handle:
         proc = subprocess.run(
             cmd,

@@ -33,7 +33,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | `./scripts/autopilot_dashboard.sh` | Живой статус (второй терминал) |
 | `./scripts/generate_card_reports.sh` | Отчёт по карте (MD/CSV) |
 
-Остальные `.py` / `scripts/*` — внутренности; руками обычно не нужны.
+Python — в `lib/`, тесты — в `tests/` (`./scripts/run-tests.sh`). Вручную: `./run publish_70mai.py …`.
 
 ---
 
