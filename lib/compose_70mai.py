@@ -189,6 +189,9 @@ def _update_encode_status(
     stalled: bool,
     ffmpeg_pid: int | None,
     reason: str = "",
+    speed: float = 0.0,
+    elapsed_sec: float | None = None,
+    eta_sec: float | None = None,
 ) -> None:
     if output_path is None or ".publish_tmp" not in output_path.as_posix():
         return
@@ -209,6 +212,14 @@ def _update_encode_status(
         detail += ")"
     else:
         detail = f"{pct:.0f}% ({out_mb}M)"
+        if speed > 0:
+            detail += f" {speed:.2f}x"
+    eta_txt = format_duration(eta_sec) if eta_sec is not None and eta_sec >= 0 else ""
+    elapsed_txt = (
+        format_duration(elapsed_sec)
+        if elapsed_sec is not None and elapsed_sec >= 0
+        else ""
+    )
     write_status(
         temp_dir,
         record_type=record_type,
@@ -220,6 +231,10 @@ def _update_encode_status(
         output_bytes=output_bytes,
         stalled=stalled,
         reason=reason,
+        speed=speed if speed > 0 else None,
+        speed_unit="x" if speed > 0 else None,
+        eta=eta_txt or None,
+        elapsed=elapsed_txt or None,
     )
 
 
@@ -240,6 +255,46 @@ def run_ffmpeg_with_progress(
         "warned": False,
     }
     abort_info = {"reason": ""}
+    last_status_write = [0.0]
+
+    def _encode_eta_sec() -> float:
+        if progress.speed > 0:
+            return max(0.0, progress.duration_sec - progress.current_sec) / progress.speed
+        ratio = min(1.0, progress.current_sec / progress.duration_sec)
+        elapsed = time.monotonic() - progress.start
+        if ratio > 0.01:
+            return elapsed * (1.0 - ratio) / ratio
+        return 0.0
+
+    def _push_encode_status(
+        *,
+        stalled: bool = False,
+        ffmpeg_pid: int | None = None,
+        reason: str = "",
+        force: bool = False,
+    ) -> None:
+        now = time.monotonic()
+        if not force and (now - last_status_write[0]) < 1.5:
+            return
+        last_status_write[0] = now
+        pct = 100 * min(1.0, progress.current_sec / progress.duration_sec)
+        out_bytes = 0
+        if output_path is not None and output_path.is_file():
+            try:
+                out_bytes = output_path.stat().st_size
+            except OSError:
+                pass
+        _update_encode_status(
+            output_path,
+            pct=pct,
+            output_bytes=out_bytes,
+            stalled=stalled,
+            ffmpeg_pid=ffmpeg_pid,
+            reason=reason,
+            speed=progress.speed,
+            elapsed_sec=now - progress.start,
+            eta_sec=_encode_eta_sec(),
+        )
 
     def _heartbeat() -> None:
         while not stop_hb.wait(ENCODE_HEARTBEAT_SEC):
@@ -278,14 +333,15 @@ def run_ffmpeg_with_progress(
                 )
             else:
                 stall["warned"] = False
-                log(f"       … encoding ({format_duration(elapsed)}, {pct:.0f}%)")
-            _update_encode_status(
-                output_path,
-                pct=pct,
-                output_bytes=out_bytes,
-                stalled=stalled,
-                ffmpeg_pid=pid,
-                reason=reason,
+                speed_txt = (
+                    f", {progress.speed:.2f}x" if progress.speed > 0 else ""
+                )
+                log(
+                    f"       … encoding ({format_duration(elapsed)}, "
+                    f"{pct:.0f}%{speed_txt})"
+                )
+            _push_encode_status(
+                stalled=stalled, ffmpeg_pid=pid, reason=reason, force=True
             )
             if stalled and idle >= ENCODE_STALL_ABORT_SEC and proc is not None:
                 abort_info["reason"] = (
@@ -295,13 +351,8 @@ def run_ffmpeg_with_progress(
                     f"       … encode abort: no progress for "
                     f"{format_duration(idle)} — killing ffmpeg"
                 )
-                _update_encode_status(
-                    output_path,
-                    pct=pct,
-                    output_bytes=out_bytes,
-                    stalled=True,
-                    ffmpeg_pid=pid,
-                    reason=abort_info["reason"],
+                _push_encode_status(
+                    stalled=True, ffmpeg_pid=pid, reason=abort_info["reason"], force=True
                 )
                 proc.kill()
                 return
@@ -337,23 +388,15 @@ def run_ffmpeg_with_progress(
                 segment = segment.strip()
                 if segment and "frame=" in segment:
                     progress.update_from_line(segment)
+                    _push_encode_status()
         proc.wait()
     finally:
         stop_hb.set()
     progress.finish()
     if proc.returncode != 0:
         if abort_info["reason"]:
-            _update_encode_status(
-                output_path,
-                pct=100 * min(1.0, progress.current_sec / progress.duration_sec),
-                output_bytes=(
-                    output_path.stat().st_size
-                    if output_path and output_path.is_file()
-                    else 0
-                ),
-                stalled=True,
-                ffmpeg_pid=None,
-                reason=abort_info["reason"],
+            _push_encode_status(
+                stalled=True, reason=abort_info["reason"], force=True
             )
         raise subprocess.CalledProcessError(
             proc.returncode,

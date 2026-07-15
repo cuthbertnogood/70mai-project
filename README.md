@@ -61,6 +61,7 @@ cd /Users/cuthbert/work_local/70mai_project
 # Parking: сейчас Xs / цель ~7309s; после 3× short — [i]gnore/[r]etry (parts keep).
 # Битый клип (moov/ffprobe) → quarantine `*.MP4.bad`, merge без него; счётчик в «Сбои»;
 # история: host `video/Output/.publish_tmp/bad_clips.jsonl` + SD `/.70mai/import/bad_clips.jsonl`
+# Compose/upload: вторая строка как у copy/merge — % · размер · скорость (Nx / MB/s) · ETA.
 # Compose ждёт Front+Back ≥98%; в TUI — живое покрытие % по каждой камере.
 # Правки экрана — lib/autopilot_dashboard_view.py (автоперезагрузка).
 ./scripts/autopilot_dashboard.sh

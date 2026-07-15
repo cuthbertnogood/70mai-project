@@ -109,6 +109,10 @@ def write_status(
     session_start: str | None = None,
     conveyors: dict | None = None,
     stage_ahead: str | None = None,
+    speed: float | None = None,
+    speed_unit: str | None = None,
+    eta: str | None = None,
+    elapsed: str | None = None,
 ) -> None:
     """Atomic status update for the live dashboard (safe across processes)."""
     path = status_path(temp_dir)
@@ -125,6 +129,14 @@ def write_status(
         "stalled": stalled,
         "reason": reason[:120] if reason else "",
     }
+    if speed is not None:
+        data["speed"] = speed
+    if speed_unit:
+        data["speed_unit"] = speed_unit
+    if eta:
+        data["eta"] = eta
+    if elapsed:
+        data["elapsed"] = elapsed
     if card_id:
         data["card_id"] = card_id
     if session_start:
@@ -1732,6 +1744,195 @@ def format_copy_detail(detail: dict | None) -> tuple[str, str | None]:
     return short, " · ".join(parts) if parts else None
 
 
+_ENCODE_LOG_RE = re.compile(
+    r"Encode:.*?\(([\d.]+)%\)\s*\|\s*(\S+)\s+elapsed\s*\|\s*ETA\s+(\S+)\s*\|\s*speed\s+"
+    r"([\d.]+x|—)",
+)
+_UPLOAD_LOG_RE = re.compile(
+    r"Upload\s+(\S+):\s*\[.*?\]\s*"
+    r"([^\|]+?)\s*\|\s*([\d.]+)\s*MB/s\s*\|\s*(\S+)\s+elapsed\s*\|\s*ETA\s+(\S+)",
+)
+_ENCODING_HB_RE = re.compile(
+    r"… encoding \((\S+),\s*([\d.]+)%(?:,\s*([\d.]+)x)?\)",
+)
+
+
+def parse_compose_log_detail(temp_dir: Path | None) -> dict | None:
+    """Last Encode: / encoding heartbeat from publish_all.log."""
+    if temp_dir is None:
+        return None
+    text = _tail_text(temp_dir / "publish_all.log", max_bytes=64_000)
+    if not text:
+        return None
+    found: dict | None = None
+    for line in text.splitlines():
+        m = _ENCODE_LOG_RE.search(line)
+        if m:
+            speed_raw = m.group(4)
+            speed = None
+            if speed_raw.endswith("x") and speed_raw != "—":
+                try:
+                    speed = float(speed_raw[:-1])
+                except ValueError:
+                    speed = None
+            found = {
+                "percent": float(m.group(1)),
+                "elapsed": m.group(2),
+                "eta": m.group(3),
+                "speed": speed,
+                "speed_unit": "x",
+            }
+            continue
+        m2 = _ENCODING_HB_RE.search(line)
+        if m2:
+            speed = float(m2.group(3)) if m2.group(3) else None
+            found = {
+                "percent": float(m2.group(2)),
+                "elapsed": m2.group(1),
+                "eta": (found or {}).get("eta") if found else None,
+                "speed": speed,
+                "speed_unit": "x" if speed else None,
+            }
+    return found
+
+
+def parse_upload_log_detail(temp_dir: Path | None) -> dict | None:
+    """Last Upload … MB/s line from publish_all.log."""
+    if temp_dir is None:
+        return None
+    text = _tail_text(temp_dir / "publish_all.log", max_bytes=64_000)
+    if not text:
+        return None
+    found: dict | None = None
+    for line in text.splitlines():
+        m = _UPLOAD_LOG_RE.search(line)
+        if not m:
+            continue
+        size_part = m.group(2).strip()
+        pct_m = re.search(r"\((\d+)%\)", size_part)
+        found = {
+            "file": m.group(1),
+            "bytes_txt": re.sub(r"\s*\(\d+%\)\s*$", "", size_part).strip(),
+            "percent": float(pct_m.group(1)) if pct_m else None,
+            "speed": float(m.group(3)),
+            "speed_unit": "MB/s",
+            "elapsed": m.group(4),
+            "eta": m.group(5),
+        }
+    return found
+
+
+def format_compose_detail(
+    st: dict | None,
+    *,
+    log_detail: dict | None = None,
+    trip_label: str = "",
+) -> tuple[str, str | None]:
+    """Return (short lane text, optional second detail line) for compose."""
+    st = st if isinstance(st, dict) else {}
+    log_detail = log_detail or {}
+    pct = st.get("percent")
+    if not isinstance(pct, (int, float)):
+        pct = log_detail.get("percent")
+    out_b = st.get("output_bytes")
+    speed = st.get("speed")
+    if not isinstance(speed, (int, float)):
+        speed = log_detail.get("speed")
+    unit = str(st.get("speed_unit") or log_detail.get("speed_unit") or "x")
+    eta = str(st.get("eta") or log_detail.get("eta") or "").strip()
+    elapsed = str(st.get("elapsed") or log_detail.get("elapsed") or "").strip()
+    record_type = str(st.get("record_type") or "").strip()
+    chunk = st.get("chunk_index")
+    trip = st.get("trip_index")
+
+    short_bits: list[str] = []
+    if isinstance(pct, (int, float)):
+        short_bits.append(f"{float(pct):.0f}%")
+    if trip_label:
+        short_bits.append(trip_label)
+    short = " ".join(short_bits)
+
+    parts: list[str] = []
+    if record_type:
+        parts.append(record_type)
+    if isinstance(chunk, int) and isinstance(trip, int) and (chunk or trip):
+        parts.append(f"chunk_{chunk}/trip_{trip:02d}")
+    if isinstance(pct, (int, float)):
+        parts.append(f"{float(pct):.0f}%")
+    if isinstance(out_b, (int, float)) and out_b > 0:
+        mb = float(out_b) / (1024 * 1024)
+        if mb >= 1024:
+            parts.append(f"{mb / 1024:.2f} GB")
+        else:
+            parts.append(f"{mb:.0f} MB")
+    if isinstance(speed, (int, float)) and speed > 0:
+        if unit == "x":
+            parts.append(f"{float(speed):.2f}x")
+        else:
+            parts.append(f"{float(speed):.1f} {unit}")
+    if elapsed:
+        parts.append(elapsed)
+    if eta:
+        parts.append(f"ETA {eta}")
+    detail_line = " · ".join(parts) if parts else None
+    return short, detail_line
+
+
+def format_upload_detail(
+    st: dict | None,
+    *,
+    log_detail: dict | None = None,
+    trip_label: str = "",
+    percent_override: float | None = None,
+) -> tuple[str, str | None]:
+    """Return (short lane text, optional second detail line) for upload."""
+    st = st if isinstance(st, dict) else {}
+    log_detail = log_detail or {}
+    pct = percent_override
+    if not isinstance(pct, (int, float)):
+        pct = st.get("percent")
+    if not isinstance(pct, (int, float)):
+        pct = log_detail.get("percent")
+    speed = st.get("speed")
+    if not isinstance(speed, (int, float)):
+        speed = log_detail.get("speed")
+    unit = str(st.get("speed_unit") or log_detail.get("speed_unit") or "MB/s")
+    eta = str(st.get("eta") or log_detail.get("eta") or "").strip()
+    elapsed = str(st.get("elapsed") or log_detail.get("elapsed") or "").strip()
+    bytes_txt = str(log_detail.get("bytes_txt") or "").strip()
+    detail_raw = str(st.get("detail") or "").strip()
+    if not bytes_txt and detail_raw:
+        # "100.0 MB/1.2 GB · 2.5 MB/s" → keep size portion
+        bytes_txt = detail_raw.split("·")[0].strip()
+    record_type = str(st.get("record_type") or "").strip()
+    file_name = str(log_detail.get("file") or "").strip()
+
+    short_bits: list[str] = []
+    if isinstance(pct, (int, float)):
+        short_bits.append(f"{float(pct):.0f}%")
+    if trip_label:
+        short_bits.append(trip_label)
+    short = " ".join(short_bits)
+
+    parts: list[str] = []
+    if record_type:
+        parts.append(record_type)
+    if file_name:
+        parts.append(file_name[:28])
+    if bytes_txt:
+        parts.append(bytes_txt)
+    elif isinstance(pct, (int, float)):
+        parts.append(f"{float(pct):.0f}%")
+    if isinstance(speed, (int, float)) and speed > 0:
+        parts.append(f"{float(speed):.1f} {unit}")
+    if elapsed:
+        parts.append(elapsed)
+    if eta:
+        parts.append(f"ETA {eta}")
+    detail_line = " · ".join(parts) if parts else None
+    return short, detail_line
+
+
 def _cameras_seen_in_log(temp_dir: Path | None) -> list[str]:
     """Unique Type/Cam in order of first seen; last entry = most recent activity."""
     if temp_dir is None:
@@ -2118,6 +2319,8 @@ def diagnose_pipeline_bottleneck(
     merge_detail_line: str | None,
     st: dict | None,
     procs: list,
+    compose_detail_line: str | None = None,
+    upload_detail_line: str | None = None,
 ) -> str | None:
     """One-line bottleneck / who-is-waiting diagnosis."""
     if stale and not import_alive and not any(
@@ -2169,8 +2372,20 @@ def diagnose_pipeline_bottleneck(
                 note = f"{copy_frac[0]}/{copy_frac[1]} — merge ждёт буфер"
     elif compose_on:
         bottleneck = "compose F+B"
+        if compose_detail_line:
+            m = re.search(r"([\d.]+)x", compose_detail_line)
+            if m:
+                note = f"encode ~{m.group(1)}x realtime"
+            else:
+                note = compose_detail_line[:48]
     elif upload_on:
         bottleneck = "upload YouTube"
+        if upload_detail_line:
+            m = re.search(r"([\d.]+)\s*MB/s", upload_detail_line)
+            if m:
+                note = f"~{m.group(1)} MB/s"
+            else:
+                note = upload_detail_line[:48]
     elif import_alive:
         bottleneck = "import"
 
@@ -2450,16 +2665,21 @@ def _format_pipeline_block(
                 merge_extra = Path(str(md["output"])).name[:36]
 
     compose_extra = ""
+    compose_detail_line: str | None = None
     compose_wait_lines: list[str] = []
     if compose_on:
-        bits = []
-        if detail:
-            bits.append(detail[:48])
-        elif pct_s:
-            bits.append(pct_s)
-        if active_row is not None:
-            bits.append(_trip_display(active_row))
-        compose_extra = " ".join(bits)
+        trip_lbl = _trip_display(active_row) if active_row is not None else ""
+        log_cd = parse_compose_log_detail(temp_dir) if temp_dir else None
+        compose_short, compose_detail_line = format_compose_detail(
+            st, log_detail=log_cd, trip_label=trip_lbl
+        )
+        compose_extra = compose_short or (
+            (detail[:48] if detail else "")
+            or pct_s
+            or trip_lbl
+        )
+        if not compose_detail_line and detail:
+            compose_detail_line = detail[:72]
     elif not compose_done and not upload_on:
         compose_extra, compose_wait_lines = format_compose_wait(
             temp_dir=temp_dir,
@@ -2472,6 +2692,7 @@ def _format_pipeline_block(
         )
 
     upload_extra = ""
+    upload_detail_line: str | None = None
     if upload_on:
         up_pct = None
         if active_row is not None and active_row.percent is not None:
@@ -2479,14 +2700,24 @@ def _format_pipeline_block(
         elif active_row is not None and temp_dir is not None:
             got = _read_upload_percent(temp_dir, active_row.trip_index)
             up_pct = float(got) if got is not None else None
-        bits = []
-        if isinstance(up_pct, (int, float)):
-            bits.append(f"{up_pct:.0f}%")
-        elif pct_s:
-            bits.append(pct_s)
-        if active_row is not None:
-            bits.append(_trip_display(active_row))
-        upload_extra = " ".join(bits)
+        trip_lbl = _trip_display(active_row) if active_row is not None else ""
+        log_ud = parse_upload_log_detail(temp_dir) if temp_dir else None
+        upload_short, upload_detail_line = format_upload_detail(
+            st,
+            log_detail=log_ud,
+            trip_label=trip_lbl,
+            percent_override=up_pct,
+        )
+        upload_extra = upload_short or " ".join(
+            x
+            for x in (
+                f"{up_pct:.0f}%" if isinstance(up_pct, (int, float)) else pct_s,
+                trip_lbl,
+            )
+            if x
+        )
+        if not upload_detail_line and detail:
+            upload_detail_line = detail[:72]
 
     def _line(name: str, *, on: bool, done: bool, extra: str = "") -> str:
         if on:
@@ -2511,6 +2742,8 @@ def _format_pipeline_block(
     lines.append(
         _line("compose", on=compose_on, done=compose_done, extra=compose_extra)
     )
+    if compose_on and compose_detail_line:
+        lines.append(f"         {compose_detail_line}")
     for wl in compose_wait_lines:
         lines.append(f"         {wl}")
     lines.append(
@@ -2521,6 +2754,8 @@ def _format_pipeline_block(
             extra=upload_extra,
         )
     )
+    if upload_on and upload_detail_line:
+        lines.append(f"         {upload_detail_line}")
     if log_fallback and (copy_on or merge_on) and stale:
         lines.append("источник: publish_all.log (status.json устарел)")
     elif stale:
@@ -2539,6 +2774,8 @@ def _format_pipeline_block(
         stale=stale,
         log_fallback=log_fallback,
         merge_detail_line=merge_detail_line,
+        compose_detail_line=compose_detail_line,
+        upload_detail_line=upload_detail_line,
         st=st,
         procs=procs or [],
     )

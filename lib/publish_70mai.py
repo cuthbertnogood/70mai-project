@@ -1054,20 +1054,34 @@ def publish_and_upload_trips(
             )
 
             def status_hook(pct: int, offset: int, size: int) -> None:
+                elapsed = time.monotonic() - upload_t0
+                rate = offset / elapsed if elapsed > 0 and offset > 0 else 0.0
+                remaining = max(0, size - offset)
+                eta_sec = remaining / rate if rate > 0 else 0.0
+                speed_mb = rate / (1024 * 1024)
+                detail = (
+                    f"{format_file_size(offset)}/{format_file_size(size)}"
+                    if size
+                    else part_path.name
+                )
+                if speed_mb > 0:
+                    detail = f"{detail} · {speed_mb:.1f} MB/s"
                 write_status(
                     temp_dir,
                     record_type=record_type,
                     chunk_index=chunk.index,
                     trip_index=trip_idx,
                     phase="upload",
-                    detail=(
-                        f"{format_file_size(offset)}/{format_file_size(size)}"
-                        if size
-                        else part_path.name
-                    ),
+                    detail=detail,
                     percent=float(pct),
+                    output_bytes=offset,
+                    speed=speed_mb if speed_mb > 0 else None,
+                    speed_unit="MB/s" if speed_mb > 0 else None,
+                    eta=format_duration(eta_sec) if rate > 0 else None,
+                    elapsed=format_duration(elapsed),
                 )
 
+            upload_t0 = time.monotonic()
             try:
                 video_id, new_playlist, freed, _elapsed = upload_and_cleanup(
                     part_path,
