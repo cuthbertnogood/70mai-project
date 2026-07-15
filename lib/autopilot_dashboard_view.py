@@ -204,6 +204,7 @@ def render(dash: Any) -> None:
         dash.temp_dir,
         term_cols=term_cols,
         import_alive=import_alive,
+        video_dir=dash.video_dir,
     ))
     lines.extend(d.format_failures_block(dash.temp_dir, term_cols=term_cols))
     block = "\n".join(lines)

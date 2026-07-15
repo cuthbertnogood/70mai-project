@@ -847,19 +847,76 @@ def format_failures_block(temp_dir: Path, *, term_cols: int, limit: int = 5) -> 
     return out
 
 
+_PART_DUR_CACHE: dict[str, tuple[float, float, float]] = {}  # path -> (mtime, size, dur)
+
+
+def _probe_part_duration(path: Path, ffprobe: str) -> float | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = str(path)
+    cached = _PART_DUR_CACHE.get(key)
+    if cached and cached[0] == st.st_mtime and cached[1] == float(st.st_size):
+        return cached[2]
+    try:
+        from import_70mai import probe_duration_safe
+
+        dur = probe_duration_safe(path, ffprobe)
+    except Exception:
+        return None
+    if dur is None:
+        return None
+    _PART_DUR_CACHE[key] = (st.st_mtime, float(st.st_size), float(dur))
+    return float(dur)
+
+
+def _sum_parking_part_durations(
+    video_dir: Path | None, output_name: str
+) -> tuple[float | None, int]:
+    """Sum ffprobe durations of `_part_*.mp4` in the merge stage dir."""
+    if not video_dir or not output_name:
+        return None, 0
+    stem = Path(output_name).stem
+    try:
+        from import_70mai import find_tool
+
+        ffprobe = find_tool("ffprobe")
+    except Exception:
+        ffprobe = shutil.which("ffprobe") or "ffprobe"
+    total = 0.0
+    n = 0
+    try:
+        for stage_root in video_dir.glob("*/*/.merge_stage"):
+            part_dir = stage_root / stem
+            if not part_dir.is_dir():
+                continue
+            for part in sorted(part_dir.glob("_part_*.mp4")):
+                dur = _probe_part_duration(part, ffprobe)
+                if dur is None:
+                    continue
+                total += dur
+                n += 1
+            if n:
+                return total, n
+    except OSError:
+        return None, 0
+    return (total, n) if n else (None, 0)
+
+
 def format_parking_merge_hint(
     temp_dir: Path,
     *,
     term_cols: int,
     import_alive: bool = False,
+    video_dir: Path | None = None,
 ) -> list[str]:
-    """Brief Parking rebuild check: final concat + ~7309s (not ~6889s)."""
+    """Live Parking duration: сейчас Xs / цель ~7309s (short был ~6889s)."""
     detail = parse_merge_log_detail(temp_dir)
     cam = str((detail or {}).get("camera") or "")
     output = str((detail or {}).get("output") or "")
     is_parking = "Parking" in cam or output.startswith("PA_")
     if not is_parking and not import_alive:
-        # Still show while Parking import runs even if camera line lagged.
         st = resolve_live_status(temp_dir)
         if not st or str(st.get("record_type") or "") != "Parking":
             return []
@@ -872,26 +929,66 @@ def format_parking_merge_hint(
     final_n = (detail or {}).get("final_parts")
     done_name = (detail or {}).get("last_done_name") or ""
     done_note = (detail or {}).get("last_done_note") or ""
+    session_min = (detail or {}).get("session_min")
+    try:
+        target_sec = float(session_min) * 60.0 if session_min else 7309.0
+    except (TypeError, ValueError):
+        target_sec = 7309.0
+    short_sec = 6889.0
+
+    now_sec, part_n = _sum_parking_part_durations(video_dir, output)
+    # Prefer live output file after final concat / DONE.
+    if video_dir and output:
+        out_path = None
+        try:
+            for cand in video_dir.glob(f"*/*/{output}"):
+                if cand.is_file():
+                    out_path = cand
+                    break
+        except OSError:
+            out_path = None
+        if out_path is not None:
+            try:
+                from import_70mai import find_tool, probe_duration_safe
+
+                ffprobe = find_tool("ffprobe")
+                od = probe_duration_safe(out_path, ffprobe)
+            except Exception:
+                od = None
+            if od is not None:
+                now_sec = float(od)
+
+    def _fmt_sec(sec: float) -> str:
+        from import_70mai import format_duration
+
+        return f"{format_duration(sec)} ({sec:.0f}s)"
+
+    now_txt = _fmt_sec(now_sec) if now_sec is not None else "…"
+    target_txt = _fmt_sec(target_sec)
+    pct = ""
+    if now_sec is not None and target_sec > 0:
+        pct = f" · {100.0 * now_sec / target_sec:.1f}%"
 
     if batch_cur is not None and batch_total is not None and not final_n:
         tip = (
-            f"Parking: part {batch_cur}/{batch_total} → final concat "
-            f"{batch_total} parts · OK если ~7309s (не ~6889s)"
+            f"Parking: part {batch_cur}/{batch_total}"
+            f" ({part_n} parts on disk) · сейчас {now_txt} / цель {target_txt}"
+            f"{pct} · short был {_fmt_sec(short_sec)}"
         )
     elif final_n:
         tip = (
-            f"Parking: final concat {final_n} parts — жди DONE ~7309s "
-            f"(не ~6889s)"
+            f"Parking: final concat {final_n} parts · сейчас {now_txt} / "
+            f"цель {target_txt}{pct} · short был {_fmt_sec(short_sec)}"
         )
     elif done_name.startswith("PA_") and done_note:
         tip = (
-            f"Parking merge DONE {done_name}: {done_note} · "
-            f"цель ~7309s (было ~6889s short)"
+            f"Parking DONE {done_name}: сейчас {now_txt} / цель {target_txt}"
+            f"{pct} · ({done_note})"
         )
     else:
         tip = (
-            "Parking rebuild: успех = «final concat N parts» и ~7309s "
-            "(было ~6889s)"
+            f"Parking: сейчас {now_txt} / цель {target_txt}{pct} · "
+            f"short был {_fmt_sec(short_sec)}"
         )
     return list(_wrap_line(tip, term_cols))
 
