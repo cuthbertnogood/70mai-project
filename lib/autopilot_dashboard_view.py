@@ -59,10 +59,10 @@ def render(dash: Any) -> None:
     stale = d._status_is_stale(st)
     import_alive = any(p.role == "import" for p in procs)
     log_fallback = None
-    if import_alive and (
-        stale or not st or str(st.get("phase") or "") != "import"
-    ):
-        log_fallback = d._import_progress_from_log(dash.temp_dir)
+    if import_alive:
+        log_fallback = d._import_progress_from_log(
+            dash.temp_dir, video_dir=dash.video_dir
+        )
     if stale:
         active_rows = []
     active_key = None if stale else d._status_active_key(dash.rows, st)
@@ -89,9 +89,14 @@ def render(dash: Any) -> None:
             parts.append(f"{stage} {d._trip_display(ar)}")
         summary += "  |  " + " · ".join(parts)
     elif log_fallback:
-        # Put current clip first — this is what the user looks for.
-        clip = log_fallback.get("copy") or log_fallback.get("merge") or "…"
-        summary += f"  |  сейчас: {clip}"
+        bits = []
+        if log_fallback.get("copy"):
+            bits.append(f"copy {log_fallback['copy']}")
+        if log_fallback.get("merge"):
+            bits.append(f"merge {log_fallback['merge']}")
+        if log_fallback.get("merge_detail"):
+            bits.append(log_fallback["merge_detail"])
+        summary += "  |  " + (" · ".join(bits) if bits else "import …")
     elif stale:
         summary += "  |  idle"
     elif st and st.get("phase") == "import":
@@ -118,8 +123,11 @@ def render(dash: Any) -> None:
         st,
         dash.rows,
         temp_dir=dash.temp_dir,
+        video_dir=dash.video_dir,
         stale=stale,
         log_fallback=log_fallback,
+        import_alive=import_alive,
+        procs=procs,
     ):
         for hl in d._wrap_line(cl, term_cols):
             lines.append(hl)

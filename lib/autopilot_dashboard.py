@@ -246,7 +246,8 @@ def read_status(temp_dir: Path) -> dict | None:
 
 _LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 _MERGE_HB_RE = re.compile(
-    r"… merging ((?:NO|EV|PA)_\S+\.mp4) \(([^)]+)\)"
+    r"… merging ((?:NO|EV|PA)_\S+\.mp4)"
+    r"(?: batch (\d+)/(\d+))? \(([^)]+)\)",
 )
 _MERGE_BAR_RE = re.compile(
     r"Merge \[.*?\] (\d+)/(\d+) \(([\d.]+)%\)"
@@ -273,7 +274,7 @@ def read_import_progress_from_log(
     text = _tail_text(temp_dir / "publish_all.log")
     if not text:
         return None
-    last_hb: tuple[datetime, str, str] | None = None
+    last_hb: tuple[datetime, str, str, int | None, int | None] | None = None
     last_bar: tuple[datetime, int, int, float] | None = None
     last_arrow: tuple[datetime, str] | None = None
     for line in text.splitlines():
@@ -286,7 +287,13 @@ def read_import_progress_from_log(
             continue
         match = _MERGE_HB_RE.search(line)
         if match:
-            last_hb = (ts, match.group(1), match.group(2))
+            last_hb = (
+                ts,
+                match.group(1),
+                match.group(4),
+                int(match.group(2)) if match.group(2) else None,
+                int(match.group(3)) if match.group(3) else None,
+            )
         match = _MERGE_BAR_RE.search(line)
         if match:
             last_bar = (
@@ -303,7 +310,7 @@ def read_import_progress_from_log(
     elapsed_note = ""
     latest_ts: datetime | None = None
     if last_hb:
-        latest_ts, filename, elapsed_note = last_hb
+        latest_ts, filename, elapsed_note = last_hb[0], last_hb[1], last_hb[2]
     elif last_arrow:
         latest_ts, filename = last_arrow
     elif last_bar:
@@ -821,15 +828,367 @@ def _status_age_line(st: dict | None) -> str | None:
     return f"status: {phase} {_human_etime_seconds(sec)} ago"
 
 
+_COPY_OK_RE = re.compile(
+    r"\[copy\]\s+\d+/\d+:\s+ok in (\d+)s",
+)
+_COPY_SIZE_RE = re.compile(r"\((\d+)\s*MB\)")
 _COPY_LOG_RE = re.compile(
     r"\[copy\]\s+(\d+/\d+):\s+(\S+)(?:\s+\(([^)]+)\))?",
 )
 _MERGE_LOG_RE = re.compile(
     r"\[merge\]\s+(.+)$",
 )
+_MERGE_BATCH_RE = re.compile(
+    r"\[merge\]\s+concat batch (\d+)/(\d+) \((\d+) inputs\)",
+)
+_MERGE_HB_DETAIL_RE = re.compile(
+    r"… merging ((?:NO|EV|PA)_\S+\.mp4)"
+    r"(?: batch (\d+)/(\d+))? \(([^)]+)\)",
+)
+_MERGE_OUTPUT_RE = re.compile(r"→ ((?:NO|EV|PA)_\S+\.mp4)")
+_MERGE_CAMERA_RE = re.compile(
+    r"TOTAL:.*\| merging \| ([^|]+) \|",
+)
+_MERGE_SESSION_RE = re.compile(
+    r"\[(\d+)/(\d+)\] session \d+/\d+ \| (\d+) clips, ([\d.]+) min",
+)
+_MERGE_DONE_RE = re.compile(
+    r"\[merge\] DONE ((?:NO|EV|PA)_\S+\.mp4): (\d+) MB in (.+)$",
+)
+
+# {partial_path: {size, t, speed_mbps}}
+_MERGE_SPEED_CACHE: dict[str, dict] = {}
 
 
-def _import_progress_from_log(temp_dir: Path | None) -> dict[str, str] | None:
+def _parse_duration_token(text: str) -> float | None:
+    """Parse import_70mai-style duration tokens (30s, 2m 15s, 1h 2m) → seconds."""
+    text = text.strip()
+    if not text:
+        return None
+    total = 0.0
+    for amount, unit in re.findall(r"(\d+)\s*([dhms])", text, flags=re.I):
+        n = int(amount)
+        u = unit.lower()
+        if u == "d":
+            total += n * 86400
+        elif u == "h":
+            total += n * 3600
+        elif u == "m":
+            total += n * 60
+        else:
+            total += n
+    return total if total > 0 else None
+
+
+def _find_merge_partial(
+    video_dir: Path | None, output_name: str, batch_idx: int | None
+) -> Path | None:
+    if not video_dir or not output_name:
+        return None
+    stem = Path(output_name).stem
+    try:
+        for stage_root in video_dir.glob("*/*/.merge_stage"):
+            partial_dir = stage_root / stem
+            if not partial_dir.is_dir():
+                continue
+            if batch_idx is not None:
+                candidate = partial_dir / f"_partial_{batch_idx}.mp4"
+                if candidate.is_file():
+                    return candidate
+            partials = sorted(partial_dir.glob("_partial_*.mp4"))
+            if partials:
+                return partials[-1]
+    except OSError:
+        return None
+    return None
+
+
+def _sample_merge_speed_mbps(path: Path) -> float | None:
+    """Estimate concat throughput from growing partial output (decimal MB/s)."""
+    key = str(path.resolve())
+    try:
+        size = path.stat().st_size
+        now = time.monotonic()
+    except OSError:
+        return None
+    prev = _MERGE_SPEED_CACHE.get(key)
+    if not prev:
+        _MERGE_SPEED_CACHE[key] = {"size": size, "t": now}
+        return None
+    dt = now - float(prev.get("t") or 0)
+    ds = size - int(prev.get("size") or 0)
+    if dt < 0.4 or ds <= 0:
+        return float(prev["speed"]) if prev.get("speed") is not None else None
+    speed = ds / dt / 1_000_000
+    _MERGE_SPEED_CACHE[key] = {"size": size, "t": now, "speed": speed}
+    return speed
+
+
+def parse_merge_log_detail(temp_dir: Path | None) -> dict | None:
+    """Rich merge snapshot: output file, batch, inputs, camera, speed hints."""
+    if temp_dir is None:
+        return None
+    text = _tail_text(temp_dir / "publish_all.log")
+    if not text:
+        return None
+
+    output = ""
+    camera = ""
+    batch_cur = batch_total = inputs = None
+    elapsed = ""
+    session_clips = session_min = ""
+    merge_done = merge_total = None
+    last_done_speed: float | None = None
+    batch_started_at: datetime | None = None
+
+    for line in text.splitlines():
+        m = _LOG_TS_RE.match(line)
+        ts = None
+        if m:
+            try:
+                ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                ts = None
+        m = _MERGE_DONE_RE.search(line)
+        if m:
+            done_mb = float(m.group(2))
+            done_sec = _parse_duration_token(m.group(3))
+            if done_sec and done_sec > 0:
+                last_done_speed = done_mb / done_sec
+            if not output:
+                output = m.group(1)
+        m = _MERGE_CAMERA_RE.search(line)
+        if m:
+            camera = m.group(1).strip()
+        m = _MERGE_SESSION_RE.search(line)
+        if m:
+            session_clips = m.group(3)
+            session_min = m.group(4)
+            merge_done = int(m.group(1)) - 1
+            merge_total = int(m.group(2))
+        m = _MERGE_OUTPUT_RE.search(line)
+        if m:
+            output = m.group(1)
+        m = _MERGE_BATCH_RE.search(line)
+        if m:
+            batch_cur = int(m.group(1))
+            batch_total = int(m.group(2))
+            inputs = int(m.group(3))
+            if ts is not None:
+                batch_started_at = ts
+        m = _MERGE_HB_DETAIL_RE.search(line)
+        if m:
+            output = m.group(1)
+            if m.group(2) and m.group(3):
+                batch_cur = int(m.group(2))
+                batch_total = int(m.group(3))
+            elapsed = m.group(4).strip()
+
+    if not output and batch_cur is None:
+        return None
+
+    return {
+        "output": output,
+        "camera": camera,
+        "batch_cur": batch_cur,
+        "batch_total": batch_total,
+        "inputs": inputs,
+        "elapsed": elapsed,
+        "session_clips": session_clips,
+        "session_min": session_min,
+        "merge_done": merge_done,
+        "merge_total": merge_total,
+        "last_done_speed_mbps": last_done_speed,
+        "batch_started_at": (
+            batch_started_at.isoformat(timespec="seconds")
+            if batch_started_at
+            else None
+        ),
+        "active": batch_cur is not None or bool(elapsed),
+    }
+
+
+def format_merge_detail(
+    detail: dict | None,
+    *,
+    video_dir: Path | None = None,
+) -> tuple[str, str | None]:
+    """Return (short lane text, optional second detail line)."""
+    if not detail:
+        return "", None
+    output = str(detail.get("output") or "").strip()
+    short = Path(output).name[:36] if output else ""
+    batch_cur = detail.get("batch_cur")
+    batch_total = detail.get("batch_total")
+    inputs = detail.get("inputs")
+    elapsed = str(detail.get("elapsed") or "").strip()
+    camera = str(detail.get("camera") or "").strip()
+
+    speed: float | None = None
+    partial = _find_merge_partial(
+        video_dir,
+        output,
+        int(batch_cur) if batch_cur is not None else None,
+    )
+    if partial is not None:
+        speed = _sample_merge_speed_mbps(partial)
+        if speed is None:
+            raw_start = detail.get("batch_started_at")
+            if isinstance(raw_start, str) and raw_start.strip():
+                try:
+                    started = datetime.fromisoformat(raw_start.strip())
+                    sec = max(1.0, (datetime.now() - started).total_seconds())
+                    speed = partial.stat().st_size / sec / 1_000_000
+                except (OSError, ValueError):
+                    speed = None
+    if speed is None:
+        speed = detail.get("last_done_speed_mbps")
+
+    parts: list[str] = []
+    if batch_cur is not None and batch_total is not None:
+        parts.append(f"batch {batch_cur}/{batch_total}")
+    if inputs is not None:
+        parts.append(f"{inputs} клипов")
+    if camera:
+        parts.append(camera)
+    if isinstance(speed, (int, float)) and speed > 0:
+        parts.append(f"{speed:.1f} MB/s")
+    if elapsed:
+        parts.append(elapsed)
+    if partial is not None:
+        try:
+            gb = partial.stat().st_size / 1_000_000_000
+            parts.append(f"partial {gb:.2f} GB")
+        except OSError:
+            pass
+    sess_clips = detail.get("session_clips")
+    sess_min = detail.get("session_min")
+    if sess_clips and sess_min and not parts:
+        parts.append(f"{sess_clips} clips · {sess_min} min")
+
+    detail_line = " · ".join(parts) if parts else None
+    return short, detail_line
+
+
+def _copy_speed_from_log(temp_dir: Path | None) -> float | None:
+    """Recent SD→SSD copy throughput (decimal MB/s) from ok-in-Ns lines."""
+    if temp_dir is None:
+        return None
+    text = _tail_text(temp_dir / "publish_all.log", max_bytes=48_000)
+    if not text:
+        return None
+    lines = text.splitlines()
+    samples: list[float] = []
+    last_mb = 126.0
+    for line in lines:
+        if "SD→SSD" in line:
+            m = _COPY_SIZE_RE.search(line)
+            if m:
+                last_mb = float(m.group(1))
+        m = _COPY_OK_RE.search(line)
+        if m:
+            sec = float(m.group(1))
+            if sec > 0:
+                samples.append(last_mb / sec)
+    if not samples:
+        return None
+    tail = samples[-5:]
+    return sum(tail) / len(tail)
+
+
+def _parse_copy_fraction(text: str) -> tuple[int, int] | None:
+    m = re.search(r"(\d+)/(\d+)", text)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+def diagnose_pipeline_bottleneck(
+    *,
+    temp_dir: Path | None,
+    copy_on: bool,
+    merge_on: bool,
+    compose_on: bool,
+    upload_on: bool,
+    copy_done: bool,
+    merge_done: bool,
+    compose_done: bool,
+    video_done: bool,
+    import_alive: bool,
+    stale: bool,
+    log_fallback: dict[str, str] | None,
+    merge_detail_line: str | None,
+    st: dict | None,
+    procs: list,
+) -> str | None:
+    """One-line bottleneck / who-is-waiting diagnosis."""
+    if stale and not import_alive and not any(
+        (copy_on, merge_on, compose_on, upload_on)
+    ):
+        return "нет свежего статуса — смотри proc и publish_all.log"
+
+    def _waiting() -> list[str]:
+        out: list[str] = []
+        if not copy_on and not copy_done:
+            out.append("copy")
+        if not merge_on and not merge_done:
+            out.append("merge")
+        if not compose_on and not compose_done:
+            out.append("compose")
+        if not upload_on and not video_done:
+            out.append("upload")
+        return out
+
+    waiting = _waiting()
+    copy_frac = (
+        _parse_copy_fraction(log_fallback["copy"])
+        if log_fallback and log_fallback.get("copy")
+        else None
+    )
+    copy_mbps = _copy_speed_from_log(temp_dir)
+    merge_mbps = None
+    if merge_detail_line:
+        m = re.search(r"([\d.]+)\s*MB/s", merge_detail_line)
+        if m:
+            merge_mbps = float(m.group(1))
+
+    bottleneck = ""
+    note = ""
+    if import_alive:
+        if copy_on and merge_on:
+            if copy_mbps and merge_mbps and copy_mbps < merge_mbps * 0.6:
+                bottleneck = f"copy SD→SSD (~{copy_mbps:.0f} MB/s)"
+                note = f"merge ~{merge_mbps:.0f} MB/s, ждёт данные с SD"
+            else:
+                bottleneck = "copy+merge параллельно"
+        elif merge_on and not copy_on:
+            bottleneck = "merge concat"
+            if copy_frac and copy_frac[0] < copy_frac[1]:
+                note = f"ждёт copy ({copy_frac[0]}/{copy_frac[1]})"
+        elif copy_on and not merge_on:
+            bottleneck = f"copy SD→SSD (~{copy_mbps:.0f} MB/s)" if copy_mbps else "copy SD→SSD"
+            if copy_frac:
+                note = f"{copy_frac[0]}/{copy_frac[1]} — merge ждёт буфер"
+    elif compose_on:
+        bottleneck = "compose F+B"
+    elif upload_on:
+        bottleneck = "upload YouTube"
+    elif import_alive:
+        bottleneck = "import"
+
+    parts = [f"ожидание: {', '.join(waiting) if waiting else '—'}"]
+    if bottleneck:
+        parts.append(f"узкое место: {bottleneck}")
+    if note:
+        parts.append(note)
+    return "  |  ".join(parts)
+
+
+def _import_progress_from_log(
+    temp_dir: Path | None,
+    *,
+    video_dir: Path | None = None,
+) -> dict[str, str] | None:
     """When status.json is stale but import is alive, scrape publish_all.log."""
     if temp_dir is None:
         return None
@@ -863,9 +1222,20 @@ def _import_progress_from_log(temp_dir: Path | None) -> dict[str, str] | None:
         if "[merge]" in line:
             m = _MERGE_LOG_RE.search(line)
             merge_txt = (m.group(1).strip() if m else line.strip())[:48]
-    if not copy_txt and not merge_txt:
+    merge_detail = parse_merge_log_detail(temp_dir)
+    merge_short, merge_extra = format_merge_detail(merge_detail, video_dir=video_dir)
+    if merge_short:
+        merge_txt = merge_short
+    if not copy_txt and not merge_txt and not merge_extra:
         return None
-    return {"copy": copy_txt, "merge": merge_txt}
+    out: dict[str, str] = {}
+    if copy_txt:
+        out["copy"] = copy_txt
+    if merge_txt:
+        out["merge"] = merge_txt
+    if merge_extra:
+        out["merge_detail"] = merge_extra
+    return out or None
 
 
 def _backfill_status_from_import_log(temp_dir: Path) -> bool:
@@ -879,12 +1249,13 @@ def _backfill_status_from_import_log(temp_dir: Path) -> bool:
     st = resolve_live_status(temp_dir)
     if st and str(st.get("phase") or "") == "import" and not _status_is_stale(st):
         return False
-    snap = _import_progress_from_log(temp_dir)
+    snap = _import_progress_from_log(temp_dir, video_dir=temp_dir.parent)
     if not snap:
         return False
     copy_txt = snap.get("copy") or ""
     merge_txt = snap.get("merge") or ""
-    detail = " · ".join(x for x in (copy_txt, merge_txt) if x)
+    merge_detail = snap.get("merge_detail") or ""
+    detail = " · ".join(x for x in (copy_txt, merge_txt, merge_detail) if x)
     percent: float | None = None
     m = re.search(r"(\d+)/(\d+)", copy_txt)
     if m and int(m.group(2)) > 0:
@@ -899,10 +1270,10 @@ def _backfill_status_from_import_log(temp_dir: Path) -> bool:
         },
         "merge": {
             "active": bool(merge_txt),
-            "file": "",
+            "file": merge_txt,
             "chunk": "",
-            "clip": "",
-            "detail": merge_txt,
+            "clip": merge_detail or merge_txt,
+            "detail": merge_detail or merge_txt,
             "elapsed": "",
         },
     }
@@ -925,8 +1296,11 @@ def _format_pipeline_block(
     rows: list,
     *,
     temp_dir: Path | None = None,
+    video_dir: Path | None = None,
     stale: bool = False,
     log_fallback: dict[str, str] | None = None,
+    import_alive: bool = False,
+    procs: list | None = None,
 ) -> list[str]:
     """One line per pipeline step: copy / merge / compose / upload + status."""
     phase = str((st or {}).get("phase") or "").strip()
@@ -993,26 +1367,51 @@ def _format_pipeline_block(
 
     copy_extra = _short_lane(copy) if copy_on else ""
     merge_extra = _short_lane(merge) if merge_on else ""
+    merge_detail_line: str | None = None
+    if merge_on and merge:
+        merge_short, merge_detail_line = format_merge_detail(
+            {
+                "output": merge.get("file") or "",
+                "batch_cur": None,
+                "batch_total": None,
+                "inputs": None,
+                "elapsed": merge.get("elapsed") or "",
+                "camera": "",
+            },
+            video_dir=video_dir,
+        )
+        if merge_short:
+            merge_extra = merge_short
     if pct_s and import_on and not merge_extra:
         merge_extra = pct_s
     elif pct_s and merge_on:
         merge_extra = f"{pct_s} {merge_extra}".strip()
 
-    # Live import but stale/missing status.json → scrape publish_all.log
-    if log_fallback and not copy_on and not merge_on:
-        if log_fallback.get("copy"):
-            copy_on = True
-            copy_extra = log_fallback["copy"]
-            copy_done = False
+    # Import runs copy ∥ merge — always prefer fresh log lines for both lanes.
+    if log_fallback:
+        copy_fb = log_fallback.get("copy") or ""
+        if copy_fb:
+            m = re.search(r"(\d+)/(\d+)", copy_fb)
+            if m and int(m.group(1)) < int(m.group(2)):
+                copy_on = True
+                copy_extra = copy_fb
+                copy_done = False
         if log_fallback.get("merge"):
             merge_on = True
             merge_extra = log_fallback["merge"]
+            merge_detail_line = log_fallback.get("merge_detail")
             merge_done = False
-        import_on = copy_on or merge_on
-        compose_on = False
-        upload_on = False
-        compose_done = False
-        video_done = False
+        if copy_on or merge_on:
+            import_on = True
+            compose_on = False
+            upload_on = False
+            compose_done = False
+            video_done = False
+    elif merge_on and temp_dir is not None and not merge_detail_line:
+        md = parse_merge_log_detail(temp_dir)
+        _, merge_detail_line = format_merge_detail(md, video_dir=video_dir)
+        if md and md.get("output") and not merge_extra:
+            merge_extra = Path(str(md["output"])).name[:36]
 
     compose_extra = ""
     if compose_on:
@@ -1055,18 +1454,43 @@ def _format_pipeline_block(
         "этапы:",
         _line("copy", on=copy_on, done=copy_done, extra=copy_extra),
         _line("merge", on=merge_on, done=merge_done, extra=merge_extra),
-        _line("compose", on=compose_on, done=compose_done, extra=compose_extra),
-        _line(
-            "upload",
-            on=upload_on,
-            done=video_done,
-            extra=upload_extra,
-        ),
     ]
+    if merge_on and merge_detail_line:
+        lines.append(f"         {merge_detail_line}")
+    lines.extend(
+        [
+            _line("compose", on=compose_on, done=compose_done, extra=compose_extra),
+            _line(
+                "upload",
+                on=upload_on,
+                done=video_done,
+                extra=upload_extra,
+            ),
+        ]
+    )
     if log_fallback and (copy_on or merge_on) and stale:
         lines.append("источник: publish_all.log (status.json устарел)")
     elif stale:
         lines.append("idle — status.json устарел (см. proc)")
+    diag = diagnose_pipeline_bottleneck(
+        temp_dir=temp_dir,
+        copy_on=copy_on,
+        merge_on=merge_on,
+        compose_on=compose_on,
+        upload_on=upload_on,
+        copy_done=copy_done,
+        merge_done=merge_done,
+        compose_done=compose_done,
+        video_done=video_done,
+        import_alive=import_alive,
+        stale=stale,
+        log_fallback=log_fallback,
+        merge_detail_line=merge_detail_line,
+        st=st,
+        procs=procs or [],
+    )
+    if diag:
+        lines.append(f"диагноз: {diag}")
     return lines
 
 
