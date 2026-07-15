@@ -14,6 +14,7 @@ from import_70mai import (
     append_bad_clip_record,
     bad_clips_log_path,
     drop_unreadable_clips,
+    mp4_has_moov_atom,
     quarantine_corrupt_clip,
 )
 
@@ -85,6 +86,29 @@ class BadClipsTests(unittest.TestCase):
             self.assertEqual([c.path for c in kept], [good])
             self.assertFalse(bad.exists())
             self.assertTrue((root / "bad.MP4.bad").is_file())
+
+    def test_mp4_has_moov_walks_atoms(self) -> None:
+        """Synthetic MP4: good has moov; bogus mdat size has none."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def atom(typ: bytes, payload: bytes) -> bytes:
+                return (8 + len(payload)).to_bytes(4, "big") + typ + payload
+
+            ftyp = atom(b"ftyp", b"isom")
+            moov = atom(b"moov", b"\x00" * 100)
+            mdat = atom(b"mdat", b"\x00" * 1000)
+            good = root / "good.MP4"
+            good.write_bytes(ftyp + mdat + moov)
+            self.assertTrue(mp4_has_moov_atom(good))
+
+            # mdat size claims past EOF → walker rejects (no reachable moov).
+            bad_hdr = (8 + 5_000_000).to_bytes(4, "big") + b"mdat" + b"\x00" * 200
+            # Plant a fake "moov" string inside the truncated mdat payload.
+            bad_body = bad_hdr + b"xxxxmoovxxxx"
+            bad = root / "bad.MP4"
+            bad.write_bytes(ftyp + bad_body)
+            self.assertFalse(mp4_has_moov_atom(bad))
 
     def test_append_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

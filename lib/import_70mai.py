@@ -1465,8 +1465,51 @@ def bad_clips_log_path(history_dir: Path | None = None) -> Path:
     return (history_dir or DEFAULT_BAD_CLIPS_DIR) / BAD_CLIPS_LOG_FILENAME
 
 
+def mp4_has_moov_atom(path: Path) -> bool:
+    """True when a top-level ``moov`` atom is reachable by walking sizes.
+
+    Fast (seek-only). Catches 70mai cards that write a huge bogus ``mdat``
+    size so the real ``moov`` never appears — ffprobe then hangs or says
+    "moov atom not found" while edge-hash still matches the corrupt source.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size < 16:
+        return False
+    try:
+        with path.open("rb") as handle:
+            pos = 0
+            # Bound walks so a corrupt chain cannot spin forever.
+            for _ in range(64):
+                if pos + 8 > size:
+                    return False
+                handle.seek(pos)
+                hdr = handle.read(8)
+                if len(hdr) < 8:
+                    return False
+                atom_size = int.from_bytes(hdr[:4], "big")
+                typ = hdr[4:8]
+                if atom_size == 1:
+                    ext = handle.read(8)
+                    if len(ext) < 8:
+                        return False
+                    atom_size = int.from_bytes(ext, "big")
+                elif atom_size == 0:
+                    atom_size = size - pos
+                if atom_size < 8 or pos + atom_size > size:
+                    return False
+                if typ == b"moov":
+                    return True
+                pos += atom_size
+    except OSError:
+        return False
+    return False
+
+
 def clip_unreadable_reason(path: Path, ffprobe: str) -> str | None:
-    """None if ffprobe can read a sane duration; else a short reason."""
+    """None if the clip looks mergeable; else a short reason."""
     if not path.is_file():
         return "missing"
     try:
@@ -1475,6 +1518,10 @@ def clip_unreadable_reason(path: Path, ffprobe: str) -> str | None:
         return "unreadable"
     if size < MIN_MERGE_BYTES:
         return f"too small ({size} B)"
+    # Structural check first — avoids multi-minute ffprobe hangs on
+    # broken mdat length fields (Part 7 / PA20250903-…F.MP4 class).
+    if not mp4_has_moov_atom(path):
+        return "moov atom missing/corrupt"
     dur = probe_duration_retry(path, ffprobe)
     if dur is None:
         return "ffprobe unreadable (moov/corrupt)"
@@ -1636,6 +1683,8 @@ def _staged_matches_source(
         if not dest.is_file() or dest.stat().st_size != src.stat().st_size:
             return False
         if _file_edge_digest(dest) != _file_edge_digest(src):
+            return False
+        if not mp4_has_moov_atom(dest):
             return False
         dur = probe_duration_retry(dest, ffprobe)
         if dur is None or dur < 0.5:
