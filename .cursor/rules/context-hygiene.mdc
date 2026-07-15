@@ -6,6 +6,7 @@ alwaysApply: true
 # Context hygiene
 
 This project burns context mainly via large `StrReplace`/`Write` history. Follow these every turn.
+Read/search/shell trimming lives in `token-economy` — keep that rule for those habits.
 
 ## Edits
 
@@ -18,8 +19,6 @@ This project burns context mainly via large `StrReplace`/`Write` history. Follow
 ## Chat lifecycle
 
 - For a **new workstream** (new feature, unrelated bug, post-audit follow-up), tell the user to **start a new chat** and point at the relevant files/plan — do not keep stacking history here.
-- Keep replies short: prefer diffs and bullet outcomes over long narrative once the approach is settled.
-- Prefer `Task`/subagents for broad exploration so raw search dumps stay out of the main thread.
 
 ## Do not optimize
 

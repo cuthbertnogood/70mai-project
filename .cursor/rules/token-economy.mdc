@@ -1,0 +1,29 @@
+---
+description: Token/context economy — targeted reads, trimmed shell, no re-reads
+alwaysApply: true
+---
+
+# Token economy
+
+Always-on habits for lean context. Edit-size limits and chat lifecycle live in `context-hygiene` — do not duplicate them here.
+
+## Read / search
+
+- Do not re-read files or outputs already in context.
+- Large files: read with `offset`/`limit`, not whole-file.
+- Search with Grep/Glob tools, not shell; in terminal use `rg`, not `grep -r`/`find`.
+- Prefer Grep for a symbol over reading the whole file.
+
+## Shell output
+
+- Bound output: `| head -n`, `--tail`, `-n`, or check size with `wc -l` first.
+- Do not `cat` large files — use Read with a range.
+
+## Context & replies
+
+- Independent tool calls in one batch.
+- Broad codebase exploration → `Task`/subagent so dumps stay out of the main thread.
+- Brief answers; cite `path:lines` instead of pasting large code/logs.
+- Do not dump secrets/env files wholesale — touch only the variables you need.
+
+Detail playbook: skill `token-saver` (explicit “frugal” / “token-saver” only).

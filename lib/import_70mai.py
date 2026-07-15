@@ -1427,6 +1427,44 @@ def plan_stage_batches(n_clips: int, batch_size: int) -> list[tuple[int, int]]:
     return [(i, min(i + size, n)) for i in range(0, n, size)]
 
 
+def _file_edge_digest(path: Path, window: int = 2_000_000) -> str:
+    """Fingerprint first+last bytes — catches truncated/corrupt SD copies."""
+    import hashlib
+
+    size = path.stat().st_size
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        digest.update(handle.read(min(window, size)))
+        if size > window:
+            handle.seek(size - window)
+            digest.update(handle.read(window))
+    return digest.hexdigest()
+
+
+def _staged_matches_source(
+    dest: Path,
+    src: Path,
+    ffprobe: str,
+    *,
+    expected_duration: float | None = None,
+) -> bool:
+    """True when dest is a readable, byte-faithful copy of src."""
+    try:
+        if not dest.is_file() or dest.stat().st_size != src.stat().st_size:
+            return False
+        if _file_edge_digest(dest) != _file_edge_digest(src):
+            return False
+        dur = probe_duration_safe(dest, ffprobe)
+        if dur is None or dur < 0.5:
+            return False
+        if expected_duration is not None and expected_duration > 0:
+            if dur < expected_duration * 0.95:
+                return False
+    except OSError:
+        return False
+    return True
+
+
 def stage_clips_locally(
     chunk: list[Clip],
     stage_dir: Path,
@@ -1434,11 +1472,14 @@ def stage_clips_locally(
     index_offset: int = 0,
     total_hint: int | None = None,
     on_clip: Callable[[int, int, str], None] | None = None,
+    ffprobe: str | None = None,
+    force: bool = False,
 ) -> list[Path]:
     """Copy chunk clips from SD to local stage_dir (sequential, one USB stream)."""
     stage_dir.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
     total = total_hint if total_hint is not None else len(chunk)
+    probe = ffprobe or find_tool("ffprobe")
     for i, clip in enumerate(chunk):
         idx = index_offset + i + 1
         dest = stage_dir / clip.path.name
@@ -1448,26 +1489,62 @@ def stage_clips_locally(
                 on_clip(idx, total, clip.path.name)
             except Exception:
                 pass
-        if dest.is_file() and dest.stat().st_size == src_size:
+        if (
+            not force
+            and _staged_matches_source(
+                dest,
+                clip.path,
+                probe,
+                expected_duration=clip.duration,
+            )
+        ):
             log(
                 f"  [copy] {clip.camera} {idx}/{total}: "
                 f"{clip.path.name} (already on SSD)"
             )
             staged.append(dest)
             continue
-        partial = dest.with_suffix(dest.suffix + ".partial")
-        partial.unlink(missing_ok=True)
-        log(
-            f"  [copy] {clip.camera} {idx}/{total}: {clip.path.name} "
-            f"({src_size / 1_000_000:.0f} MB) SD→SSD"
-        )
-        t0 = time.monotonic()
-        shutil.copyfile(clip.path, partial)
-        partial.replace(dest)
-        log(
-            f"  [copy] {clip.camera} {idx}/{total}: ok in "
-            f"{format_duration(time.monotonic() - t0)}"
-        )
+        copied_ok = False
+        last_err = ""
+        for attempt in range(1, 4):
+            partial = dest.with_suffix(dest.suffix + ".partial")
+            partial.unlink(missing_ok=True)
+            dest.unlink(missing_ok=True)
+            log(
+                f"  [copy] {clip.camera} {idx}/{total}: {clip.path.name} "
+                f"({src_size / 1_000_000:.0f} MB) SD→SSD"
+                + (f" retry {attempt}/3" if attempt > 1 else "")
+            )
+            t0 = time.monotonic()
+            try:
+                shutil.copyfile(clip.path, partial)
+                partial.replace(dest)
+            except OSError as exc:
+                last_err = str(exc)
+                partial.unlink(missing_ok=True)
+                continue
+            log(
+                f"  [copy] {clip.camera} {idx}/{total}: ok in "
+                f"{format_duration(time.monotonic() - t0)}"
+            )
+            if _staged_matches_source(
+                dest,
+                clip.path,
+                probe,
+                expected_duration=clip.duration,
+            ):
+                copied_ok = True
+                break
+            last_err = "corrupt copy (hash/ffprobe mismatch)"
+            log(
+                f"  [copy] {clip.camera} {idx}/{total}: "
+                f"{last_err} — will re-copy"
+            )
+            dest.unlink(missing_ok=True)
+        if not copied_ok:
+            raise OSError(
+                f"staging failed for {clip.path.name} after 3 tries: {last_err}"
+            )
         staged.append(dest)
     return staged
 
@@ -1624,6 +1701,10 @@ def _ffmpeg_concat_copy(
             list_file.write(f"file '{escape_concat_path(src)}'\n")
         list_path = Path(list_file.name)
     try:
+        # Do NOT pass -probesize/-analyzeduration here: 70mai MP4s keep
+        # `moov` at the end of the file. A 1M probe misses it → "moov atom
+        # not found" → concat keeps only the first clip (~30s instead of
+        # ~300s per part).
         return run_quiet_subprocess(
             [
                 ffmpeg,
@@ -1634,10 +1715,6 @@ def _ffmpeg_concat_copy(
                 "-f",
                 "concat",
                 "-safe",
-                "0",
-                "-probesize",
-                "1M",
-                "-analyzeduration",
                 "0",
                 "-i",
                 str(list_path),
@@ -1650,6 +1727,100 @@ def _ffmpeg_concat_copy(
         )
     finally:
         list_path.unlink(missing_ok=True)
+
+
+def _ffmpeg_remux_faststart(
+    ffmpeg: str, src: Path, dest: Path
+) -> subprocess.CompletedProcess[str]:
+    """Remux one clip with moov at the front (helps stubborn concat cases)."""
+    return run_quiet_subprocess(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(dest),
+        ]
+    )
+
+
+def concat_copy_with_heal(
+    ffmpeg: str,
+    ffprobe: str,
+    sources: list[Path],
+    output_path: Path,
+    expected_duration: float,
+    *,
+    record_type: str = "",
+    heartbeat: str | None = None,
+    on_heartbeat: Callable[[float], None] | None = None,
+) -> str | None:
+    """Concat -c copy; on short/moov failure remux→faststart and retry.
+
+    Returns None on success, else error string.
+    """
+    result = _ffmpeg_concat_copy(
+        ffmpeg,
+        sources,
+        output_path,
+        heartbeat=heartbeat,
+        on_heartbeat=on_heartbeat,
+    )
+    if result.returncode != 0:
+        err = _ffmpeg_merge_error(result)
+        output_path.unlink(missing_ok=True)
+        return err
+
+    bad = merge_validation_error(
+        output_path, ffprobe, expected_duration, record_type=record_type
+    )
+    if bad is None:
+        return None
+
+    # Auto-heal: remux each source to faststart, then concat again.
+    log(f"       concat short/bad ({bad}) — remux faststart + retry")
+    output_path.unlink(missing_ok=True)
+    remux_dir = output_path.parent / f".remux_{output_path.stem}"
+    remux_dir.mkdir(parents=True, exist_ok=True)
+    remuxed: list[Path] = []
+    try:
+        for i, src in enumerate(sources):
+            dest = remux_dir / f"{i:03d}_{src.name}"
+            rr = _ffmpeg_remux_faststart(ffmpeg, src, dest)
+            if rr.returncode != 0:
+                return (
+                    f"faststart remux failed for {src.name}: "
+                    f"{_ffmpeg_merge_error(rr)}"
+                )
+            remuxed.append(dest)
+        result = _ffmpeg_concat_copy(
+            ffmpeg,
+            remuxed,
+            output_path,
+            heartbeat=(f"{heartbeat} heal" if heartbeat else "concat heal"),
+            on_heartbeat=on_heartbeat,
+        )
+        if result.returncode != 0:
+            err = _ffmpeg_merge_error(result)
+            output_path.unlink(missing_ok=True)
+            return err
+        bad2 = merge_validation_error(
+            output_path, ffprobe, expected_duration, record_type=record_type
+        )
+        if bad2 is None:
+            log("       concat healed after faststart remux")
+            return None
+        output_path.unlink(missing_ok=True)
+        return f"ffprobe validation after heal: {bad2}"
+    finally:
+        shutil.rmtree(remux_dir, ignore_errors=True)
 
 
 def merge_clips(
@@ -1830,8 +2001,25 @@ def merge_clips(
                 pipeline.merge_step()
         return "failed"
 
-    def _concat_sources(sources: list[Path], dest: Path, label: str) -> str | None:
+    def _concat_sources(
+        sources: list[Path],
+        dest: Path,
+        label: str,
+        *,
+        expected: float | None = None,
+    ) -> str | None:
         """Return None on success, else error string."""
+        if expected is not None and expected > 0:
+            return concat_copy_with_heal(
+                ffmpeg,
+                ffprobe,
+                sources,
+                dest,
+                expected,
+                record_type=record_type,
+                heartbeat=label,
+                on_heartbeat=on_hb,
+            )
         last_error = ""
         for attempt in range(1, attempts + 1):
             if attempt > 1:
@@ -1889,7 +2077,10 @@ def merge_clips(
             if len(batches) == 1:
                 try:
                     concat_sources = stage_clips_locally(
-                        chunk, stage_dir, total_hint=len(chunk)
+                        chunk,
+                        stage_dir,
+                        total_hint=len(chunk),
+                        ffprobe=ffprobe,
                     )
                 except OSError as exc:
                     return _fail(f"staging failed: {exc}")
@@ -1939,6 +2130,7 @@ def merge_clips(
                             stage_dir,
                             index_offset=offset,
                             total_hint=len(chunk),
+                            ffprobe=ffprobe,
                         )
                     except OSError as exc:
                         return _fail(
@@ -1954,7 +2146,37 @@ def merge_clips(
                         part_out,
                         f"merging {output_path.name} "
                         f"part {batch_idx}/{len(batches)}",
+                        expected=part_expected,
                     )
+                    if err:
+                        log(
+                            f"  [merge] part {batch_idx}/{len(batches)}: "
+                            f"{err} — force re-copy + retry"
+                        )
+                        for path in staged:
+                            path.unlink(missing_ok=True)
+                        part_out.unlink(missing_ok=True)
+                        try:
+                            staged = stage_clips_locally(
+                                batch,
+                                stage_dir,
+                                index_offset=offset,
+                                total_hint=len(chunk),
+                                ffprobe=ffprobe,
+                                force=True,
+                            )
+                        except OSError as exc:
+                            return _fail(
+                                f"staging failed: {exc}",
+                                keep_stage_parts=True,
+                            )
+                        err = _concat_sources(
+                            staged,
+                            part_out,
+                            f"merging {output_path.name} "
+                            f"part {batch_idx}/{len(batches)} retry",
+                            expected=part_expected,
+                        )
                     for path in staged:
                         path.unlink(missing_ok=True)
                     if err:
@@ -1985,6 +2207,7 @@ def merge_clips(
                         parts,
                         output_path,
                         f"merging {output_path.name} final",
+                        expected=expected_duration,
                     )
 
                 err = _run_final()
@@ -2347,6 +2570,7 @@ def _run_copy_merge_pipeline(
                             index_offset=offset,
                             total_hint=len(chunk),
                             on_clip=_on_clip,
+                            ffprobe=ffprobe,
                         )
                     )
                 elapsed = time.monotonic() - t0
