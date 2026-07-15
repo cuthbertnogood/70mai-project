@@ -2168,19 +2168,22 @@ def _load_dashboard_view():
 
     path = Path(view.__file__).resolve()
     try:
-        mtime = path.stat().st_mtime_ns
+        st = path.stat()
+        fp = (st.st_mtime_ns, st.st_size, getattr(st, "st_ino", 0))
     except OSError:
         return view
-    prev = getattr(_load_dashboard_view, "_mtime", None)
-    if prev is not None and mtime != prev:
+    prev = getattr(_load_dashboard_view, "_fp", None)
+    if prev is not None and fp != prev:
         view = importlib.reload(view)
-        # Brief note on stderr so the TTY table is not polluted mid-frame.
         try:
-            sys.stderr.write("[dashboard] view reloaded\n")
+            sys.stderr.write(f"[dashboard] view reloaded ({path.name})\n")
             sys.stderr.flush()
         except OSError:
             pass
-    _load_dashboard_view._mtime = mtime  # type: ignore[attr-defined]
+        _load_dashboard_view._note = (  # type: ignore[attr-defined]
+            f"view reload {datetime.now():%H:%M:%S}"
+        )
+    _load_dashboard_view._fp = fp  # type: ignore[attr-defined]
     return view
 
 
@@ -2192,18 +2195,23 @@ def _dashboard_watch_paths() -> list[Path]:
     ]
 
 
+def _file_fingerprint(path: Path) -> tuple[int, int, int]:
+    try:
+        st = path.stat()
+        return (int(st.st_mtime_ns), int(st.st_size), int(getattr(st, "st_ino", 0)))
+    except OSError:
+        return (-1, -1, -1)
+
+
 def _dashboard_supervisor(argv: list[str]) -> int:
     """Keep one long-lived parent; respawn --worker when dashboard sources change."""
     import signal
     import sys
 
-    watch = _dashboard_watch_paths()
-    mtimes: dict[Path, int] = {}
-    for path in watch:
-        try:
-            mtimes[path] = path.stat().st_mtime_ns
-        except OSError:
-            mtimes[path] = -1
+    watch = [p.resolve() for p in _dashboard_watch_paths()]
+    fingerprints: dict[str, tuple[int, int, int]] = {
+        str(path): _file_fingerprint(path) for path in watch
+    }
 
     worker_argv = [sys.executable, str(Path(__file__).resolve()), "--worker", *argv[1:]]
     child: subprocess.Popen | None = None
@@ -2226,27 +2234,36 @@ def _dashboard_supervisor(argv: list[str]) -> int:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
+    sys.stderr.write(
+        "[dashboard] auto-reload: правьте lib/autopilot_dashboard_view.py "
+        "(экран) или lib/autopilot_dashboard.py — воркер перезапустится сам\n"
+    )
+    sys.stderr.flush()
+
     while True:
+        # Re-read fingerprints right before spawn so we don't miss edits
+        # that landed during the previous worker shutdown.
+        fingerprints = {str(path): _file_fingerprint(path) for path in watch}
         child = subprocess.Popen(worker_argv)  # noqa: S603 — controlled argv
         reload = False
+        changed_name = ""
         while child.poll() is None:
-            time.sleep(0.7)
+            time.sleep(0.4)
             for path in watch:
-                try:
-                    mtime = path.stat().st_mtime_ns
-                except OSError:
-                    continue
-                if mtime != mtimes.get(path, -1):
-                    mtimes[path] = mtime
+                key = str(path)
+                fp = _file_fingerprint(path)
+                if fp != fingerprints.get(key, (-1, -1, -1)):
+                    fingerprints[key] = fp
+                    changed_name = path.name
                     reload = True
                     break
             if reload:
                 sys.stderr.write(
-                    f"\n[dashboard] файл изменён ({path.name}) — перезапуск…\n"
+                    f"\n[dashboard] файл изменён ({changed_name}) — перезапуск…\n"
                 )
                 sys.stderr.flush()
                 _stop_child()
-                time.sleep(0.25)
+                time.sleep(0.2)
                 break
         else:
             code = child.returncode if child is not None else 0
