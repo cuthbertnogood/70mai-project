@@ -1745,15 +1745,19 @@ def format_copy_detail(detail: dict | None) -> tuple[str, str | None]:
 
 
 _ENCODE_LOG_RE = re.compile(
-    r"Encode:.*?\(([\d.]+)%\)\s*\|\s*(\S+)\s+elapsed\s*\|\s*ETA\s+(\S+)\s*\|\s*speed\s+"
-    r"([\d.]+x|—)",
+    r"Encode:.*?\]\s*"
+    r"(?P<pos>[^|]+?)\s*\((?P<pct>[\d.]+)%\)\s*\|\s*"
+    r"(?P<elapsed>[^|]+?)\s+elapsed\s*\|\s*"
+    r"ETA\s+(?P<eta>[^|]+?)\s*\|\s*"
+    r"speed\s+(?P<speed>[\d.]+x|—)",
 )
 _UPLOAD_LOG_RE = re.compile(
     r"Upload\s+(\S+):\s*\[.*?\]\s*"
-    r"([^\|]+?)\s*\|\s*([\d.]+)\s*MB/s\s*\|\s*(\S+)\s+elapsed\s*\|\s*ETA\s+(\S+)",
+    r"([^\|]+?)\s*\|\s*([\d.]+)\s*MB/s\s*\|\s*"
+    r"([^|]+?)\s+elapsed\s*\|\s*ETA\s+([^|]+?)\s*$",
 )
 _ENCODING_HB_RE = re.compile(
-    r"… encoding \((\S+),\s*([\d.]+)%(?:,\s*([\d.]+)x)?\)",
+    r"(?:…|\.\.\.) encoding \(([^,]+),\s*([\d.]+)%(?:,\s*([\d.]+)x)?\)",
 )
 
 
@@ -1761,14 +1765,14 @@ def parse_compose_log_detail(temp_dir: Path | None) -> dict | None:
     """Last Encode: / encoding heartbeat from publish_all.log."""
     if temp_dir is None:
         return None
-    text = _tail_text(temp_dir / "publish_all.log", max_bytes=64_000)
+    text = _tail_text(temp_dir / "publish_all.log", max_bytes=96_000)
     if not text:
         return None
     found: dict | None = None
     for line in text.splitlines():
         m = _ENCODE_LOG_RE.search(line)
         if m:
-            speed_raw = m.group(4)
+            speed_raw = m.group("speed")
             speed = None
             if speed_raw.endswith("x") and speed_raw != "—":
                 try:
@@ -1776,22 +1780,27 @@ def parse_compose_log_detail(temp_dir: Path | None) -> dict | None:
                 except ValueError:
                     speed = None
             found = {
-                "percent": float(m.group(1)),
-                "elapsed": m.group(2),
-                "eta": m.group(3),
+                "percent": float(m.group("pct")),
+                "position": m.group("pos").strip(),
+                "elapsed": m.group("elapsed").strip(),
+                "eta": m.group("eta").strip(),
                 "speed": speed,
                 "speed_unit": "x",
+                "action": "encode Front↑+Back↓",
             }
             continue
         m2 = _ENCODING_HB_RE.search(line)
         if m2:
             speed = float(m2.group(3)) if m2.group(3) else None
+            prev = found or {}
             found = {
                 "percent": float(m2.group(2)),
-                "elapsed": m2.group(1),
-                "eta": (found or {}).get("eta") if found else None,
-                "speed": speed,
-                "speed_unit": "x" if speed else None,
+                "position": prev.get("position"),
+                "elapsed": m2.group(1).strip(),
+                "eta": prev.get("eta"),
+                "speed": speed if speed is not None else prev.get("speed"),
+                "speed_unit": "x",
+                "action": prev.get("action") or "encode Front↑+Back↓",
             }
     return found
 
@@ -1805,7 +1814,7 @@ def parse_upload_log_detail(temp_dir: Path | None) -> dict | None:
         return None
     found: dict | None = None
     for line in text.splitlines():
-        m = _UPLOAD_LOG_RE.search(line)
+        m = _UPLOAD_LOG_RE.search(line.rstrip())
         if not m:
             continue
         size_part = m.group(2).strip()
@@ -1816,8 +1825,8 @@ def parse_upload_log_detail(temp_dir: Path | None) -> dict | None:
             "percent": float(pct_m.group(1)) if pct_m else None,
             "speed": float(m.group(3)),
             "speed_unit": "MB/s",
-            "elapsed": m.group(4),
-            "eta": m.group(5),
+            "elapsed": m.group(4).strip(),
+            "eta": m.group(5).strip(),
         }
     return found
 
@@ -1831,21 +1840,34 @@ def format_compose_detail(
     """Return (short lane text, optional second detail line) for compose."""
     st = st if isinstance(st, dict) else {}
     log_detail = log_detail or {}
-    pct = st.get("percent")
+    # Prefer Encode: telemetry from the log — works even if an older
+    # compose process only writes bare "38% (1670M)" into status.json.
+    pct = log_detail.get("percent")
     if not isinstance(pct, (int, float)):
-        pct = log_detail.get("percent")
+        pct = st.get("percent")
     out_b = st.get("output_bytes")
-    speed = st.get("speed")
+    speed = log_detail.get("speed")
     if not isinstance(speed, (int, float)):
-        speed = log_detail.get("speed")
-    unit = str(st.get("speed_unit") or log_detail.get("speed_unit") or "x")
-    eta = str(st.get("eta") or log_detail.get("eta") or "").strip()
-    elapsed = str(st.get("elapsed") or log_detail.get("elapsed") or "").strip()
+        speed = st.get("speed")
+    unit = str(
+        log_detail.get("speed_unit") or st.get("speed_unit") or "x"
+    )
+    eta = str(log_detail.get("eta") or st.get("eta") or "").strip()
+    elapsed = str(log_detail.get("elapsed") or st.get("elapsed") or "").strip()
+    position = str(log_detail.get("position") or "").strip()
+    action = str(log_detail.get("action") or "").strip()
+    detail_raw = str(st.get("detail") or "").strip()
+    if not action and "Front" in detail_raw and "Back" in detail_raw:
+        action = "encode Front↑+Back↓"
+    elif not action:
+        action = "encode Front↑+Back↓"
     record_type = str(st.get("record_type") or "").strip()
     chunk = st.get("chunk_index")
     trip = st.get("trip_index")
 
     short_bits: list[str] = []
+    if isinstance(speed, (int, float)) and speed > 0:
+        short_bits.append(f"{float(speed):.2f}x")
     if isinstance(pct, (int, float)):
         short_bits.append(f"{float(pct):.0f}%")
     if trip_label:
@@ -1855,8 +1877,11 @@ def format_compose_detail(
     parts: list[str] = []
     if record_type:
         parts.append(record_type)
+    parts.append(action)
     if isinstance(chunk, int) and isinstance(trip, int) and (chunk or trip):
-        parts.append(f"chunk_{chunk}/trip_{trip:02d}")
+        parts.append(f"trip_{int(trip):02d}")
+    if position:
+        parts.append(position)
     if isinstance(pct, (int, float)):
         parts.append(f"{float(pct):.0f}%")
     if isinstance(out_b, (int, float)) and out_b > 0:

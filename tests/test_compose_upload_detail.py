@@ -30,9 +30,11 @@ class ComposeUploadDetailTests(unittest.TestCase):
             },
             trip_label="trip_02",
         )
+        self.assertIn("1.85x", short)
         self.assertIn("42%", short)
         self.assertIn("trip_02", short)
         assert detail is not None
+        self.assertIn("encode Front↑+Back↓", detail)
         self.assertIn("1.85x", detail)
         self.assertIn("ETA 5m", detail)
         self.assertIn("850 MB", detail)
@@ -59,15 +61,18 @@ class ComposeUploadDetailTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "publish_all.log").write_text(
-                "2026-07-15 12:00:00 Encode: [####----] 01:00/10:00 (10.0%) "
-                "| 45s elapsed | ETA 5m | speed 1.85x\n",
+                "2026-07-15 12:00:00 Encode: [████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░] "
+                "46m 07s/2h 01m 19s (38.0%) | 23m 58s elapsed | ETA 38m 46s | speed 1.94x\n"
+                "2026-07-15 12:00:02        … encoding (24m 00s, 38%)\n",
                 encoding="utf-8",
             )
             d = parse_compose_log_detail(root)
             assert d is not None
-            self.assertAlmostEqual(d["percent"], 10.0)
-            self.assertEqual(d["speed"], 1.85)
-            self.assertEqual(d["eta"], "5m")
+            self.assertAlmostEqual(d["percent"], 38.0)
+            self.assertEqual(d["speed"], 1.94)
+            self.assertEqual(d["eta"], "38m 46s")
+            self.assertIn("46m 07s", d["position"])
+            self.assertEqual(d["elapsed"], "24m 00s")
 
     def test_parse_upload_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -82,6 +87,33 @@ class ComposeUploadDetailTests(unittest.TestCase):
             self.assertEqual(d["file"], "trip_01.mp4")
             self.assertEqual(d["speed"], 2.5)
             self.assertEqual(d["eta"], "7m")
+
+    def test_compose_prefers_log_speed_over_bare_status(self) -> None:
+        short, detail = format_compose_detail(
+            {
+                "record_type": "Parking",
+                "chunk_index": 1,
+                "trip_index": 1,
+                "percent": 38.0,
+                "output_bytes": 1751646256,
+                "detail": "38% (1670M)",
+            },
+            log_detail={
+                "percent": 38.0,
+                "position": "46m 07s/2h 01m 19s",
+                "elapsed": "23m 58s",
+                "eta": "38m 46s",
+                "speed": 1.94,
+                "speed_unit": "x",
+                "action": "encode Front↑+Back↓",
+            },
+            trip_label="trip_01",
+        )
+        self.assertIn("1.94x", short)
+        assert detail is not None
+        self.assertIn("1.94x", detail)
+        self.assertIn("46m 07s/2h 01m 19s", detail)
+        self.assertIn("ETA 38m 46s", detail)
 
 
 if __name__ == "__main__":
