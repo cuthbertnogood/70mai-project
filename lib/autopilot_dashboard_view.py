@@ -52,10 +52,7 @@ def render(dash: Any) -> None:
         term_rows = 40
     two_col = d._use_two_col_trips(term_cols)
     trip_cols = 2 if two_col else 1
-    gap = " │ "
-    trip_col_w = (
-        max(28, (term_cols - len(gap)) // 2) if two_col else max(40, term_cols)
-    )
+    trip_col_w = d._trip_list_col_width(term_cols)
 
     st = d.resolve_live_status(dash.temp_dir)
     procs = d.list_pipeline_processes()
@@ -190,7 +187,7 @@ def render(dash: Any) -> None:
                 width=trip_col_w,
             )
         )
-    lines.extend(d._two_column_pack(trip_lines, term_cols=term_cols, gap=gap))
+    lines.extend(d._two_column_pack(trip_lines, term_cols=term_cols))
     for leg in d._STATUS_LEGEND:
         lines.extend(d._wrap_line(leg, term_cols))
     for row in dash.rows:

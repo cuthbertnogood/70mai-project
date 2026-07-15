@@ -550,6 +550,19 @@ def _fmt_dur_short(seconds: float) -> str:
     return f"{_secs}s"
 
 
+def _trip_list_col_width(term_cols: int) -> int:
+    """Inner cell width for the framed trip list (1 or 2 columns)."""
+    if _use_two_col_trips(term_cols):
+        col_w = max(28, (term_cols - 7) // 2)
+        while col_w > 20 and _table_width((col_w, col_w)) > term_cols:
+            col_w -= 1
+        return col_w
+    col_w = max(40, term_cols - 4)
+    while col_w > 20 and _table_width((col_w,)) > term_cols:
+        col_w -= 1
+    return col_w
+
+
 def _trip_compact_line(
     *,
     marker: str,
@@ -561,7 +574,7 @@ def _trip_compact_line(
     youtube: str,
     width: int,
 ) -> str:
-    """One dense trip line for the two-column list (no box table)."""
+    """One dense trip line for the two-column list."""
     stage_s = stage.replace("↑ YouTube ", "↑").replace("сборка F+B ", "F+B ")
     bits = [f"{marker}{num}", trip, dur, stage_s, size]
     if youtube and youtube not in ("—", "-"):
@@ -570,23 +583,27 @@ def _trip_compact_line(
 
 
 def _two_column_pack(items: list[str], *, term_cols: int, gap: str = " │ ") -> list[str]:
-    """Pack already-formatted lines into two columns (left gets the ceiling half)."""
+    """Pack trip lines into a framed 1- or 2-column box (┏━┳━┓ / ┃ ┃ / ┗━┻━┛)."""
+    del gap  # separator is the table middle border
     if not items:
         return []
-    if not _use_two_col_trips(term_cols):
-        return [_fit_text(x, term_cols) for x in items]
-    gap_w = len(gap)
-    col_w = max(28, (term_cols - gap_w) // 2)
-    mid = (len(items) + 1) // 2
-    left, right = items[:mid], items[mid:]
-    out: list[str] = []
-    for i in range(mid):
-        l = _fit_text(left[i], col_w) if i < len(left) else ""
-        r = _fit_text(right[i], col_w) if i < len(right) else ""
-        if r:
-            out.append(f"{l:<{col_w}}{gap}{r}")
-        else:
-            out.append(l)
+    col_w = _trip_list_col_width(term_cols)
+    if _use_two_col_trips(term_cols):
+        widths = (col_w, col_w)
+        mid = (len(items) + 1) // 2
+        left, right = items[:mid], items[mid:]
+        out = [_table_top(widths)]
+        for i in range(mid):
+            l = left[i] if i < len(left) else ""
+            r = right[i] if i < len(right) else ""
+            out.append(_table_row((l, r), widths))
+        out.append(_table_bottom(widths))
+        return out
+    widths = (col_w,)
+    out = [_table_top(widths)]
+    for item in items:
+        out.append(_table_row((item,), widths))
+    out.append(_table_bottom(widths))
     return out
 
 
