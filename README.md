@@ -53,7 +53,8 @@ cd /Users/cuthbert/work_local/70mai_project
 ./scripts/publish_all_70mai.sh --dry-run
 ./scripts/publish_all_70mai.sh --types Parking --skip-import
 
-# Прогресс (отдельное окно): copy / merge / compose / upload — каждый на своей строке
+# Прогресс (отдельное окно): copy/merge/compose/upload; правки экрана —
+# lib/autopilot_dashboard_view.py (автоперезагрузка, без Ctrl+C)
 ./scripts/autopilot_dashboard.sh
 ```
 

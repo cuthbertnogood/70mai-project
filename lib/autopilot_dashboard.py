@@ -802,13 +802,22 @@ def _status_age_seconds(st: dict | None) -> int | None:
     return max(0, int((datetime.now() - t0).total_seconds()))
 
 
+def _status_is_stale(st: dict | None) -> bool:
+    age = _status_age_seconds(st)
+    return bool(age is not None and age >= _STALE_STATUS_SEC)
+
+
 def _status_age_line(st: dict | None) -> str | None:
     sec = _status_age_seconds(st)
     if sec is None:
         return None
     phase = str(st.get("phase") or "?") if st else "?"
     if sec >= _STALE_STATUS_SEC:
-        return f"status: {phase} STALE {_human_etime_seconds(sec)} ago"
+        # Plain Russian: STALE ≠ current work; file simply wasn't updated.
+        return (
+            f"файл статуса устарел {_human_etime_seconds(sec)} "
+            f"(последняя запись: {phase}) — не текущая работа"
+        )
     return f"status: {phase} {_human_etime_seconds(sec)} ago"
 
 
@@ -841,7 +850,7 @@ def _import_progress_from_log(temp_dir: Path | None) -> dict[str, str] | None:
         if "[copy]" in line:
             m = _COPY_LOG_RE.search(line)
             if m:
-                bits = [m.group(1), m.group(2)[:28]]
+                bits = [m.group(1), m.group(2)[:40]]
                 if m.group(3):
                     bits.append(m.group(3))
                 # Prefer the "N/N: name" start line over "ok in Ns"
@@ -850,7 +859,7 @@ def _import_progress_from_log(temp_dir: Path | None) -> dict[str, str] | None:
             elif "ok in" not in line:
                 # keep raw short fragment
                 idx = line.find("[copy]")
-                copy_txt = line[idx + 7 :].strip()[:48]
+                copy_txt = line[idx + 7 :].strip()[:56]
         if "[merge]" in line:
             m = _MERGE_LOG_RE.search(line)
             merge_txt = (m.group(1).strip() if m else line.strip())[:48]
@@ -1297,8 +1306,13 @@ class Dashboard:
         if self.source is None:
             return
         st = resolve_live_status(self.temp_dir)
-        active_key = _status_active_key(self.rows, st)
-        active_phase = str(st.get("phase") or "") if st else ""
+        # Stale status.json must not block marking uploaded trips as done.
+        active_key = None if _status_is_stale(st) else _status_active_key(self.rows, st)
+        active_phase = (
+            ""
+            if _status_is_stale(st) or not st
+            else str(st.get("phase") or "")
+        )
         try:
             from publish_all_70mai import load_merged_publish_state
             from publish_70mai import get_upload_entry, is_row_uploaded
@@ -1390,7 +1404,8 @@ class Dashboard:
     def _refresh_from_status(self) -> None:
         st = resolve_live_status(self.temp_dir)
         reasons = read_trip_reasons(self.temp_dir)
-        active_key = _status_active_key(self.rows, st)
+        # Ignore ghost compose/upload from an old status.json.
+        active_key = None if _status_is_stale(st) else _status_active_key(self.rows, st)
         for row in self.rows:
             composed = _row_compose_bytes(
                 self.temp_dir, row, active_key=active_key
@@ -1488,204 +1503,102 @@ class Dashboard:
     def render(self) -> None:
         if not self.enabled or self._tty is None:
             return
-        from import_70mai import format_duration
+        view = _load_dashboard_view()
+        view.render(self)
 
-        done = sum(1 for r in self.rows if r.status == "done")
-        fail = sum(1 for r in self.rows if r.status == "fail")
-        total = len(self.rows)
-        free = free_disk_gb(self.check_disk)
-        from publish_all_70mai import autopilot_disk_usage, format_gb
 
-        usage = autopilot_disk_usage(self.video_dir, self.temp_dir)
-        active_rows = [
-            r
-            for r in self.rows
-            if r.status in ("compose", "upload", "import", "stall", "oauth")
-        ]
-        if self._youtube_ok is True:
-            yt_net = "YT net OK"
-        elif self._youtube_ok is False:
-            yt_net = f"YT net OFF ({self._youtube_detail})"
-        else:
-            yt_net = "YT net …"
-        if self._upload_health == "error":
-            yt_upload = f"UPLOAD ERR: {self._upload_health_detail}"
-        elif self._upload_health == "retry":
-            yt_upload = f"upload retry: {self._upload_health_detail}"
-        elif self._upload_health == "upload":
-            yt_upload = "upload…"
-        elif self._upload_health == "ok":
-            yt_upload = f"upload OK {self._upload_health_detail}"
-        else:
-            yt_upload = "upload —"
+def _load_dashboard_view():
+    """Import/reload autopilot_dashboard_view.py when its mtime changes."""
+    import importlib
+    import sys
+
+    import autopilot_dashboard_view as view
+
+    path = Path(view.__file__).resolve()
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return view
+    prev = getattr(_load_dashboard_view, "_mtime", None)
+    if prev is not None and mtime != prev:
+        view = importlib.reload(view)
+        # Brief note on stderr so the TTY table is not polluted mid-frame.
         try:
-            term_cols = shutil.get_terminal_size().columns
-            term_rows = shutil.get_terminal_size().lines
+            sys.stderr.write("[dashboard] view reloaded\n")
+            sys.stderr.flush()
         except OSError:
-            term_cols = 100
-            term_rows = 40
-        col_widths = _column_widths(term_cols)
-
-        st = resolve_live_status(self.temp_dir)
-        procs = list_pipeline_processes()
-        age_sec = _status_age_seconds(st)
-        # Age alone: old status.json must not drive ► markers (procs may be zombies).
-        stale = bool(age_sec is not None and age_sec >= _STALE_STATUS_SEC)
-        import_alive = any(p.role == "import" for p in procs)
-        log_fallback = None
-        if import_alive and (
-            stale or not st or str(st.get("phase") or "") != "import"
-        ):
-            log_fallback = _import_progress_from_log(self.temp_dir)
-        if stale:
-            active_rows = []
-        active_key = None if stale else _status_active_key(self.rows, st)
-
-        summary = f"YouTube {done}/{total}"
-        if fail:
-            summary += f"  fail:{fail}"
-        pending = total - done - fail
-        if pending:
-            summary += f"  todo:{pending}"
-        if active_rows:
-            parts = []
-            for ar in active_rows[:2]:
-                pct = ar.percent
-                if ar.status == "upload" and pct is None:
-                    pct = _read_upload_percent(self.temp_dir, ar.trip_index)
-                stage = _stage_label(
-                    ar.status,
-                    percent=pct,
-                    stalled=ar.stalled,
-                    overall_index=ar.overall_index or None,
-                    overall_total=total,
-                )
-                parts.append(f"{stage} {_trip_display(ar)}")
-            summary += "  |  " + " · ".join(parts)
-        elif log_fallback:
-            bits = []
-            if log_fallback.get("copy"):
-                bits.append(f"copy {log_fallback['copy']}")
-            if log_fallback.get("merge"):
-                bits.append(f"merge {log_fallback['merge']}")
-            summary += "  |  import " + (" · ".join(bits) if bits else "…")
-        elif stale:
-            summary += "  |  idle"
-        elif st and st.get("phase") == "import":
-            pct = st.get("percent")
-            detail = str(st.get("detail") or "").strip()
-            stage = "import"
-            if isinstance(pct, (int, float)):
-                stage = f"import {float(pct):.0f}%"
-            summary += f"  |  {stage}"
-            if detail:
-                summary += f" {detail[:40]}"
-        else:
-            summary += "  |  wait"
-
-        disk_line = (
-            f"disk {free:.0f}G free (min {self.min_free_gb:.0f})  ·  "
-            f"video {format_gb(usage['total'])}  ·  {yt_net}  ·  {yt_upload}"
-        )
-
-        lines: list[str] = []
-        for hl in _wrap_line(summary, term_cols):
-            lines.append(hl)
-        for cl in _format_pipeline_block(
-            st,
-            self.rows,
-            temp_dir=self.temp_dir,
-            stale=stale,
-            log_fallback=log_fallback,
-        ):
-            for hl in _wrap_line(cl, term_cols):
-                lines.append(hl)
-        meta_bits: list[str] = []
-        age = _status_age_line(st)
-        if age:
-            meta_bits.append(age)
-        meta_bits.extend(_format_pipeline_processes(procs))
-        for hl in _wrap_line("  ·  ".join(meta_bits), term_cols):
-            lines.append(hl)
-        for hl in _wrap_line(disk_line, term_cols):
-            lines.append(hl)
-        try:
-            from pipeline_repair import read_recent_repairs
-
-            repairs = read_recent_repairs(self.temp_dir, limit=2)
-            if repairs:
-                bits = []
-                for entry in repairs[-2:]:
-                    code = entry.get("code") or entry.get("action") or "repair"
-                    detail = str(entry.get("detail") or "")[:40]
-                    bits.append(f"{code}:{detail}" if detail else str(code))
-                for hl in _wrap_line("repair  " + " · ".join(bits), term_cols):
-                    lines.append(hl)
-        except Exception:
             pass
+    _load_dashboard_view._mtime = mtime  # type: ignore[attr-defined]
+    return view
 
-        show_rows, collapse_note = _visible_rows(
-            self.rows, term_rows=term_rows, total=total
-        )
-        if collapse_note:
-            lines.append(collapse_note)
 
-        lines.append(_table_top(col_widths))
-        lines.append(_table_row(_COL_HEADERS, col_widths))
-        lines.append(_table_sep(col_widths))
-        for i, row in enumerate(show_rows, start=1):
-            dur = format_duration(row.duration_sec)
-            size_b = _row_compose_bytes(
-                self.temp_dir, row, active_key=active_key
-            )
-            stage = row.progress if row.progress != "—" else _stage_label(
-                row.status,
-                overall_index=row.overall_index or i,
-                overall_total=total,
-            )
-            if stale and row.status in ("compose", "upload", "import", "stall"):
-                stage = "ожидание"
-            is_active = (not stale) and row.status in (
-                "compose",
-                "upload",
-                "import",
-                "stall",
-            )
-            marker = "►" if is_active else " "
-            num = row.overall_index or i
-            cells = (
-                f"{marker}{num}/{total}",
-                _fit_text(_trip_display(row), col_widths[1]),
-                _fit_text(dur, col_widths[2]),
-                _fit_text(stage, col_widths[3]),
-                _fit_text(_fmt_gb(size_b), col_widths[4]),
-                _youtube_for_column(row.youtube_url, col_widths[5]),
-            )
-            lines.append(_table_row(cells, col_widths))
-        lines.append(_table_bottom(col_widths))
-        for leg in _STATUS_LEGEND:
-            lines.extend(_wrap_line(leg, term_cols))
-        for row in self.rows:
-            if row.status in ("fail", "stall", "oauth") and row.reason not in ("—", ""):
-                num = row.overall_index or 0
-                lines.extend(
-                    _wrap_line(
-                        f"⚠ {num}/{total} {_trip_display(row)}: "
-                        f"{_short_reason(row.reason)}",
-                        term_cols,
-                    )
+def _dashboard_watch_paths() -> list[Path]:
+    here = Path(__file__).resolve()
+    return [
+        here,
+        here.with_name("autopilot_dashboard_view.py"),
+    ]
+
+
+def _dashboard_supervisor(argv: list[str]) -> int:
+    """Keep one long-lived parent; respawn --worker when dashboard sources change."""
+    import signal
+    import sys
+
+    watch = _dashboard_watch_paths()
+    mtimes: dict[Path, int] = {}
+    for path in watch:
+        try:
+            mtimes[path] = path.stat().st_mtime_ns
+        except OSError:
+            mtimes[path] = -1
+
+    worker_argv = [sys.executable, str(Path(__file__).resolve()), "--worker", *argv[1:]]
+    child: subprocess.Popen | None = None
+
+    def _stop_child() -> None:
+        nonlocal child
+        if child is None or child.poll() is not None:
+            return
+        child.send_signal(signal.SIGTERM)
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=3)
+
+    def _on_signal(signum: int, _frame: object) -> None:
+        _stop_child()
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
+    while True:
+        child = subprocess.Popen(worker_argv)  # noqa: S603 — controlled argv
+        reload = False
+        while child.poll() is None:
+            time.sleep(0.7)
+            for path in watch:
+                try:
+                    mtime = path.stat().st_mtime_ns
+                except OSError:
+                    continue
+                if mtime != mtimes.get(path, -1):
+                    mtimes[path] = mtime
+                    reload = True
+                    break
+            if reload:
+                sys.stderr.write(
+                    f"\n[dashboard] файл изменён ({path.name}) — перезапуск…\n"
                 )
-        block = "\n".join(lines)
-        out = self._tty
-        if self._alt_screen:
-            out.write("\033[H\033[J")
-        elif self._lines:
-            out.write(f"\033[{self._lines}A\033[J")
-        out.write(block)
-        if not block.endswith("\n"):
-            out.write("\n")
-        out.flush()
-        self._lines = len(lines)
+                sys.stderr.flush()
+                _stop_child()
+                time.sleep(0.25)
+                break
+        else:
+            code = child.returncode if child is not None else 0
+            return int(code or 0)
 
 
 def main() -> int:
@@ -1693,6 +1606,10 @@ def main() -> int:
     import argparse
     import signal
     import sys
+
+    # Parent watches files and respawns --worker on change (no manual restart).
+    if "--worker" not in sys.argv:
+        return _dashboard_supervisor(sys.argv)
 
     from plan_estimate import DEFAULT_SESSION_GAP
     from project_env import ensure_venv_python
@@ -1716,6 +1633,11 @@ def main() -> int:
             "autopilot_plan.json + publish_*.state.json so a busy SD import "
             "cannot freeze the UI. Use --scan-sd to rebuild the plan from the card."
         ),
+    )
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--source",

@@ -8,6 +8,11 @@
 #   video/Output/.publish_tmp/publish_*.state.json
 #   chunk_*/trip_*.mp4 sizes
 #
+# Auto-reload: parent process stays up; edits to
+#   lib/autopilot_dashboard_view.py  (screen layout — edit this for display tweaks)
+#   lib/autopilot_dashboard.py       (data / refresh)
+# are picked up without Ctrl+C (worker restarts; view also hot-reloads in-process).
+#
 # Safe to start, stop, or restart anytime (e.g. second terminal while encode runs).
 # To avoid two tables in one terminal, run autopilot with --no-dashboard:
 #

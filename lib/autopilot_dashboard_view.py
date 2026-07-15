@@ -1,0 +1,212 @@
+"""Hot-reloadable dashboard screen (text layout).
+
+Edit this file while `./scripts/autopilot_dashboard.sh` is running — the main
+process watches mtime and reloads/restarts so you do not need Ctrl+C.
+"""
+from __future__ import annotations
+
+import shutil
+from typing import Any
+
+
+def render(dash: Any) -> None:
+    """Paint one dashboard frame to dash._tty."""
+    import autopilot_dashboard as d
+    from import_70mai import format_duration
+
+    if not dash.enabled or dash._tty is None:
+        return
+
+    done = sum(1 for r in dash.rows if r.status == "done")
+    fail = sum(1 for r in dash.rows if r.status == "fail")
+    total = len(dash.rows)
+    free = d.free_disk_gb(dash.check_disk)
+    from publish_all_70mai import autopilot_disk_usage, format_gb
+
+    usage = autopilot_disk_usage(dash.video_dir, dash.temp_dir)
+    active_rows = [
+        r
+        for r in dash.rows
+        if r.status in ("compose", "upload", "import", "stall", "oauth")
+    ]
+    if dash._youtube_ok is True:
+        yt_net = "YT net OK"
+    elif dash._youtube_ok is False:
+        yt_net = f"YT net OFF ({dash._youtube_detail})"
+    else:
+        yt_net = "YT net …"
+    if dash._upload_health == "error":
+        yt_upload = f"UPLOAD ERR: {dash._upload_health_detail}"
+    elif dash._upload_health == "retry":
+        yt_upload = f"upload retry: {dash._upload_health_detail}"
+    elif dash._upload_health == "upload":
+        yt_upload = "upload…"
+    elif dash._upload_health == "ok":
+        yt_upload = f"upload OK {dash._upload_health_detail}"
+    else:
+        yt_upload = "upload —"
+    try:
+        term_cols = shutil.get_terminal_size().columns
+        term_rows = shutil.get_terminal_size().lines
+    except OSError:
+        term_cols = 100
+        term_rows = 40
+    col_widths = d._column_widths(term_cols)
+
+    st = d.resolve_live_status(dash.temp_dir)
+    procs = d.list_pipeline_processes()
+    # Age alone: old status.json must not drive ► markers (procs may be zombies).
+    stale = d._status_is_stale(st)
+    import_alive = any(p.role == "import" for p in procs)
+    log_fallback = None
+    if import_alive and (
+        stale or not st or str(st.get("phase") or "") != "import"
+    ):
+        log_fallback = d._import_progress_from_log(dash.temp_dir)
+    if stale:
+        active_rows = []
+    active_key = None if stale else d._status_active_key(dash.rows, st)
+
+    summary = f"YouTube {done}/{total}"
+    if fail:
+        summary += f"  fail:{fail}"
+    pending = total - done - fail
+    if pending:
+        summary += f"  todo:{pending}"
+    if active_rows:
+        parts = []
+        for ar in active_rows[:2]:
+            pct = ar.percent
+            if ar.status == "upload" and pct is None:
+                pct = d._read_upload_percent(dash.temp_dir, ar.trip_index)
+            stage = d._stage_label(
+                ar.status,
+                percent=pct,
+                stalled=ar.stalled,
+                overall_index=ar.overall_index or None,
+                overall_total=total,
+            )
+            parts.append(f"{stage} {d._trip_display(ar)}")
+        summary += "  |  " + " · ".join(parts)
+    elif log_fallback:
+        # Put current clip first — this is what the user looks for.
+        clip = log_fallback.get("copy") or log_fallback.get("merge") or "…"
+        summary += f"  |  сейчас: {clip}"
+    elif stale:
+        summary += "  |  idle"
+    elif st and st.get("phase") == "import":
+        pct = st.get("percent")
+        detail = str(st.get("detail") or "").strip()
+        stage = "import"
+        if isinstance(pct, (int, float)):
+            stage = f"import {float(pct):.0f}%"
+        summary += f"  |  {stage}"
+        if detail:
+            summary += f" {detail[:40]}"
+    else:
+        summary += "  |  wait"
+
+    disk_line = (
+        f"disk {free:.0f}G free (min {dash.min_free_gb:.0f})  ·  "
+        f"video {format_gb(usage['total'])}  ·  {yt_net}  ·  {yt_upload}"
+    )
+
+    lines: list[str] = []
+    for hl in d._wrap_line(summary, term_cols):
+        lines.append(hl)
+    for cl in d._format_pipeline_block(
+        st,
+        dash.rows,
+        temp_dir=dash.temp_dir,
+        stale=stale,
+        log_fallback=log_fallback,
+    ):
+        for hl in d._wrap_line(cl, term_cols):
+            lines.append(hl)
+    meta_bits: list[str] = []
+    age = d._status_age_line(st)
+    if age:
+        meta_bits.append(age)
+    meta_bits.extend(d._format_pipeline_processes(procs))
+    for hl in d._wrap_line("  ·  ".join(meta_bits), term_cols):
+        lines.append(hl)
+    for hl in d._wrap_line(disk_line, term_cols):
+        lines.append(hl)
+    try:
+        from pipeline_repair import read_recent_repairs
+
+        repairs = read_recent_repairs(dash.temp_dir, limit=2)
+        if repairs:
+            bits = []
+            for entry in repairs[-2:]:
+                code = entry.get("code") or entry.get("action") or "repair"
+                detail = str(entry.get("detail") or "")[:40]
+                bits.append(f"{code}:{detail}" if detail else str(code))
+            for hl in d._wrap_line("repair  " + " · ".join(bits), term_cols):
+                lines.append(hl)
+    except Exception:
+        pass
+
+    show_rows, collapse_note = d._visible_rows(
+        dash.rows, term_rows=term_rows, total=total
+    )
+    if collapse_note:
+        lines.append(collapse_note)
+
+    lines.append(d._table_top(col_widths))
+    lines.append(d._table_row(d._COL_HEADERS, col_widths))
+    lines.append(d._table_sep(col_widths))
+    for i, row in enumerate(show_rows, start=1):
+        dur = format_duration(row.duration_sec)
+        size_b = d._row_compose_bytes(
+            dash.temp_dir, row, active_key=active_key
+        )
+        stage = row.progress if row.progress != "—" else d._stage_label(
+            row.status,
+            overall_index=row.overall_index or i,
+            overall_total=total,
+        )
+        if stale and row.status in ("compose", "upload", "import", "stall"):
+            stage = "ожидание"
+        is_active = (not stale) and row.status in (
+            "compose",
+            "upload",
+            "import",
+            "stall",
+        )
+        marker = "►" if is_active else " "
+        num = row.overall_index or i
+        cells = (
+            f"{marker}{num}/{total}",
+            d._fit_text(d._trip_display(row), col_widths[1]),
+            d._fit_text(dur, col_widths[2]),
+            d._fit_text(stage, col_widths[3]),
+            d._fit_text(d._fmt_gb(size_b), col_widths[4]),
+            d._youtube_for_column(row.youtube_url, col_widths[5]),
+        )
+        lines.append(d._table_row(cells, col_widths))
+    lines.append(d._table_bottom(col_widths))
+    for leg in d._STATUS_LEGEND:
+        lines.extend(d._wrap_line(leg, term_cols))
+    for row in dash.rows:
+        if row.status in ("fail", "stall", "oauth") and row.reason not in ("—", ""):
+            num = row.overall_index or 0
+            lines.extend(
+                d._wrap_line(
+                    f"⚠ {num}/{total} {d._trip_display(row)}: "
+                    f"{d._short_reason(row.reason)}",
+                    term_cols,
+                )
+            )
+    block = "\n".join(lines)
+    out = dash._tty
+    if dash._alt_screen:
+        out.write("\033[H\033[J")
+    elif dash._lines:
+        out.write(f"\033[{dash._lines}A\033[J")
+    out.write(block)
+    if not block.endswith("\n"):
+        out.write("\n")
+    out.flush()
+    dash._lines = len(lines)
+
