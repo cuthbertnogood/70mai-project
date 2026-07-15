@@ -10,7 +10,7 @@ from pathlib import Path
 
 from import_70mai import log
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_CREDENTIALS_CANDIDATES = (
     PROJECT_ROOT / "youtube_credentials.json",
     PROJECT_ROOT / "config" / "youtube_credentials.json",

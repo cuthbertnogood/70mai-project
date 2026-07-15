@@ -665,7 +665,7 @@ def _precompose_repair(
     python = cli_python()
     import_cmd = [
         python,
-        "import_70mai.py",
+        "lib/import_70mai.py",
         "--source",
         str(source),
         "--types",

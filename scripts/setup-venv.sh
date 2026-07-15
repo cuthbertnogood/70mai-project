@@ -32,4 +32,4 @@ echo "Using $PY ($("$PY" --version))"
 "$PY" -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
-echo "Done. Run scripts via: python3 publish_70mai.py ... (auto-uses .venv)"
+echo "Done. Run scripts via: ./run publish_70mai.py ... (auto-uses .venv)"

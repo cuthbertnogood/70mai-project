@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Run any project script with .venv Python (creates venv on first use).
+# Bare names resolve under lib/ (e.g. ./run publish_70mai.py …).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,4 +17,17 @@ if [[ $# -lt 1 ]]; then
   exit 1
 fi
 
-exec "$PY" "$@"
+SCRIPT="$1"
+shift
+if [[ "$SCRIPT" != /* && "$SCRIPT" != ./* && "$SCRIPT" != ../* && "$SCRIPT" != lib/* && "$SCRIPT" != scripts/* && "$SCRIPT" != tests/* ]]; then
+  if [[ -f "$ROOT/lib/$SCRIPT" ]]; then
+    SCRIPT="lib/$SCRIPT"
+  elif [[ -f "$ROOT/scripts/$SCRIPT" ]]; then
+    SCRIPT="scripts/$SCRIPT"
+  elif [[ -f "$ROOT/tests/$SCRIPT" ]]; then
+    SCRIPT="tests/$SCRIPT"
+  fi
+fi
+
+export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PY" "$SCRIPT" "$@"

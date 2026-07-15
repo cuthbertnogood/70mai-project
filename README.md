@@ -9,6 +9,7 @@
 ## Один раз
 
 ```bash
+cd /Users/cuthbert/work_local/70mai_project
 scripts/setup-venv.sh
 # OAuth: ~/.config/70mai/youtube_credentials.json  (первый upload — вход в браузере)
 ```
@@ -18,6 +19,12 @@ scripts/setup-venv.sh
 ---
 
 ## Основные скрипты (только эти)
+
+Все команды — из каталога проекта:
+
+```bash
+cd /Users/cuthbert/work_local/70mai_project
+```
 
 | Скрипт | Зачем |
 |--------|--------|
@@ -33,6 +40,8 @@ scripts/setup-venv.sh
 ## Как запускать
 
 ```bash
+cd /Users/cuthbert/work_local/70mai_project
+
 # Карты ещё нет — ждать вставки
 ./scripts/watch_publish_all_70mai.sh --wait
 
@@ -70,6 +79,7 @@ scripts/setup-venv.sh
 Пример:
 
 ```bash
+cd /Users/cuthbert/work_local/70mai_project
 ./scripts/watch_publish_all_70mai.sh --wait --profile balanced --min-free-gb 20
 ```
 
@@ -78,6 +88,7 @@ scripts/setup-venv.sh
 ## Логи
 
 ```bash
+cd /Users/cuthbert/work_local/70mai_project
 tail -f video/Output/.publish_tmp/publish_all.log
 tail -f video/Output/.publish_tmp/publish_all_watchdog.log
 tail -f video/Output/.publish_tmp/repair_log.jsonl

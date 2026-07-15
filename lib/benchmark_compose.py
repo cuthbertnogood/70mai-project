@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCREEN = PROJECT_ROOT / "video/ScreenRecording_04-27-2026 08-13-38_1.mp4"
 VIDEO_DIR = PROJECT_ROOT / "video/Output"
 OUTPUT_DIR = VIDEO_DIR

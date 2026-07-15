@@ -18,7 +18,7 @@ PART="$TEMP_DIR/part_$(printf '%02d' "$CHUNK").mp4"
 CHUNK_DIR="$TEMP_DIR/chunk_$(printf '%02d' "$CHUNK")"
 
 PUBLISH_CMD=(
-  "$_70MAI_PY" publish_70mai.py
+  "$_70MAI_PY" lib/publish_70mai.py
   --source /Volumes/Untitled
   --types Normal
   --chunk "$CHUNK"

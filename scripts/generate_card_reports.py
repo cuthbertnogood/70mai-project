@@ -13,8 +13,9 @@ from datetime import datetime
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_LIB = _ROOT / "lib"
+if str(_LIB) not in sys.path:
+    sys.path.insert(0, str(_LIB))
 
 from import_70mai import format_duration, scan_clips
 from plan_estimate import DEFAULT_SESSION_GAP, build_plan

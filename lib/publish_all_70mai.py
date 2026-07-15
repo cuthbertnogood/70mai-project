@@ -979,7 +979,7 @@ def main() -> int:
                             imp = import_settings(force=True)
                             import_cmd = [
                                 python,
-                                "import_70mai.py",
+                                "lib/import_70mai.py",
                                 "--source",
                                 str(source),
                                 "--types",
@@ -1061,7 +1061,7 @@ def main() -> int:
                     # One YouTube video ≈ this chunk (trips concat if several short ones).
                     publish_cmd = [
                         python,
-                        "publish_70mai.py",
+                        "lib/publish_70mai.py",
                         "--source",
                         str(source),
                         "--types",

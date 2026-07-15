@@ -14,7 +14,9 @@ import tempfile
 import threading
 from pathlib import Path
 
-DEFAULT_CACHE_PATH = Path(__file__).resolve().parent / "video" / "Output" / ".probe_cache.json"
+DEFAULT_CACHE_PATH = (
+    Path(__file__).resolve().parent.parent / "video" / "Output" / ".probe_cache.json"
+)
 _SAVE_EVERY = 50  # flush to disk every N new entries
 
 

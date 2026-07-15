@@ -16,7 +16,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "70mai_runtime.json"
 OVERRIDE_CONFIG_PATH = (
     PROJECT_ROOT / "video" / "Output" / ".publish_tmp" / "70mai_runtime.json"

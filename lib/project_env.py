@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
 REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
 MIN_PYTHON = (3, 10)
