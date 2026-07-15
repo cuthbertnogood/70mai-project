@@ -373,19 +373,25 @@ def chunk_is_done(state: dict, chunk) -> bool:
     )
 
 
-def chunk_merges_ready(video_dir: Path, chunk) -> bool:
+def chunk_merges_ready(
+    video_dir: Path,
+    chunk,
+    *,
+    min_coverage: float = 0.98,
+) -> bool:
     """True when Front+Back merged files on SSD already cover every trip in chunk.
 
     Reuses existing NO_/PA_/EV_ merges — no SD re-copy for that window.
+    Uses ffprobe (probe=True) so short Parking/Event merges are not false-ready.
     """
     from compose_70mai import plan_segments, scan_merged_clips
 
     record_type = chunk.record_type
     front = scan_merged_clips(
-        video_dir, "Front", record_type=record_type, probe=False
+        video_dir, "Front", record_type=record_type, probe=True
     )
     back = scan_merged_clips(
-        video_dir, "Back", record_type=record_type, probe=False
+        video_dir, "Back", record_type=record_type, probe=True
     )
     if not front or not back:
         return False
@@ -396,6 +402,11 @@ def chunk_merges_ready(video_dir: Path, chunk) -> bool:
         except (ValueError, OSError, RuntimeError):
             return False
         if not fs or not bs:
+            return False
+        front_cov = sum(seg.duration for seg in fs)
+        back_cov = sum(seg.duration for seg in bs)
+        need = trip.duration_sec * min_coverage
+        if front_cov < need or back_cov < need:
             return False
     return True
 
@@ -649,6 +660,15 @@ def main() -> int:
         action="store_true",
         help="Disable compose/upload overlap in publish",
     )
+    parser.add_argument(
+        "--repair",
+        choices=("auto", "diagnose", "off"),
+        default="auto",
+        help=(
+            "Self-heal short/stale Parking/Event merges before compose "
+            "(default: auto; diagnose = log only; off = legacy)"
+        ),
+    )
     args = parser.parse_args()
 
     from project_env import ensure_venv_python
@@ -687,8 +707,18 @@ def main() -> int:
         auth_on_sd = not args.no_auth_on_sd
         log(
             f"Autopilot: types={', '.join(args.types)} "
-            "(Event = merge all → one YouTube upload)"
+            "(Event = merge all → one YouTube upload) "
+            f"repair={args.repair}"
         )
+        try:
+            from card_identity import refresh_card_identity
+            from publish_state import get_or_create_card_id
+
+            refresh_card_identity(
+                source, get_or_create_card_id(source, create=not args.dry_run)
+            )
+        except OSError as exc:
+            log(f"Warning: card identity refresh failed ({exc})")
         try:
             creds, token = AuthStore.ensure_ready(
                 source,
@@ -883,8 +913,62 @@ def main() -> int:
                         f"{chunk.end:%Y-%m-%d %H:%M:%S}"
                     )
 
+                    force_import = False
+                    repair_store = None
+                    if not args.skip_import and args.repair != "off":
+                        from pipeline_repair import diagnose_and_repair
+                        from publish_70mai import chunk_uploaded as _chunk_uploaded
+
+                        type_store_chk = StateStore(
+                            source,
+                            args.temp_dir,
+                            record_type,
+                            state_on_sd=state_on_sd,
+                        )
+                        already_up = _chunk_uploaded(
+                            type_store_chk.load(resume=True, quiet=True),
+                            record_type,
+                            chunk.index,
+                        )
+                        if state_on_sd and not args.dry_run:
+                            from import_state import ImportStateStore
+
+                            repair_store = ImportStateStore(
+                                source,
+                                record_type,
+                                state_on_sd=True,
+                                local_dir=args.temp_dir,
+                                chunk_minutes=IMPORT_CHUNK_MINUTES,
+                                gap_seconds=args.session_gap,
+                            )
+                        ok_publish, _issues, actions = diagnose_and_repair(
+                            source,
+                            args.video_dir,
+                            chunk,
+                            temp_dir=args.temp_dir,
+                            import_store=repair_store,
+                            uploaded=already_up,
+                            mode=args.repair,
+                        )
+                        if not ok_publish and args.repair == "auto":
+                            force_import = True
+                            if actions:
+                                log(
+                                    f"  [repair] {len(actions)} action(s) — "
+                                    "forcing import rebuild"
+                                )
+                        elif not ok_publish and args.repair == "diagnose":
+                            log(
+                                "  [repair] diagnose-only: blockers found — "
+                                "import will still run if merges not ready"
+                            )
+
                     if not args.skip_import:
-                        if chunk_merges_ready(args.video_dir, chunk):
+                        merges_ok = (
+                            not force_import
+                            and chunk_merges_ready(args.video_dir, chunk)
+                        )
+                        if merges_ok:
                             log(
                                 "  SSD merges already cover this window — "
                                 "skip import (reuse, no SD copy)"
@@ -931,9 +1015,28 @@ def main() -> int:
                             log(
                                 "  Import: SD→SSD stage, then concat "
                                 f"(window only for {record_type})"
+                                + (" [repair rebuild]" if force_import else "")
                             )
                             ec = 0
                             for import_attempt in range(1, IMPORT_MERGE_RETRY_MAX + 1):
+                                if force_import and import_attempt > 1:
+                                    log(
+                                        f"[repair] retry import "
+                                        f"({import_attempt}/{IMPORT_MERGE_RETRY_MAX})"
+                                    )
+                                    from pipeline_repair import diagnose_and_repair
+
+                                    diagnose_and_repair(
+                                        source,
+                                        args.video_dir,
+                                        chunk,
+                                        temp_dir=args.temp_dir,
+                                        import_store=repair_store
+                                        if state_on_sd
+                                        else None,
+                                        uploaded=False,
+                                        mode=args.repair,
+                                    )
                                 ec = run_step(
                                     import_cmd,
                                     log_path=args.log,
@@ -988,6 +1091,8 @@ def main() -> int:
                         args.prune_merged,
                         "--min-free-gb",
                         str(args.min_free_gb),
+                        "--repair",
+                        args.repair,
                     ]
                     if args.upload_chunk_mb is not None:
                         publish_cmd.extend(

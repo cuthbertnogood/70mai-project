@@ -1504,6 +1504,21 @@ class Dashboard:
                 lines.append(hl)
         for hl in _wrap_line(disk_line, term_cols):
             lines.append(hl)
+        try:
+            from pipeline_repair import read_recent_repairs
+
+            repairs = read_recent_repairs(self.temp_dir, limit=4)
+            if repairs:
+                bits = []
+                for entry in repairs[-4:]:
+                    code = entry.get("code") or entry.get("action") or "repair"
+                    detail = str(entry.get("detail") or "")[:60]
+                    bits.append(f"{code}: {detail}" if detail else str(code))
+                health = "Health [repair]: " + " · ".join(bits)
+                for hl in _wrap_line(health, term_cols):
+                    lines.append(hl)
+        except Exception:
+            pass
         lines.append("")
         lines.append(_table_top(col_widths))
         lines.append(_table_row(_COL_HEADERS, col_widths))

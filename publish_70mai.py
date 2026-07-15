@@ -546,14 +546,142 @@ def run_estimate(args: argparse.Namespace, ffprobe: str) -> tuple[list, list[Chu
     )
 
 
-def trip_part_complete(path: Path, expected_sec: float, *, tolerance: float = 0.9) -> bool:
+def trip_part_complete(
+    path: Path,
+    expected_sec: float,
+    *,
+    tolerance: float = 0.9,
+    video_dir: Path | None = None,
+    record_type: str = "",
+    trip_start=None,
+) -> bool:
     if not path.is_file() or path.stat().st_size < 1_000_000:
         return False
     try:
         actual = probe_duration(path)
     except (subprocess.CalledProcessError, ValueError, OSError):
         return False
-    return actual >= expected_sec * tolerance
+    if actual < expected_sec * tolerance:
+        return False
+    if (
+        record_type in SINGLE_VIDEO_TYPES
+        and video_dir is not None
+        and trip_start is not None
+    ):
+        from compose_70mai import plan_segments, scan_merged_clips
+
+        try:
+            for camera in ("Front", "Back"):
+                clips = scan_merged_clips(
+                    video_dir, camera, record_type=record_type, probe=True
+                )
+                segs = plan_segments(clips, trip_start, expected_sec, 0.0)
+                covered = sum(s.duration for s in segs)
+                if covered < expected_sec * 0.98:
+                    return False
+        except (ValueError, OSError, RuntimeError):
+            return False
+    return True
+
+
+def _compose_duration_for_trip(
+    video_dir: Path,
+    record_type: str,
+    trip,
+    *,
+    repair: str = "auto",
+) -> float:
+    """Pick compose duration; cap to actual merges when repair cannot rebuild."""
+    from pipeline_repair import capped_compose_duration
+
+    if record_type not in SINGLE_VIDEO_TYPES or repair == "off":
+        return trip.duration_sec
+    from compose_70mai import scan_merged_clips
+
+    front = scan_merged_clips(video_dir, "Front", record_type=record_type, probe=True)
+    back = scan_merged_clips(video_dir, "Back", record_type=record_type, probe=True)
+    front_dur = front[0].duration if front else None
+    back_dur = back[0].duration if back else None
+    capped = capped_compose_duration(trip.duration_sec, front_dur, back_dur)
+    if capped + 0.5 < trip.duration_sec:
+        log(
+            f"  [repair] capped compose duration "
+            f"{trip.duration_sec:.0f}→{capped:.0f}s "
+            f"(merges shorter than plan)"
+        )
+    return capped
+
+
+def _precompose_repair(
+    *,
+    source: Path | None,
+    video_dir: Path,
+    temp_dir: Path,
+    chunk: ChunkPlan,
+    repair: str,
+) -> None:
+    """Diagnose short merges; delete + one import when SD is present.
+
+    If import is impossible, leave files for duration-cap fallback (do not delete).
+    """
+    if repair == "off":
+        return
+    from pipeline_repair import diagnose_and_repair, diagnose_chunk
+
+    issues = diagnose_chunk(
+        source, video_dir, chunk, import_store=None, uploaded=False
+    )
+    blockers = [i for i in issues if i.severity == "blocker"]
+    if not blockers:
+        return
+    for issue in blockers:
+        log(f"  [repair] {issue.code}: {issue.message}")
+    if repair == "diagnose":
+        return
+
+    can_reimport = bool(source and source.is_dir())
+    if not can_reimport:
+        log(
+            "  [repair] blockers found but SD source unavailable — "
+            "will cap compose duration instead of deleting merges"
+        )
+        return
+
+    ok, _issues, actions = diagnose_and_repair(
+        source,
+        video_dir,
+        chunk,
+        temp_dir=temp_dir,
+        import_store=None,
+        uploaded=False,
+        mode="auto",
+    )
+    if ok:
+        return
+    log(
+        f"  [repair] pre-compose: {len(actions)} action(s) — "
+        "reimport then compose"
+    )
+    python = cli_python()
+    import_cmd = [
+        python,
+        "import_70mai.py",
+        "--source",
+        str(source),
+        "--types",
+        chunk.record_type,
+        "--output",
+        str(video_dir),
+        "--state-on-sd",
+        "--skip-inventory-refresh",
+    ]
+    log(f"  [repair] retry import: {' '.join(import_cmd)}")
+    result = subprocess.run(import_cmd, cwd=Path.cwd())
+    if result.returncode != 0:
+        log(
+            f"  [repair] import exit {result.returncode} — "
+            "compose will use capped duration if merges still short"
+        )
 
 
 def publish_chunk(
@@ -569,10 +697,21 @@ def publish_chunk(
     telemetry_map_size: int = 280,
     dry_run: bool,
     trip_only: int | None = None,
+    repair: str = "auto",
+    source: Path | None = None,
 ) -> Path:
     trip_parts: list[Path] = []
     chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
     chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    if not dry_run:
+        _precompose_repair(
+            source=source,
+            video_dir=video_dir,
+            temp_dir=temp_dir,
+            chunk=chunk,
+            repair=repair,
+        )
 
     for trip_idx, trip in enumerate(chunk.trips, start=1):
         if trip_only is not None and trip_idx != trip_only:
@@ -585,7 +724,16 @@ def publish_chunk(
         if dry_run:
             trip_parts.append(part_path)
             continue
-        if trip_part_complete(part_path, trip.duration_sec):
+        compose_dur = _compose_duration_for_trip(
+            video_dir, chunk.record_type, trip, repair=repair
+        )
+        if trip_part_complete(
+            part_path,
+            compose_dur,
+            video_dir=video_dir,
+            record_type=chunk.record_type,
+            trip_start=trip.start,
+        ):
             log(f"  Skip compose (exists, {format_duration(probe_duration(part_path))})")
             trip_parts.append(part_path)
             continue
@@ -593,7 +741,7 @@ def publish_chunk(
             video_dir,
             part_path,
             wall_start=trip.start,
-            duration=trip.duration_sec,
+            duration=compose_dur,
             audio_source=audio_source,
             telemetry=telemetry,
             gps_dir=gps_dir,
@@ -700,6 +848,8 @@ def publish_and_upload_trips(
     min_free_gb: float = 20.0,
     check_disk: Path = Path("."),
     all_chunks: list | None = None,
+    repair: str = "auto",
+    source: Path | None = None,
 ) -> tuple[str | None, str | None]:
     """Compose and upload each trip separately; returns (last_video_id, playlist_id).
 
@@ -707,6 +857,15 @@ def publish_and_upload_trips(
     composes — wall time becomes max(encode, upload) instead of the sum.
     """
     from autopilot_dashboard import clear_trip_reason, write_status
+
+    if not dry_run and not upload_only:
+        _precompose_repair(
+            source=source,
+            video_dir=video_dir,
+            temp_dir=temp_dir,
+            chunk=chunk,
+            repair=repair,
+        )
 
     chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
     chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -767,7 +926,16 @@ def publish_and_upload_trips(
                 summary.skipped += 1
                 continue
             log(f"  Upload-only: {part_path.name} ({format_file_size(part_path.stat().st_size)})")
-        elif not trip_part_complete(part_path, trip.duration_sec):
+        elif not trip_part_complete(
+            part_path,
+            trip.duration_sec,
+            video_dir=video_dir,
+            record_type=record_type,
+            trip_start=trip.start,
+        ):
+            compose_dur = _compose_duration_for_trip(
+                video_dir, record_type, trip, repair=repair
+            )
             guard_free_disk(
                 check_disk,
                 min_free_gb,
@@ -791,7 +959,7 @@ def publish_and_upload_trips(
                 phase="compose",
                 detail=(
                     f"Front↑+Back↓ → trip_{trip_idx:02d}.mp4 "
-                    f"({format_duration(trip.duration_sec)})"
+                    f"({format_duration(compose_dur)})"
                 ),
                 reason="",
             )
@@ -800,7 +968,7 @@ def publish_and_upload_trips(
                     video_dir,
                     part_path,
                     wall_start=trip.start,
-                    duration=trip.duration_sec,
+                    duration=compose_dur,
                     audio_source=audio_source,
                     telemetry=telemetry,
                     gps_dir=gps_dir,
@@ -1167,6 +1335,15 @@ def main() -> None:
         help="Store YouTube OAuth on SD card (.70mai/auth/; portable across hosts)",
     )
     parser.add_argument("--check-disk", type=Path, default=Path("."))
+    parser.add_argument(
+        "--repair",
+        choices=("auto", "diagnose", "off"),
+        default="auto",
+        help=(
+            "Self-heal short/stale Parking/Event merges before compose "
+            "(default: auto)"
+        ),
+    )
     args = parser.parse_args()
     from telemetry_overlay import telemetry_requested
 
@@ -1390,6 +1567,8 @@ def main() -> None:
                     min_free_gb=args.min_free_gb,
                     check_disk=args.check_disk,
                     all_chunks=chunks,
+                    repair=args.repair,
+                    source=args.source,
                 )
         finally:
             if pipeline is not None:
@@ -1449,6 +1628,8 @@ def main() -> None:
                 telemetry_map_size=args.telemetry_map_size,
                 dry_run=args.dry_run,
                 trip_only=args.trip,
+                repair=args.repair,
+                source=args.source,
             )
 
             if args.dry_run:

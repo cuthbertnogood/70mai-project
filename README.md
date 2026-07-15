@@ -70,6 +70,18 @@ Import staging: [`70mai_runtime.json`](70mai_runtime.json) — `stage_batch_clip
 
 `--prune-merged after-compose` (default) — 10‑мин склейки удаляются сразу после 2ч compose; 2ч MP4 — после YouTube.
 
+### Auto-repair (Parking/Event)
+
+По умолчанию `--repair auto`: перед import/compose проверяет, что SSD-merge покрывает план (≥98%). Короткий/устаревший `PA_`/`EV_` удаляется и пересобирается; если rebuild недоступен — compose берёт `min(trip, front, back)`.
+
+```bash
+./scripts/publish_all_70mai.sh --wait --repair auto       # default
+./scripts/publish_all_70mai.sh --types Parking --repair diagnose
+./scripts/publish_all_70mai.sh --repair off               # legacy skip
+```
+
+Лог фиксов: `video/Output/.publish_tmp/repair_log.jsonl`.
+
 ---
 
 ## Полезное
@@ -81,6 +93,7 @@ Import staging: [`70mai_runtime.json`](70mai_runtime.json) — `stage_batch_clip
 | Отметить залитое | `python3 publish_70mai.py --types Parking --mark-uploaded 1:1:VIDEO_ID --state-on-sd --resume` |
 | Лог автопилота | `tail -f video/Output/.publish_tmp/publish_all.log` |
 | Лог watchdog | `tail -f video/Output/.publish_tmp/publish_all_watchdog.log` |
+| Лог auto-repair | `tail -f video/Output/.publish_tmp/repair_log.jsonl` |
 | Отчёт по карте | `./scripts/generate_card_reports.sh` |
 
 Цели: [GOALS.md](GOALS.md). Детали: [детальное_описание.md](детальное_описание.md).

@@ -469,6 +469,8 @@ class ImportStateStore:
         clip_count: int = 0,
         size_mb: float | None = None,
         elapsed_sec: float | None = None,
+        expected_duration_sec: float | None = None,
+        last_clip: str | None = None,
     ) -> None:
         key = _merge_key(record_type, camera, filename)
         entry = {
@@ -481,10 +483,71 @@ class ImportStateStore:
             entry["size_mb"] = round(size_mb, 1)
         if elapsed_sec is not None:
             entry["elapsed_sec"] = round(elapsed_sec, 1)
+        if expected_duration_sec is not None:
+            entry["expected_duration_sec"] = round(expected_duration_sec, 1)
+        if last_clip:
+            entry["last_clip"] = last_clip
         with self._lock:
             self._data.setdefault("files", {})[key] = entry
             if status != "skipped":
                 self._save()
+
+    def get_merge_entry(
+        self, *, record_type: str, camera: str, filename: str
+    ) -> dict | None:
+        key = _merge_key(record_type, camera, filename)
+        entry = self._data.get("files", {}).get(key)
+        return dict(entry) if entry else None
+
+    def invalidate_merge(
+        self, *, record_type: str, camera: str, filename: str
+    ) -> None:
+        """Mark merge pending so next import rebuilds the file."""
+        key = _merge_key(record_type, camera, filename)
+        with self._lock:
+            files = self._data.setdefault("files", {})
+            prev = files.get(key, {})
+            files[key] = {
+                **prev,
+                "status": "pending",
+                "updated_at": _utc_now(),
+            }
+            self._save()
+
+    def compact_event_state(self, record_type: str) -> int:
+        """Drop noisy single-clip pending rows when a mega-merge exists.
+
+        Returns number of removed entries.
+        """
+        if record_type not in ("Event", "Parking"):
+            return 0
+        prefix = f"{record_type}/"
+        with self._lock:
+            files = self._data.setdefault("files", {})
+            mega_keys = [
+                k
+                for k, v in files.items()
+                if k.startswith(prefix)
+                and v.get("status") in ("merged", "skipped")
+                and int(v.get("clip_count") or 0) > 1
+            ]
+            if not mega_keys:
+                return 0
+            remove: list[str] = []
+            for key, entry in files.items():
+                if not key.startswith(prefix):
+                    continue
+                if key in mega_keys:
+                    continue
+                status = entry.get("status")
+                clip_count = int(entry.get("clip_count") or 0)
+                if status in ("pending", "planned") and clip_count <= 1:
+                    remove.append(key)
+            for key in remove:
+                del files[key]
+            if remove:
+                self._save()
+            return len(remove)
 
     def finalize(self) -> None:
         self._save()

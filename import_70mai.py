@@ -50,7 +50,8 @@ SKIP_BATCH_LOG = 5  # batch "skip (exists)" lines in log files
 MERGE_MAX_ATTEMPTS = 3
 MERGE_RETRY_DELAY_SEC = 3.0
 MIN_MERGE_BYTES = 10_000
-MERGE_DURATION_TOLERANCE = 0.85  # merged file must be >= 85% of source clips sum
+MERGE_DURATION_TOLERANCE = 0.85  # Normal: merged file must be >= 85% of source clips sum
+MERGE_DURATION_TOLERANCE_EVENT = 0.98  # Event/Parking single-file merges are stricter
 MERGE_WORKERS = 1  # default 1: USB/SD seeks worse with parallel concat
 MERGE_HEARTBEAT_SEC = 30.0  # log while ffmpeg concat is silent
 PREFETCH_BLOCK = 4 * 1024 * 1024  # sequential read block for page-cache warmup
@@ -1182,10 +1183,18 @@ def probe_duration_safe(path: Path, ffprobe: str) -> float | None:
         return None
 
 
+def merge_duration_tolerance(record_type: str = "") -> float:
+    if record_type in ("Event", "Parking"):
+        return MERGE_DURATION_TOLERANCE_EVENT
+    return MERGE_DURATION_TOLERANCE
+
+
 def is_valid_merge_output(
     path: Path,
     ffprobe: str,
     expected_duration_sec: float,
+    *,
+    record_type: str = "",
 ) -> bool:
     """True when output exists, is non-trivial size, and ffprobe duration looks sane."""
     if not path.is_file():
@@ -1198,7 +1207,8 @@ def is_valid_merge_output(
     duration = probe_duration_safe(path, ffprobe)
     if duration is None or duration < 0.5:
         return False
-    if expected_duration_sec > 0 and duration < expected_duration_sec * MERGE_DURATION_TOLERANCE:
+    tol = merge_duration_tolerance(record_type)
+    if expected_duration_sec > 0 and duration < expected_duration_sec * tol:
         return False
     return True
 
@@ -1502,20 +1512,62 @@ def merge_clips(
     pre_staged: tuple[Path | None, list[Path]] | None = None,
 ) -> str:
     expected_duration = sum(c.duration or 0.0 for c in chunk)
+    last_clip_name = chunk[-1].path.name if chunk else None
+
+    def _record(
+        status: str,
+        *,
+        size_mb: float | None = None,
+        elapsed_sec: float | None = None,
+    ) -> None:
+        if import_store is None:
+            return
+        import_store.record_merge(
+            record_type=record_type,
+            camera=camera,
+            filename=output_path.name,
+            status=status,
+            session_idx=session_idx,
+            clip_count=len(chunk),
+            size_mb=size_mb,
+            elapsed_sec=elapsed_sec,
+            expected_duration_sec=expected_duration,
+            last_clip=last_clip_name,
+        )
 
     if output_path.exists():
-        if is_valid_merge_output(output_path, ffprobe, expected_duration):
+        fingerprint_ok = True
+        if import_store is not None and hasattr(import_store, "get_merge_entry"):
+            prev = import_store.get_merge_entry(
+                record_type=record_type,
+                camera=camera,
+                filename=output_path.name,
+            )
+            if prev:
+                prev_count = int(prev.get("clip_count") or 0)
+                prev_last = prev.get("last_clip") or ""
+                if prev_count and prev_count != len(chunk):
+                    fingerprint_ok = False
+                    log(
+                        f"  merge fingerprint changed "
+                        f"(clip_count {prev_count}→{len(chunk)}), rebuilding: "
+                        f"{output_path.name}"
+                    )
+                elif prev_last and last_clip_name and prev_last != last_clip_name:
+                    fingerprint_ok = False
+                    log(
+                        f"  merge fingerprint changed "
+                        f"(last_clip {prev_last}→{last_clip_name}), rebuilding: "
+                        f"{output_path.name}"
+                    )
+        if fingerprint_ok and is_valid_merge_output(
+            output_path,
+            ffprobe,
+            expected_duration,
+            record_type=record_type,
+        ):
             size_mb = output_path.stat().st_size / 1_000_000
-            if import_store is not None:
-                import_store.record_merge(
-                    record_type=record_type,
-                    camera=camera,
-                    filename=output_path.name,
-                    status="skipped",
-                    session_idx=session_idx,
-                    clip_count=len(chunk),
-                    size_mb=size_mb,
-                )
+            _record("skipped", size_mb=size_mb)
             if reporter:
                 reporter.skip(output_path.name, size_mb, pipeline)
             else:
@@ -1525,19 +1577,12 @@ def merge_clips(
                 if pipeline:
                     pipeline.merge_step()
             return "skipped"
-        log(
-            f"  invalid or incomplete merge output, rebuilding: {output_path.name}"
-        )
-        output_path.unlink(missing_ok=True)
-        if import_store is not None:
-            import_store.record_merge(
-                record_type=record_type,
-                camera=camera,
-                filename=output_path.name,
-                status="pending",
-                session_idx=session_idx,
-                clip_count=len(chunk),
+        if fingerprint_ok:
+            log(
+                f"  invalid or incomplete merge output, rebuilding: {output_path.name}"
             )
+        output_path.unlink(missing_ok=True)
+        _record("pending")
 
     if reporter:
         reporter.begin_merge(
@@ -1553,15 +1598,7 @@ def merge_clips(
             f"-> {output_path.name}"
         )
     if dry_run:
-        if import_store is not None:
-            import_store.record_merge(
-                record_type=record_type,
-                camera=camera,
-                filename=output_path.name,
-                status="planned",
-                session_idx=session_idx,
-                clip_count=len(chunk),
-            )
+        _record("planned")
         if reporter:
             reporter.finish_merge(
                 size_mb=0.0,
@@ -1608,16 +1645,7 @@ def merge_clips(
         log(f"       ERROR: {msg}")
         output_path.unlink(missing_ok=True)
         cleanup_stage_dir(stage_dir)
-        if import_store is not None:
-            import_store.record_merge(
-                record_type=record_type,
-                camera=camera,
-                filename=output_path.name,
-                status="failed",
-                session_idx=session_idx,
-                clip_count=len(chunk),
-                elapsed_sec=time.monotonic() - merge_start,
-            )
+        _record("failed", elapsed_sec=time.monotonic() - merge_start)
         if reporter:
             reporter.finish_merge(
                 size_mb=0.0,
@@ -1749,7 +1777,12 @@ def merge_clips(
             if err:
                 return _fail(err)
 
-        if not is_valid_merge_output(output_path, ffprobe, expected_duration):
+        if not is_valid_merge_output(
+            output_path,
+            ffprobe,
+            expected_duration,
+            record_type=record_type,
+        ):
             return _fail("output failed ffprobe validation")
 
         size_mb = output_path.stat().st_size / 1_000_000
@@ -1758,17 +1791,7 @@ def merge_clips(
             f"  [merge] DONE {output_path.name}: {size_mb:.0f} MB "
             f"in {format_duration(elapsed)}"
         )
-        if import_store is not None:
-            import_store.record_merge(
-                record_type=record_type,
-                camera=camera,
-                filename=output_path.name,
-                status="merged",
-                session_idx=session_idx,
-                clip_count=len(chunk),
-                size_mb=size_mb,
-                elapsed_sec=elapsed,
-            )
+        _record("merged", size_mb=size_mb, elapsed_sec=elapsed)
         if reporter:
             reporter.finish_merge(
                 size_mb=size_mb,
@@ -1934,7 +1957,7 @@ def _run_copy_merge_pipeline(
             rec_type = chunk[0].record_type if chunk else record_type
 
             if out_path.exists() and is_valid_merge_output(
-                out_path, ffprobe, expected
+                out_path, ffprobe, expected, record_type=rec_type
             ):
                 log(f"  [copy] skip (output exists): {out_path.name}")
                 if merge_reporter is not None:
@@ -2805,9 +2828,19 @@ def main() -> int:
     total_failed = 0
     total_planned = 0
 
+    event_clip_counts: dict[tuple[str, str], int] = {}
     for group_idx, (record_type, camera, clips) in enumerate(groups, start=1):
         log(f"\n>>> Group {group_idx}/{len(groups)}: {record_type}/{camera}")
         if record_type in ("Event", "Parking"):
+            event_clip_counts[(record_type, camera)] = len(clips)
+            other = "Back" if camera == "Front" else "Front"
+            other_n = event_clip_counts.get((record_type, other))
+            if other_n is not None and other_n != len(clips):
+                log(
+                    f"  Warning: {record_type} Front/Back clip count mismatch "
+                    f"(Front={event_clip_counts.get((record_type, 'Front'), '?')}, "
+                    f"Back={event_clip_counts.get((record_type, 'Back'), '?')})"
+                )
             merged, skipped, failed, planned = process_event_group(
                 clips,
                 args.output,
