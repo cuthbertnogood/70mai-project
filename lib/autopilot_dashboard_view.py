@@ -92,6 +92,8 @@ def render(dash: Any) -> None:
         bits = []
         if log_fallback.get("copy"):
             bits.append(f"copy {log_fallback['copy']}")
+        if log_fallback.get("copy_detail"):
+            bits.append(log_fallback["copy_detail"])
         if log_fallback.get("merge"):
             bits.append(f"merge {log_fallback['merge']}")
         if log_fallback.get("merge_detail"):

@@ -1072,28 +1072,11 @@ def format_merge_detail(
 
 def _copy_speed_from_log(temp_dir: Path | None) -> float | None:
     """Recent SD→SSD copy throughput (decimal MB/s) from ok-in-Ns lines."""
-    if temp_dir is None:
+    detail = parse_copy_log_detail(temp_dir)
+    if not detail:
         return None
-    text = _tail_text(temp_dir / "publish_all.log", max_bytes=48_000)
-    if not text:
-        return None
-    lines = text.splitlines()
-    samples: list[float] = []
-    last_mb = 126.0
-    for line in lines:
-        if "SD→SSD" in line:
-            m = _COPY_SIZE_RE.search(line)
-            if m:
-                last_mb = float(m.group(1))
-        m = _COPY_OK_RE.search(line)
-        if m:
-            sec = float(m.group(1))
-            if sec > 0:
-                samples.append(last_mb / sec)
-    if not samples:
-        return None
-    tail = samples[-5:]
-    return sum(tail) / len(tail)
+    speed = detail.get("avg_mbps")
+    return float(speed) if isinstance(speed, (int, float)) else None
 
 
 def _parse_copy_fraction(text: str) -> tuple[int, int] | None:
@@ -1101,6 +1084,141 @@ def _parse_copy_fraction(text: str) -> tuple[int, int] | None:
     if not m:
         return None
     return int(m.group(1)), int(m.group(2))
+
+
+def parse_copy_log_detail(temp_dir: Path | None) -> dict | None:
+    """Rich copy snapshot: file, N/M, size, speed, camera, ETA."""
+    if temp_dir is None:
+        return None
+    text = _tail_text(temp_dir / "publish_all.log", max_bytes=64_000)
+    if not text:
+        return None
+
+    file_name = ""
+    cur = total = None
+    size_mb: float | None = None
+    camera = ""
+    started_at: datetime | None = None
+    last_ok_sec: float | None = None
+    speeds: list[float] = []
+    ok_secs: list[float] = []
+    last_start_mb = 126.0
+    in_progress = False
+
+    for line in text.splitlines():
+        m_ts = _LOG_TS_RE.match(line)
+        ts = None
+        if m_ts:
+            try:
+                ts = datetime.strptime(m_ts.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                ts = None
+
+        m_cam = _MERGE_CAMERA_RE.search(line)
+        if m_cam:
+            camera = m_cam.group(1).strip()
+
+        if "[copy]" not in line:
+            continue
+
+        m_ok = _COPY_OK_RE.search(line)
+        if m_ok:
+            sec = float(m_ok.group(1))
+            if sec > 0:
+                ok_secs.append(sec)
+                speeds.append(last_start_mb / sec)
+                last_ok_sec = sec
+            in_progress = False
+            continue
+
+        m = _COPY_LOG_RE.search(line)
+        if not m or "ok in" in line:
+            continue
+        frac = m.group(1)
+        file_name = m.group(2)
+        size_raw = m.group(3) or ""
+        try:
+            cur_s, total_s = frac.split("/", 1)
+            cur, total = int(cur_s), int(total_s)
+        except ValueError:
+            cur = total = None
+        sm = _COPY_SIZE_RE.search(f"({size_raw})" if size_raw else line)
+        if sm:
+            size_mb = float(sm.group(1))
+            last_start_mb = size_mb
+        elif "SD→SSD" in line:
+            sm2 = _COPY_SIZE_RE.search(line)
+            if sm2:
+                size_mb = float(sm2.group(1))
+                last_start_mb = size_mb
+        if ts is not None:
+            started_at = ts
+        in_progress = True
+
+    if not file_name and cur is None:
+        return None
+
+    avg_mbps = sum(speeds[-5:]) / len(speeds[-5:]) if speeds else None
+    avg_sec = sum(ok_secs[-5:]) / len(ok_secs[-5:]) if ok_secs else None
+    elapsed = ""
+    if in_progress and started_at is not None:
+        sec = max(0, int((datetime.now() - started_at).total_seconds()))
+        elapsed = _human_etime_seconds(sec)
+    elif last_ok_sec is not None and not in_progress:
+        elapsed = f"{int(last_ok_sec)}s"
+
+    eta = ""
+    if avg_sec and cur is not None and total is not None and cur < total:
+        remain = total - cur + (1 if in_progress else 0)
+        if remain > 0:
+            eta = _human_etime_seconds(int(avg_sec * remain))
+
+    return {
+        "file": file_name,
+        "cur": cur,
+        "total": total,
+        "size_mb": size_mb,
+        "camera": camera,
+        "avg_mbps": avg_mbps,
+        "avg_sec": avg_sec,
+        "elapsed": elapsed,
+        "eta": eta,
+        "in_progress": in_progress,
+        "active": bool(file_name) or cur is not None,
+    }
+
+
+def format_copy_detail(detail: dict | None) -> tuple[str, str | None]:
+    """Return (short lane text, optional second detail line)."""
+    if not detail:
+        return "", None
+    file_name = str(detail.get("file") or "").strip()
+    short = file_name[:40] if file_name else ""
+    cur = detail.get("cur")
+    total = detail.get("total")
+    size_mb = detail.get("size_mb")
+    camera = str(detail.get("camera") or "").strip()
+    avg_mbps = detail.get("avg_mbps")
+    elapsed = str(detail.get("elapsed") or "").strip()
+    eta = str(detail.get("eta") or "").strip()
+
+    parts: list[str] = []
+    if cur is not None and total is not None:
+        parts.append(f"{cur}/{total}")
+        if total > 0:
+            parts.append(f"{100.0 * float(cur) / float(total):.0f}%")
+    if isinstance(size_mb, (int, float)) and size_mb > 0:
+        parts.append(f"{size_mb:.0f} MB")
+    parts.append("SD→SSD")
+    if camera:
+        parts.append(camera)
+    if isinstance(avg_mbps, (int, float)) and avg_mbps > 0:
+        parts.append(f"{avg_mbps:.1f} MB/s")
+    if elapsed:
+        parts.append(elapsed if detail.get("in_progress") else f"last {elapsed}")
+    if eta:
+        parts.append(f"ETA {eta}")
+    return short, " · ".join(parts) if parts else None
 
 
 def diagnose_pipeline_bottleneck(
@@ -1226,11 +1344,23 @@ def _import_progress_from_log(
     merge_short, merge_extra = format_merge_detail(merge_detail, video_dir=video_dir)
     if merge_short:
         merge_txt = merge_short
-    if not copy_txt and not merge_txt and not merge_extra:
+    copy_detail = parse_copy_log_detail(temp_dir)
+    copy_short, copy_extra = format_copy_detail(copy_detail)
+    if copy_short:
+        # Keep N/M on the main lane when available.
+        if copy_detail and copy_detail.get("cur") is not None and copy_detail.get("total"):
+            copy_txt = f"{copy_detail['cur']}/{copy_detail['total']} {copy_short}"
+            if copy_detail.get("size_mb"):
+                copy_txt += f" {int(copy_detail['size_mb'])} MB"
+        else:
+            copy_txt = copy_short
+    if not copy_txt and not merge_txt and not merge_extra and not copy_extra:
         return None
     out: dict[str, str] = {}
     if copy_txt:
         out["copy"] = copy_txt
+    if copy_extra:
+        out["copy_detail"] = copy_extra
     if merge_txt:
         out["merge"] = merge_txt
     if merge_extra:
@@ -1367,6 +1497,7 @@ def _format_pipeline_block(
 
     copy_extra = _short_lane(copy) if copy_on else ""
     merge_extra = _short_lane(merge) if merge_on else ""
+    copy_detail_line: str | None = None
     merge_detail_line: str | None = None
     if merge_on and merge:
         merge_short, merge_detail_line = format_merge_detail(
@@ -1395,6 +1526,7 @@ def _format_pipeline_block(
             if m and int(m.group(1)) < int(m.group(2)):
                 copy_on = True
                 copy_extra = copy_fb
+                copy_detail_line = log_fallback.get("copy_detail")
                 copy_done = False
         if log_fallback.get("merge"):
             merge_on = True
@@ -1407,11 +1539,20 @@ def _format_pipeline_block(
             upload_on = False
             compose_done = False
             video_done = False
-    elif merge_on and temp_dir is not None and not merge_detail_line:
-        md = parse_merge_log_detail(temp_dir)
-        _, merge_detail_line = format_merge_detail(md, video_dir=video_dir)
-        if md and md.get("output") and not merge_extra:
-            merge_extra = Path(str(md["output"])).name[:36]
+    else:
+        if copy_on and temp_dir is not None and not copy_detail_line:
+            cd = parse_copy_log_detail(temp_dir)
+            copy_short, copy_detail_line = format_copy_detail(cd)
+            if copy_short and not copy_extra:
+                if cd and cd.get("cur") is not None and cd.get("total"):
+                    copy_extra = f"{cd['cur']}/{cd['total']} {copy_short}"
+                else:
+                    copy_extra = copy_short
+        if merge_on and temp_dir is not None and not merge_detail_line:
+            md = parse_merge_log_detail(temp_dir)
+            _, merge_detail_line = format_merge_detail(md, video_dir=video_dir)
+            if md and md.get("output") and not merge_extra:
+                merge_extra = Path(str(md["output"])).name[:36]
 
     compose_extra = ""
     if compose_on:
@@ -1453,8 +1594,10 @@ def _format_pipeline_block(
     lines = [
         "этапы:",
         _line("copy", on=copy_on, done=copy_done, extra=copy_extra),
-        _line("merge", on=merge_on, done=merge_done, extra=merge_extra),
     ]
+    if copy_on and copy_detail_line:
+        lines.append(f"         {copy_detail_line}")
+    lines.append(_line("merge", on=merge_on, done=merge_done, extra=merge_extra))
     if merge_on and merge_detail_line:
         lines.append(f"         {merge_detail_line}")
     lines.extend(
