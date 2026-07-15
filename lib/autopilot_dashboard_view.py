@@ -147,20 +147,7 @@ def render(dash: Any) -> None:
         lines.append(hl)
     for hl in d._wrap_line(disk_line, term_cols):
         lines.append(hl)
-    try:
-        from pipeline_repair import read_recent_repairs
-
-        repairs = read_recent_repairs(dash.temp_dir, limit=2)
-        if repairs:
-            bits = []
-            for entry in repairs[-2:]:
-                code = entry.get("code") or entry.get("action") or "repair"
-                detail = str(entry.get("detail") or "")[:40]
-                bits.append(f"{code}:{detail}" if detail else str(code))
-            for hl in d._wrap_line("repair  " + " · ".join(bits), term_cols):
-                lines.append(hl)
-    except Exception:
-        pass
+    # repair_log.jsonl is audit history (often hours old) — do not clutter the live TUI.
 
     show_rows, collapse_note = d._visible_rows(
         dash.rows, term_rows=term_rows, total=total
