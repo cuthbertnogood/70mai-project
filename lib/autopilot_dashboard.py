@@ -1282,12 +1282,14 @@ def format_copy_detail(detail: dict | None) -> tuple[str, str | None]:
 
 
 def _cameras_seen_in_log(temp_dir: Path | None) -> list[str]:
+    """Unique Type/Cam in order of first seen; last entry = most recent activity."""
     if temp_dir is None:
         return []
     text = _tail_text(temp_dir / "publish_all.log", max_bytes=120_000)
     if not text:
         return []
-    seen: list[str] = []
+    first: list[str] = []
+    latest = ""
     for line in text.splitlines():
         cam = ""
         m = _MERGE_CAMERA_LINE_RE.search(line)
@@ -1297,9 +1299,21 @@ def _cameras_seen_in_log(temp_dir: Path | None) -> list[str]:
             m2 = _MERGE_CAMERA_RE.search(line)
             if m2:
                 cam = m2.group(1).strip()
-        if cam and cam not in seen:
-            seen.append(cam)
-    return seen
+        if not cam:
+            # Also track from copy Front/Back tokens / filename suffix
+            if "[copy]" in line and "ok in" not in line:
+                m3 = _COPY_LOG_RE.search(line)
+                if m3 and m3.group(1):
+                    # Need record type from context — skip bare Front here
+                    pass
+            continue
+        latest = cam
+        if cam not in first:
+            first.append(cam)
+    if latest and (not first or first[-1] != latest):
+        # Move latest to end so [-1] is the active camera session
+        first = [c for c in first if c != latest] + [latest]
+    return first
 
 
 def _merge_output_exists(video_dir: Path | None, name: str) -> bool:
@@ -1404,8 +1418,12 @@ def format_compose_wait(
             )
 
     remain_cams = [c for c in need if c not in ready]
-    back_not_started = f"{record}/Back" in remain_cams and not any(
-        c.endswith("/Back") for c in cameras
+    # Prefer live copy/merge camera over stale log order
+    latest_cam = current or (cameras[-1] if cameras else "")
+    back_not_started = (
+        f"{record}/Back" in remain_cams
+        and bool(latest_cam)
+        and str(latest_cam).endswith("/Front")
     )
 
     extra = f"{record} Front+Back"
@@ -1424,7 +1442,7 @@ def format_compose_wait(
     if remain_cams:
         left.append(" → ".join(remain_cams))
     if eta_left:
-        left.append("текущая камера: " + ", ".join(eta_left))
+        left.append("текущая камера ≈ " + " + ".join(eta_left))
     if back_not_started:
         left.append("потом весь Back (~столько же)")
     if left:
@@ -1540,14 +1558,18 @@ def _import_progress_from_log(
         if "[copy]" in line:
             m = _COPY_LOG_RE.search(line)
             if m and "ok in" not in line:
-                bits: list[str] = []
-                if m.group(1):
-                    bits.append(m.group(1))
-                bits.append(m.group(2))
-                bits.append(m.group(3)[:36])
-                if m.group(4):
-                    bits.append(m.group(4))
-                copy_txt = " ".join(bits)
+                bits = [
+                    x
+                    for x in (
+                        m.group(1),
+                        m.group(2),
+                        (m.group(3) or "")[:36] or None,
+                        m.group(4),
+                    )
+                    if x
+                ]
+                if bits:
+                    copy_txt = " ".join(bits)
             elif "ok in" not in line:
                 idx = line.find("[copy]")
                 copy_txt = line[idx + 7 :].strip()[:56]
@@ -2343,9 +2365,12 @@ class Dashboard:
                 if phase == "upload" and pct_f is None:
                     pct_f = _read_upload_percent(self.temp_dir, row.trip_index)
                 if phase == "import":
-                    row.progress = _import_row_progress(
-                        self.temp_dir, record_type=row.record_type
-                    )
+                    try:
+                        row.progress = _import_row_progress(
+                            self.temp_dir, record_type=row.record_type
+                        )
+                    except Exception:
+                        row.progress = "import SD→SSD/merge"
                 else:
                     row.progress = _stage_label(
                         row.status,
@@ -2505,8 +2530,16 @@ def _dashboard_supervisor(argv: list[str]) -> int:
                 time.sleep(0.2)
                 break
         else:
+            # Worker exited on its own (crash or clean exit).
             code = child.returncode if child is not None else 0
-            return int(code or 0)
+            if code == 0:
+                return 0
+            sys.stderr.write(
+                f"\n[dashboard] воркер упал (exit {code}) — перезапуск через 1с…\n"
+            )
+            sys.stderr.flush()
+            time.sleep(1.0)
+            continue
 
 
 def main() -> int:
