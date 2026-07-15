@@ -1409,6 +1409,19 @@ def _foreign_fs_sources(sources: list[Path], dest: Path) -> list[Path]:
     return bad
 
 
+def plan_stage_batches(n_clips: int, batch_size: int) -> list[tuple[int, int]]:
+    """Half-open (start, end) ranges for independent stage→part merges.
+
+    Parts are concatenated once at the end — never growing re-concat
+    (partial ⊕ next batch), which drops duration on Front 4K HEVC.
+    """
+    n = max(0, int(n_clips))
+    size = max(1, int(batch_size))
+    if n == 0:
+        return []
+    return [(i, min(i + size, n)) for i in range(0, n, size)]
+
+
 def stage_clips_locally(
     chunk: list[Clip],
     stage_dir: Path,
@@ -1735,8 +1748,10 @@ def merge_clips(
                 return _fail(err)
         elif need_stage:
             stage_dir = output_path.parent / ".merge_stage" / output_path.stem
+            cleanup_stage_dir(stage_dir)
             batches = [
-                chunk[i : i + batch_size] for i in range(0, len(chunk), batch_size)
+                chunk[start:end]
+                for start, end in plan_stage_batches(len(chunk), batch_size)
             ]
             log(
                 f"  [copy] sequential fallback: {len(chunk)} clip(s) in "
@@ -1759,42 +1774,67 @@ def merge_clips(
                 if err:
                     return _fail(err)
             else:
-                growing: Path | None = None
+                # Independent parts + one final concat.
+                # Growing re-concat (partial ⊕ next batch) drops minutes on
+                # Front 4K HEVC via ffmpeg -c copy; Back 1080p often survives.
+                parts: list[Path] = []
                 offset = 0
-                for batch_idx, batch in enumerate(batches, start=1):
-                    try:
-                        staged = stage_clips_locally(
-                            batch,
-                            stage_dir,
-                            index_offset=offset,
-                            total_hint=len(chunk),
+                try:
+                    for batch_idx, batch in enumerate(batches, start=1):
+                        try:
+                            staged = stage_clips_locally(
+                                batch,
+                                stage_dir,
+                                index_offset=offset,
+                                total_hint=len(chunk),
+                            )
+                        except OSError as exc:
+                            return _fail(f"staging failed: {exc}")
+                        part_out = stage_dir / f"_part_{batch_idx}.mp4"
+                        log(
+                            f"  [merge] part {batch_idx}/{len(batches)} "
+                            f"({len(staged)} clips) …"
                         )
-                    except OSError as exc:
-                        if growing is not None:
-                            growing.unlink(missing_ok=True)
-                        return _fail(f"staging failed: {exc}")
-                    offset += len(batch)
-                    part_out = stage_dir / f"_partial_{batch_idx}.mp4"
-                    sources = ([growing] if growing is not None else []) + staged
+                        err = _concat_sources(
+                            staged,
+                            part_out,
+                            f"merging {output_path.name} "
+                            f"part {batch_idx}/{len(batches)}",
+                        )
+                        for path in staged:
+                            path.unlink(missing_ok=True)
+                        if err:
+                            part_out.unlink(missing_ok=True)
+                            return _fail(err)
+                        part_expected = sum(c.duration or 0.0 for c in batch)
+                        part_bad = merge_validation_error(
+                            part_out,
+                            ffprobe,
+                            part_expected,
+                            record_type=record_type,
+                        )
+                        if part_bad:
+                            part_out.unlink(missing_ok=True)
+                            return _fail(
+                                f"part {batch_idx}/{len(batches)} "
+                                f"ffprobe validation: {part_bad}"
+                            )
+                        parts.append(part_out)
+                        offset += len(batch)
                     log(
-                        f"  [merge] concat batch {batch_idx}/{len(batches)} "
-                        f"({len(sources)} inputs) …"
+                        f"  [merge] final concat {len(parts)} parts "
+                        f"→ {output_path.name}"
                     )
                     err = _concat_sources(
-                        sources,
-                        part_out,
-                        f"merging {output_path.name} batch {batch_idx}/{len(batches)}",
+                        parts,
+                        output_path,
+                        f"merging {output_path.name} final",
                     )
-                    for path in staged:
-                        path.unlink(missing_ok=True)
-                    if growing is not None:
-                        growing.unlink(missing_ok=True)
                     if err:
-                        part_out.unlink(missing_ok=True)
                         return _fail(err)
-                    growing = part_out
-                assert growing is not None
-                growing.replace(output_path)
+                finally:
+                    for part in parts:
+                        part.unlink(missing_ok=True)
         else:
             concat_sources = [clip.path for clip in chunk]
             log(

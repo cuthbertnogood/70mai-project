@@ -53,9 +53,9 @@ cd /Users/cuthbert/work_local/70mai_project
 ./scripts/publish_all_70mai.sh --dry-run
 ./scripts/publish_all_70mai.sh --types Parking --skip-import
 
-# Прогресс (отдельное окно): copy/merge/compose/upload; список поездок
-# в два столбца (≥88 колонок). Правки экрана —
-# lib/autopilot_dashboard_view.py (автоперезагрузка, без Ctrl+C)
+# Прогресс (отдельное окно): copy/merge/compose/upload; внизу «Сбои»;
+# Parking/Event: stage батчами → независимые parts → один final concat.
+# Правки экрана — lib/autopilot_dashboard_view.py (автоперезагрузка).
 ./scripts/autopilot_dashboard.sh
 ```
 

@@ -1008,11 +1008,12 @@ _MERGE_LOG_RE = re.compile(
     r"\[merge\]\s+(.+)$",
 )
 _MERGE_BATCH_RE = re.compile(
-    r"\[merge\]\s+concat batch (\d+)/(\d+) \((\d+) inputs\)",
+    r"\[merge\]\s+(?:concat batch|part) (\d+)/(\d+)"
+    r"(?: \((\d+) (?:inputs|clips)\))?",
 )
 _MERGE_HB_DETAIL_RE = re.compile(
     r"… merging ((?:NO|EV|PA)_\S+\.mp4)"
-    r"(?: batch (\d+)/(\d+))? \(([^)]+)\)",
+    r"(?: (?:batch|part) (\d+)/(\d+))? \(([^)]+)\)",
 )
 _MERGE_OUTPUT_RE = re.compile(r"→ ((?:NO|EV|PA)_\S+\.mp4)")
 _MERGE_CAMERA_RE = re.compile(
@@ -1061,9 +1062,16 @@ def _find_merge_partial(
             if not partial_dir.is_dir():
                 continue
             if batch_idx is not None:
-                candidate = partial_dir / f"_partial_{batch_idx}.mp4"
-                if candidate.is_file():
-                    return candidate
+                for name in (
+                    f"_part_{batch_idx}.mp4",
+                    f"_partial_{batch_idx}.mp4",
+                ):
+                    candidate = partial_dir / name
+                    if candidate.is_file():
+                        return candidate
+            parts = sorted(partial_dir.glob("_part_*.mp4"))
+            if parts:
+                return parts[-1]
             partials = sorted(partial_dir.glob("_partial_*.mp4"))
             if partials:
                 return partials[-1]
@@ -1073,7 +1081,7 @@ def _find_merge_partial(
 
 
 def _sample_merge_speed_mbps(path: Path) -> float | None:
-    """Estimate concat throughput from growing partial output (decimal MB/s)."""
+    """Estimate concat throughput from part/partial output (decimal MB/s)."""
     key = str(path.resolve())
     try:
         size = path.stat().st_size
@@ -1142,7 +1150,8 @@ def parse_merge_log_detail(temp_dir: Path | None) -> dict | None:
         if m:
             batch_cur = int(m.group(1))
             batch_total = int(m.group(2))
-            inputs = int(m.group(3))
+            if m.group(3):
+                inputs = int(m.group(3))
             if ts is not None:
                 batch_started_at = ts
         m = _MERGE_HB_DETAIL_RE.search(line)
@@ -1215,7 +1224,7 @@ def format_merge_detail(
 
     parts: list[str] = []
     if batch_cur is not None and batch_total is not None:
-        parts.append(f"batch {batch_cur}/{batch_total}")
+        parts.append(f"part {batch_cur}/{batch_total}")
     if inputs is not None:
         parts.append(f"{inputs} клипов")
     if camera:
