@@ -54,7 +54,7 @@ cd /Users/cuthbert/work_local/70mai_project
 ./scripts/publish_all_70mai.sh --types Parking --skip-import
 
 # Прогресс (отдельное окно): copy/merge/compose/upload; внизу «Сбои» (дата/время);
-# Parking/Event: stage батчами → независимые parts → один final concat.
+# Parking: part N/25 → final concat · OK если ~7309s (не ~6889s).
 # Compose ждёт Front+Back ≥98%; в TUI — живое покрытие % по каждой камере.
 # Правки экрана — lib/autopilot_dashboard_view.py (автоперезагрузка).
 ./scripts/autopilot_dashboard.sh

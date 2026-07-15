@@ -200,6 +200,11 @@ def render(dash: Any) -> None:
                     term_cols,
                 )
             )
+    lines.extend(d.format_parking_merge_hint(
+        dash.temp_dir,
+        term_cols=term_cols,
+        import_alive=import_alive,
+    ))
     lines.extend(d.format_failures_block(dash.temp_dir, term_cols=term_cols))
     block = "\n".join(lines)
     out = dash._tty

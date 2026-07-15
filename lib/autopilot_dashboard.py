@@ -847,6 +847,55 @@ def format_failures_block(temp_dir: Path, *, term_cols: int, limit: int = 5) -> 
     return out
 
 
+def format_parking_merge_hint(
+    temp_dir: Path,
+    *,
+    term_cols: int,
+    import_alive: bool = False,
+) -> list[str]:
+    """Brief Parking rebuild check: final concat + ~7309s (not ~6889s)."""
+    detail = parse_merge_log_detail(temp_dir)
+    cam = str((detail or {}).get("camera") or "")
+    output = str((detail or {}).get("output") or "")
+    is_parking = "Parking" in cam or output.startswith("PA_")
+    if not is_parking and not import_alive:
+        # Still show while Parking import runs even if camera line lagged.
+        st = resolve_live_status(temp_dir)
+        if not st or str(st.get("record_type") or "") != "Parking":
+            return []
+        is_parking = True
+    if not is_parking:
+        return []
+
+    batch_cur = (detail or {}).get("batch_cur")
+    batch_total = (detail or {}).get("batch_total")
+    final_n = (detail or {}).get("final_parts")
+    done_name = (detail or {}).get("last_done_name") or ""
+    done_note = (detail or {}).get("last_done_note") or ""
+
+    if batch_cur is not None and batch_total is not None and not final_n:
+        tip = (
+            f"Parking: part {batch_cur}/{batch_total} → final concat "
+            f"{batch_total} parts · OK если ~7309s (не ~6889s)"
+        )
+    elif final_n:
+        tip = (
+            f"Parking: final concat {final_n} parts — жди DONE ~7309s "
+            f"(не ~6889s)"
+        )
+    elif done_name.startswith("PA_") and done_note:
+        tip = (
+            f"Parking merge DONE {done_name}: {done_note} · "
+            f"цель ~7309s (было ~6889s short)"
+        )
+    else:
+        tip = (
+            "Parking rebuild: успех = «final concat N parts» и ~7309s "
+            "(было ~6889s)"
+        )
+    return list(_wrap_line(tip, term_cols))
+
+
 def _human_etime_seconds(sec: int) -> str:
     sec = max(0, int(sec))
     days, rem = divmod(sec, 86400)
@@ -1036,6 +1085,9 @@ _MERGE_BATCH_RE = re.compile(
     r"\[merge\]\s+(?:concat batch|part) (\d+)/(\d+)"
     r"(?: \((\d+) (?:inputs|clips)\))?",
 )
+_MERGE_FINAL_RE = re.compile(
+    r"\[merge\]\s+final concat (\d+) parts",
+)
 _MERGE_HB_DETAIL_RE = re.compile(
     r"… merging ((?:NO|EV|PA)_\S+\.mp4)"
     r"(?: (?:batch|part) (\d+)/(\d+))? \(([^)]+)\)",
@@ -1142,6 +1194,9 @@ def parse_merge_log_detail(temp_dir: Path | None) -> dict | None:
     merge_done = merge_total = None
     last_done_speed: float | None = None
     batch_started_at: datetime | None = None
+    final_parts: int | None = None
+    last_done_name = ""
+    last_done_note = ""
 
     for line in text.splitlines():
         m = _LOG_TS_RE.match(line)
@@ -1157,9 +1212,14 @@ def parse_merge_log_detail(temp_dir: Path | None) -> dict | None:
             done_sec = _parse_duration_token(m.group(3))
             if done_sec and done_sec > 0:
                 last_done_speed = done_mb / done_sec
+            last_done_name = m.group(1)
+            last_done_note = f"{m.group(2)} MB in {m.group(3)}"
             if not output:
                 output = m.group(1)
         m = _MERGE_CAMERA_RE.search(line)
+        if m:
+            camera = m.group(1).strip()
+        m = _MERGE_CAMERA_LINE_RE.search(line)
         if m:
             camera = m.group(1).strip()
         m = _MERGE_SESSION_RE.search(line)
@@ -1171,6 +1231,9 @@ def parse_merge_log_detail(temp_dir: Path | None) -> dict | None:
         m = _MERGE_OUTPUT_RE.search(line)
         if m:
             output = m.group(1)
+        m = _MERGE_FINAL_RE.search(line)
+        if m:
+            final_parts = int(m.group(1))
         m = _MERGE_BATCH_RE.search(line)
         if m:
             batch_cur = int(m.group(1))
@@ -1187,7 +1250,7 @@ def parse_merge_log_detail(temp_dir: Path | None) -> dict | None:
                 batch_total = int(m.group(3))
             elapsed = m.group(4).strip()
 
-    if not output and batch_cur is None:
+    if not output and batch_cur is None and final_parts is None:
         return None
 
     return {
@@ -1201,13 +1264,16 @@ def parse_merge_log_detail(temp_dir: Path | None) -> dict | None:
         "session_min": session_min,
         "merge_done": merge_done,
         "merge_total": merge_total,
+        "final_parts": final_parts,
+        "last_done_name": last_done_name,
+        "last_done_note": last_done_note,
         "last_done_speed_mbps": last_done_speed,
         "batch_started_at": (
             batch_started_at.isoformat(timespec="seconds")
             if batch_started_at
             else None
         ),
-        "active": batch_cur is not None or bool(elapsed),
+        "active": batch_cur is not None or bool(elapsed) or final_parts is not None,
     }
 
 
