@@ -4,6 +4,7 @@
 # Default: Normal (trips) + Event + Parking (each → one 2-cam YouTube video when merged).
 #
 #   ./scripts/publish_all_70mai.sh --wait          # wait for SD, then run
+#   ./scripts/publish_all_70mai.sh --force-restart --wait  # kill previous run, restart
 #   ./scripts/publish_all_70mai.sh                 # run now if SD mounted
 #   ./scripts/publish_all_70mai.sh --wait --loop   # daemon: re-run after each card session
 #   ./scripts/watch_publish_all_70mai.sh --skip-import  # restart on crash (see script header)

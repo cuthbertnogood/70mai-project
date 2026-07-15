@@ -123,6 +123,38 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _ps_ax_lines() -> list[str]:
+    try:
+        out = subprocess.run(
+            ["ps", "ax", "-o", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    return [line.strip() for line in out.stdout.splitlines() if line.strip()]
+
+
+def _import_pids() -> list[int]:
+    """PIDs running import_70mai.py (python)."""
+    pids: list[int] = []
+    for line in _ps_ax_lines():
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid_s, cmd = parts
+        if "import_70mai" not in cmd:
+            continue
+        if "python" not in cmd.lower():
+            continue
+        try:
+            pids.append(int(pid_s))
+        except ValueError:
+            continue
+    return pids
+
+
 def _is_publish_70mai_cmd(cmd: str) -> bool:
     if "publish_all_70mai" in cmd:
         return False
@@ -134,20 +166,8 @@ def _is_publish_70mai_cmd(cmd: str) -> bool:
 
 def _publish_pids() -> list[int]:
     """PIDs running publish_70mai.py (not publish_all_70mai.py or shell wrappers)."""
-    try:
-        out = subprocess.run(
-            ["ps", "ax", "-o", "pid=,command="],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return []
     pids: list[int] = []
-    for line in out.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for line in _ps_ax_lines():
         parts = line.split(None, 1)
         if len(parts) < 2:
             continue
@@ -162,20 +182,8 @@ def _publish_pids() -> list[int]:
 
 
 def _orphan_ffmpeg_pids() -> list[int]:
-    try:
-        out = subprocess.run(
-            ["ps", "ax", "-o", "pid=,command="],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return []
     pids: list[int] = []
-    for line in out.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for line in _ps_ax_lines():
         parts = line.split(None, 1)
         if len(parts) < 2:
             continue
@@ -183,7 +191,12 @@ def _orphan_ffmpeg_pids() -> list[int]:
         lower = cmd.lower()
         if "ffmpeg" not in lower:
             continue
-        if ".publish_tmp" not in cmd and "/chunk_" not in cmd:
+        if (
+            ".publish_tmp" not in cmd
+            and "/chunk_" not in cmd
+            and ".merge_stage" not in cmd
+            and "video/Output" not in cmd
+        ):
             continue
         try:
             pids.append(int(pid_s))
@@ -220,6 +233,15 @@ def _kill_pids(pids: list[int], *, label: str) -> None:
         time.sleep(1)
 
 
+def force_takeover_pipeline(*, lock_pid: int | None = None) -> None:
+    """Stop previous autopilot workers so a console restart can take the lock."""
+    kill_orphan_ffmpeg()
+    _kill_pids(_import_pids(), label="import_70mai.py")
+    _kill_pids(_publish_pids(), label="publish_70mai.py")
+    if lock_pid and lock_pid != os.getpid() and _pid_alive(lock_pid):
+        _kill_pids([lock_pid], label="publish_all_70mai.py")
+
+
 def ensure_publish_slot(
     *,
     wait_sec: int = PUBLISH_WAIT_SEC,
@@ -228,10 +250,7 @@ def ensure_publish_slot(
 ) -> None:
     """Wait for publish_70mai.py to finish; kill stale/orphan processes on timeout or --force-restart."""
     if force:
-        kill_orphan_ffmpeg()
-        pids = _publish_pids()
-        if pids:
-            _kill_pids(pids, label="publish_70mai.py")
+        force_takeover_pipeline()
         return
 
     waited = 0
@@ -253,6 +272,22 @@ def ensure_publish_slot(
         waited += wait_sec
 
 
+def _ask_console_restart(pid: int) -> bool:
+    """Interactive confirm when lock is held (TTY only)."""
+    log(
+        f"Другой автопилот уже работает (pid {pid}, lock {LOCK_FILE}).\n"
+        f"  Перезапустить его сейчас? [y/N]\n"
+        f"  Или сразу: ./scripts/publish_all_70mai.sh --force-restart …"
+    )
+    if not sys.stdin.isatty():
+        return False
+    try:
+        ans = input("Перезапуск [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return ans in ("y", "yes", "д", "да")
+
+
 def acquire_lock(*, force: bool = False) -> None:
     DEFAULT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
     if LOCK_FILE.is_file():
@@ -262,11 +297,18 @@ def acquire_lock(*, force: bool = False) -> None:
         except ValueError:
             pid = 0
         if pid and pid != os.getpid() and _pid_alive(pid):
+            if not force and _ask_console_restart(pid):
+                force = True
             if force:
-                log(f"Force-restart: killing autopilot pid {pid} (lock {LOCK_FILE})")
-                _kill_pids([pid], label="publish_all_70mai.py")
+                log(f"Force-restart: taking over from autopilot pid {pid}")
+                force_takeover_pipeline(lock_pid=pid)
             else:
-                log(f"ERROR: another publish_all may be running (lock {LOCK_FILE}, pid {pid})")
+                log(
+                    f"ERROR: another publish_all may be running "
+                    f"(lock {LOCK_FILE}, pid {pid})\n"
+                    f"  Перезапуск: ./scripts/publish_all_70mai.sh "
+                    f"--force-restart --wait"
+                )
                 raise SystemExit(1)
         elif pid and not _pid_alive(pid):
             log(f"Removing stale autopilot lock (pid {pid} not running)")
@@ -622,8 +664,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--force-restart",
+        "--restart",
         action="store_true",
-        help="Kill stale publish_70mai / lock holder and start fresh (used by watchdog)",
+        help=(
+            "Kill previous autopilot / import / ffmpeg and take the lock "
+            "(console restart or watchdog)"
+        ),
     )
     parser.add_argument(
         "--profile",

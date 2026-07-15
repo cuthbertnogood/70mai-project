@@ -48,6 +48,10 @@ cd /Users/cuthbert/work_local/70mai_project
 # Карта уже вставлена
 ./scripts/publish_all_70mai.sh
 
+# Перезапуск, если уже крутится другой автопилот (lock занят)
+./scripts/publish_all_70mai.sh --force-restart --wait
+# то же: --restart; в TTY без флага спросит [y/N]
+
 # Только Parking / только план / без import
 ./scripts/publish_all_70mai.sh --types Parking
 ./scripts/publish_all_70mai.sh --dry-run
@@ -71,6 +75,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | Флаг | Default | Смысл |
 |------|---------|--------|
 | `--wait` | off | Ждать SD |
+| `--force-restart` / `--restart` | off | Убить предыдущий автопилот и взять lock |
 | `--types …` | Normal Event Parking | Что заливать |
 | `--profile` | `balanced` | `balanced` / `draft` / `quality` / `hevc` |
 | `--chunk-minutes` | `120` | Длина ролика (~мин) |
