@@ -193,6 +193,11 @@ def diagnose_chunk(
             ("Back", back_dur, back_path),
         ):
             if dur < trip_duration * COVERAGE_THRESHOLD:
+                if path is not None:
+                    from import_70mai import user_accepted_short_merge
+
+                    if user_accepted_short_merge(path):
+                        continue
                 issues.append(
                     HealthIssue(
                         code="merge_short",

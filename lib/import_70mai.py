@@ -1802,10 +1802,20 @@ def merge_clips(
         else None
     )
 
-    def _fail(msg: str) -> str:
+    keep_stage = False
+    output_validated = False
+    global _merge_needs_user
+
+    def _fail(msg: str, *, keep_stage_parts: bool = False) -> str:
+        nonlocal keep_stage
         log(f"       ERROR: {msg}")
         output_path.unlink(missing_ok=True)
-        cleanup_stage_dir(stage_dir)
+        if keep_stage_parts:
+            keep_stage = True
+            if stage_dir is not None:
+                clean_stage_raw_clips(stage_dir)
+        else:
+            cleanup_stage_dir(stage_dir)
         _record("failed", elapsed_sec=time.monotonic() - merge_start)
         if reporter:
             reporter.finish_merge(
@@ -1866,7 +1876,8 @@ def merge_clips(
                 return _fail(err)
         elif need_stage:
             stage_dir = output_path.parent / ".merge_stage" / output_path.stem
-            cleanup_stage_dir(stage_dir)
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            clean_stage_raw_clips(stage_dir)
             batches = [
                 chunk[start:end]
                 for start, end in plan_stage_batches(len(chunk), batch_size)
@@ -1892,67 +1903,145 @@ def merge_clips(
                 if err:
                     return _fail(err)
             else:
-                # Independent parts + one final concat.
-                # Growing re-concat (partial ⊕ next batch) drops minutes on
-                # Front 4K HEVC via ffmpeg -c copy; Back 1080p often survives.
+                # Independent parts + one final concat. Reuse valid _part_*.
                 parts: list[Path] = []
                 offset = 0
-                try:
-                    for batch_idx, batch in enumerate(batches, start=1):
-                        try:
-                            staged = stage_clips_locally(
-                                batch,
-                                stage_dir,
-                                index_offset=offset,
-                                total_hint=len(chunk),
-                            )
-                        except OSError as exc:
-                            return _fail(f"staging failed: {exc}")
-                        part_out = stage_dir / f"_part_{batch_idx}.mp4"
-                        log(
-                            f"  [merge] part {batch_idx}/{len(batches)} "
-                            f"({len(staged)} clips) …"
-                        )
-                        err = _concat_sources(
-                            staged,
-                            part_out,
-                            f"merging {output_path.name} "
-                            f"part {batch_idx}/{len(batches)}",
-                        )
-                        for path in staged:
-                            path.unlink(missing_ok=True)
-                        if err:
-                            part_out.unlink(missing_ok=True)
-                            return _fail(err)
-                        part_expected = sum(c.duration or 0.0 for c in batch)
+                for batch_idx, batch in enumerate(batches, start=1):
+                    part_out = stage_dir / f"_part_{batch_idx}.mp4"
+                    part_expected = sum(c.duration or 0.0 for c in batch)
+                    reused = False
+                    if part_out.is_file():
                         part_bad = merge_validation_error(
                             part_out,
                             ffprobe,
                             part_expected,
                             record_type=record_type,
                         )
-                        if part_bad:
-                            part_out.unlink(missing_ok=True)
-                            return _fail(
-                                f"part {batch_idx}/{len(batches)} "
-                                f"ffprobe validation: {part_bad}"
+                        if part_bad is None:
+                            log(
+                                f"  [merge] part {batch_idx}/{len(batches)}: "
+                                f"reuse {part_out.name} (skip SD copy)"
                             )
-                        parts.append(part_out)
-                        offset += len(batch)
+                            parts.append(part_out)
+                            offset += len(batch)
+                            reused = True
+                        else:
+                            log(
+                                f"  [merge] part {batch_idx}/{len(batches)}: "
+                                f"rebuild ({part_bad})"
+                            )
+                            part_out.unlink(missing_ok=True)
+                    if reused:
+                        continue
+                    try:
+                        staged = stage_clips_locally(
+                            batch,
+                            stage_dir,
+                            index_offset=offset,
+                            total_hint=len(chunk),
+                        )
+                    except OSError as exc:
+                        return _fail(
+                            f"staging failed: {exc}",
+                            keep_stage_parts=True,
+                        )
+                    log(
+                        f"  [merge] part {batch_idx}/{len(batches)} "
+                        f"({len(staged)} clips) …"
+                    )
+                    err = _concat_sources(
+                        staged,
+                        part_out,
+                        f"merging {output_path.name} "
+                        f"part {batch_idx}/{len(batches)}",
+                    )
+                    for path in staged:
+                        path.unlink(missing_ok=True)
+                    if err:
+                        part_out.unlink(missing_ok=True)
+                        return _fail(err, keep_stage_parts=True)
+                    part_bad = merge_validation_error(
+                        part_out,
+                        ffprobe,
+                        part_expected,
+                        record_type=record_type,
+                    )
+                    if part_bad:
+                        part_out.unlink(missing_ok=True)
+                        return _fail(
+                            f"part {batch_idx}/{len(batches)} "
+                            f"ffprobe validation: {part_bad}",
+                            keep_stage_parts=True,
+                        )
+                    parts.append(part_out)
+                    offset += len(batch)
+
+                def _run_final() -> str | None:
                     log(
                         f"  [merge] final concat {len(parts)} parts "
                         f"→ {output_path.name}"
                     )
-                    err = _concat_sources(
+                    return _concat_sources(
                         parts,
                         output_path,
                         f"merging {output_path.name} final",
                     )
-                    if err:
-                        return _fail(err)
-                finally:
-                    for part in parts:
-                        part.unlink(missing_ok=True)
+
+                err = _run_final()
+                if err:
+                    return _fail(err, keep_stage_parts=True)
+
+                # Validate; on short merge keep parts and strike-count.
+                while True:
+                    bad = merge_validation_error(
+                        output_path,
+                        ffprobe,
+                        expected_duration,
+                        record_type=record_type,
+                    )
+                    if bad is None or user_accepted_short_merge(output_path):
+                        output_validated = True
+                        break
+                    strikes = bump_merge_short_strikes(
+                        stage_dir, detail=bad
+                    )
+                    log(
+                        f"  [merge] short strike {strikes}/"
+                        f"{MERGE_SHORT_STRIKE_LIMIT}: {bad}"
+                    )
+                    if strikes < MERGE_SHORT_STRIKE_LIMIT:
+                        return _fail(
+                            f"ffprobe validation: {bad}",
+                            keep_stage_parts=True,
+                        )
+                    action = ask_merge_short_action(
+                        output_name=output_path.name,
+                        detail=bad,
+                        strikes=strikes,
+                    )
+                    if action == "ignore":
+                        mark_accept_short_merge(output_path, bad)
+                        clear_merge_short_strikes(stage_dir)
+                        log(
+                            f"  [merge] user accepted short merge: "
+                            f"{output_path.name}"
+                        )
+                        output_validated = True
+                        break
+                    if action == "retry":
+                        clear_merge_short_strikes(stage_dir)
+                        output_path.unlink(missing_ok=True)
+                        err = _run_final()
+                        if err:
+                            return _fail(err, keep_stage_parts=True)
+                        continue
+                    # stop — no TTY or deferred
+                    _merge_needs_user = True
+                    return _fail(
+                        f"ffprobe validation: {bad} "
+                        f"(needs user: ignore/retry)",
+                        keep_stage_parts=True,
+                    )
         else:
             concat_sources = [clip.path for clip in chunk]
             log(
@@ -1965,14 +2054,23 @@ def merge_clips(
             if err:
                 return _fail(err)
 
-        bad = merge_validation_error(
-            output_path,
-            ffprobe,
-            expected_duration,
-            record_type=record_type,
-        )
-        if bad:
-            return _fail(f"ffprobe validation: {bad}")
+        if not output_validated:
+            bad = merge_validation_error(
+                output_path,
+                ffprobe,
+                expected_duration,
+                record_type=record_type,
+            )
+            if bad and not user_accepted_short_merge(output_path):
+                keep_parts = bool(
+                    stage_dir
+                    and stage_dir.is_dir()
+                    and any(stage_dir.glob("_part_*.mp4"))
+                )
+                return _fail(
+                    f"ffprobe validation: {bad}",
+                    keep_stage_parts=keep_parts,
+                )
 
         size_mb = output_path.stat().st_size / 1_000_000
         elapsed = time.monotonic() - merge_start
@@ -1980,6 +2078,7 @@ def merge_clips(
             f"  [merge] DONE {output_path.name}: {size_mb:.0f} MB "
             f"in {format_duration(elapsed)}"
         )
+        clear_merge_short_strikes(stage_dir)
         _record("merged", size_mb=size_mb, elapsed_sec=elapsed)
         if reporter:
             reporter.finish_merge(
@@ -1998,7 +2097,8 @@ def merge_clips(
                 pipeline.merge_step()
         return "merged"
     finally:
-        cleanup_stage_dir(stage_dir)
+        if not keep_stage:
+            cleanup_stage_dir(stage_dir)
 
 
 def process_event_group(
@@ -3086,7 +3186,7 @@ def main() -> int:
             f"\nDone in {format_duration(elapsed)}: "
             f"{total_merged} merged, {total_skipped} skipped, {total_failed} failed"
         )
-    return 1 if total_failed else 0
+    return EXIT_MERGE_NEEDS_USER if _merge_needs_user else (1 if total_failed else 0)
 
 
 if __name__ == "__main__":

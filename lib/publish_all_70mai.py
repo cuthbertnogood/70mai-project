@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from import_70mai import format_duration, format_log_line, log as _console_log
+from import_70mai import EXIT_MERGE_NEEDS_USER
 from plan_estimate import (
     DEFAULT_SESSION_GAP,
     SINGLE_VIDEO_TYPES,
@@ -1051,6 +1052,15 @@ def main() -> int:
                                 )
                                 if ec == 0:
                                     break
+                                if ec == EXIT_MERGE_NEEDS_USER:
+                                    log(
+                                        "Import stopped: merge short ×3 — "
+                                        "нужен выбор пользователя "
+                                        "[i]=ignore / [r]=retry. "
+                                        "Запусти в интерактивном терминале "
+                                        "(хорошие _part_* сохранены)."
+                                    )
+                                    return ec
                                 if import_attempt < IMPORT_MERGE_RETRY_MAX:
                                     log(
                                         f"Import had merge failure(s) — auto-retry "

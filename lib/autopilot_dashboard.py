@@ -936,7 +936,20 @@ def format_parking_merge_hint(
         target_sec = 7309.0
     short_sec = 6889.0
 
+    from import_70mai import MERGE_SHORT_STRIKE_LIMIT, read_merge_short_strikes
+
     now_sec, part_n = _sum_parking_part_durations(video_dir, output)
+    strikes = 0
+    if video_dir and output:
+        stem = Path(output).stem
+        try:
+            for stage_root in video_dir.glob("*/*/.merge_stage"):
+                sp = stage_root / stem
+                if sp.is_dir():
+                    strikes = read_merge_short_strikes(sp)
+                    break
+        except OSError:
+            strikes = 0
     # Prefer live output file after final concat / DONE.
     if video_dir and output:
         out_path = None
@@ -969,25 +982,31 @@ def format_parking_merge_hint(
     if now_sec is not None and target_sec > 0:
         pct = f" · {100.0 * now_sec / target_sec:.1f}%"
 
+    strike_txt = (
+        f" · short-strikes {strikes}/{MERGE_SHORT_STRIKE_LIMIT}"
+        if strikes
+        else ""
+    )
+
     if batch_cur is not None and batch_total is not None and not final_n:
         tip = (
             f"Parking: part {batch_cur}/{batch_total}"
             f" ({part_n} parts on disk) · сейчас {now_txt} / цель {target_txt}"
-            f"{pct} · short был {_fmt_sec(short_sec)}"
+            f"{pct}{strike_txt} · short был {_fmt_sec(short_sec)}"
         )
     elif final_n:
         tip = (
             f"Parking: final concat {final_n} parts · сейчас {now_txt} / "
-            f"цель {target_txt}{pct} · short был {_fmt_sec(short_sec)}"
+            f"цель {target_txt}{pct}{strike_txt} · short был {_fmt_sec(short_sec)}"
         )
     elif done_name.startswith("PA_") and done_note:
         tip = (
             f"Parking DONE {done_name}: сейчас {now_txt} / цель {target_txt}"
-            f"{pct} · ({done_note})"
+            f"{pct}{strike_txt} · ({done_note})"
         )
     else:
         tip = (
-            f"Parking: сейчас {now_txt} / цель {target_txt}{pct} · "
+            f"Parking: сейчас {now_txt} / цель {target_txt}{pct}{strike_txt} · "
             f"short был {_fmt_sec(short_sec)}"
         )
     return list(_wrap_line(tip, term_cols))
