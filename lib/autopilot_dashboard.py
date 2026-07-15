@@ -868,6 +868,58 @@ def _import_progress_from_log(temp_dir: Path | None) -> dict[str, str] | None:
     return {"copy": copy_txt, "merge": merge_txt}
 
 
+def _backfill_status_from_import_log(temp_dir: Path) -> bool:
+    """If import is live but status.json is stale/missing --status-dir, write from log.
+
+    Keeps autopilot_status.json fresh for this run without restarting import.
+    """
+    procs = list_pipeline_processes()
+    if not any(p.role == "import" for p in procs):
+        return False
+    st = resolve_live_status(temp_dir)
+    if st and str(st.get("phase") or "") == "import" and not _status_is_stale(st):
+        return False
+    snap = _import_progress_from_log(temp_dir)
+    if not snap:
+        return False
+    copy_txt = snap.get("copy") or ""
+    merge_txt = snap.get("merge") or ""
+    detail = " · ".join(x for x in (copy_txt, merge_txt) if x)
+    percent: float | None = None
+    m = re.search(r"(\d+)/(\d+)", copy_txt)
+    if m and int(m.group(2)) > 0:
+        percent = 100.0 * int(m.group(1)) / int(m.group(2))
+    conveyors = {
+        "copy": {
+            "active": bool(copy_txt),
+            "file": copy_txt.split(" ", 1)[-1] if copy_txt else "",
+            "chunk": "",
+            "clip": copy_txt,
+            "detail": copy_txt,
+        },
+        "merge": {
+            "active": bool(merge_txt),
+            "file": "",
+            "chunk": "",
+            "clip": "",
+            "detail": merge_txt,
+            "elapsed": "",
+        },
+    }
+    try:
+        write_import_status(
+            temp_dir,
+            record_type="Parking",
+            percent=percent,
+            detail=detail[:80],
+            conveyors=conveyors,
+            stage_ahead="copy" if copy_txt else "merge",
+        )
+    except OSError:
+        return False
+    return True
+
+
 def _format_pipeline_block(
     st: dict | None,
     rows: list,
@@ -1291,6 +1343,10 @@ class Dashboard:
 
     def _loop(self) -> None:
         while not self._stop.wait(self.refresh_interval):
+            try:
+                _backfill_status_from_import_log(self.temp_dir)
+            except Exception:
+                pass
             self._refresh_youtube_reachability()
             self._refresh_upload_health()
             self._refresh_from_publish_state()
