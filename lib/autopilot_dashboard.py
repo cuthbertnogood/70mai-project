@@ -506,9 +506,9 @@ def _column_widths(term_cols: int) -> tuple[int, ...]:
     """Fit 6-column table into terminal; prefer Этап over empty Поездка padding."""
     term_cols = max(56, term_cols)
     # №, trip, dur, stage, size, yt
-    widths = [6, 14, 8, 18, 6, 12]
-    floors = [5, 10, 6, 12, 4, 8]
-    caps = [7, 18, 9, 28, 7, 14]
+    widths = [6, 14, 8, 22, 6, 12]
+    floors = [5, 10, 6, 14, 4, 8]
+    caps = [7, 16, 9, 40, 7, 14]
 
     def fits(w: list[int]) -> bool:
         return _table_width(tuple(w)) <= term_cols
@@ -1664,6 +1664,38 @@ def _visible_rows(rows: list, *, term_rows: int, total: int) -> tuple[list, str 
     return list(rows[keep_from:]), note
 
 
+def _import_row_progress(
+    temp_dir: Path,
+    *,
+    record_type: str = "",
+) -> str:
+    """Human-readable Этап text for a trip currently in import (no cryptic «10м»)."""
+    snap = _import_progress_from_log(temp_dir, video_dir=temp_dir.parent)
+    bits: list[str] = []
+    if record_type in ("Parking", "Event", "Normal"):
+        bits.append(record_type)
+    bits.append("import")
+    if snap:
+        copy_txt = snap.get("copy") or ""
+        frac = _parse_copy_fraction(copy_txt) if copy_txt else None
+        if frac:
+            bits.append(f"copy {frac[0]}/{frac[1]}")
+        elif copy_txt:
+            bits.append("copy…")
+        md = parse_merge_log_detail(temp_dir)
+        if md and md.get("batch_cur") is not None and md.get("batch_total"):
+            bits.append(f"merge {md['batch_cur']}/{md['batch_total']}")
+        elif snap.get("merge"):
+            bits.append("merge…")
+        speed = snap.get("copy_detail") or ""
+        m = re.search(r"([\d.]+)\s*MB/s", speed)
+        if m:
+            bits.append(f"~{m.group(1)} MB/s")
+    else:
+        bits.append("SD→SSD / merge")
+    return " · ".join(bits)
+
+
 def _stage_label(
     status: str,
     *,
@@ -1671,33 +1703,33 @@ def _stage_label(
     stalled: bool = False,
     overall_index: int | None = None,
     overall_total: int | None = None,
+    detail: str = "",
 ) -> str:
-    """Single human-readable stage (replaces separate Status + Progress)."""
-    pos = ""
-    if overall_index is not None and overall_total:
-        pos = f"{overall_index}/{overall_total} "
+    """Single human-readable stage for the Этап column (№ already shows N/M)."""
     if status == "done":
-        return "✓ ролик"
+        return "✓"
     if status == "oauth":
-        return f"{pos}OAuth вход".strip()
+        return "OAuth вход"
     if status == "fail":
-        return f"{pos}ошибка".strip()
+        return "ошибка"
     if stalled or status == "stall":
         if percent is not None:
-            return f"{pos}ЗАВИС {percent:.0f}%".strip()
-        return f"{pos}ЗАВИС".strip()
+            return f"ЗАВИС {percent:.0f}%"
+        return "ЗАВИС"
     if status == "upload":
         if percent is not None:
-            return f"{pos}↑ 2ч {percent:.0f}%".strip()
-        return f"{pos}↑ 2ч …".strip()
+            return f"↑ YouTube {percent:.0f}%"
+        return "↑ YouTube …"
     if status == "compose":
         if percent is not None:
-            return f"{pos}F+B {percent:.0f}%".strip()
-        return f"{pos}F+B сборка".strip()
+            return f"сборка F+B {percent:.0f}%"
+        return "сборка F+B"
     if status == "import":
+        if detail:
+            return detail
         if percent is not None:
-            return f"{pos}10м {percent:.0f}%".strip()
-        return f"{pos}copy/merge".strip() if pos else "copy/merge"
+            return f"import {percent:.0f}%"
+        return "import SD→SSD/merge"
     if status == "pending":
         return "ожидание"
     return status
@@ -2071,14 +2103,16 @@ class Dashboard:
                     pct_f = None
                 if phase == "upload" and pct_f is None:
                     pct_f = _read_upload_percent(self.temp_dir, row.trip_index)
-                total = len(self.rows)
-                row.progress = _stage_label(
-                    row.status,
-                    percent=pct_f,
-                    stalled=stalled,
-                    overall_index=row.overall_index or None,
-                    overall_total=total,
-                )
+                if phase == "import":
+                    row.progress = _import_row_progress(
+                        self.temp_dir, record_type=row.record_type
+                    )
+                else:
+                    row.progress = _stage_label(
+                        row.status,
+                        percent=pct_f,
+                        stalled=stalled,
+                    )
                 row.percent = pct_f
                 row.stalled = stalled
                 live_reason = (st.get("reason") or "").strip()
@@ -2113,12 +2147,7 @@ class Dashboard:
                 # Import maps across trips as merge advances; clear stale overlay.
                 if row.status == "import":
                     row.status = "pending"
-                total = len(self.rows)
-                row.progress = _stage_label(
-                    row.status,
-                    overall_index=row.overall_index or None,
-                    overall_total=total,
-                )
+                row.progress = _stage_label(row.status)
                 row.percent = None
                 row.stalled = False
                 row.reason = saved_reason or "—"

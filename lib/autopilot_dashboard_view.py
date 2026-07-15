@@ -83,8 +83,13 @@ def render(dash: Any) -> None:
                 ar.status,
                 percent=pct,
                 stalled=ar.stalled,
-                overall_index=ar.overall_index or None,
-                overall_total=total,
+                detail=(
+                    d._import_row_progress(
+                        dash.temp_dir, record_type=ar.record_type
+                    )
+                    if ar.status == "import"
+                    else ""
+                ),
             )
             parts.append(f"{stage} {d._trip_display(ar)}")
         summary += "  |  " + " · ".join(parts)
@@ -171,11 +176,11 @@ def render(dash: Any) -> None:
         size_b = d._row_compose_bytes(
             dash.temp_dir, row, active_key=active_key
         )
-        stage = row.progress if row.progress != "—" else d._stage_label(
-            row.status,
-            overall_index=row.overall_index or i,
-            overall_total=total,
-        )
+        stage = row.progress if row.progress != "—" else d._stage_label(row.status)
+        if (not stale) and row.status == "import":
+            stage = d._import_row_progress(
+                dash.temp_dir, record_type=row.record_type
+            )
         if stale and row.status in ("compose", "upload", "import", "stall"):
             stage = "ожидание"
         is_active = (not stale) and row.status in (
