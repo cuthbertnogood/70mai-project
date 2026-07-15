@@ -1642,11 +1642,9 @@ def _camera_coverage(
                 have = sum(seg.duration for seg in segs)
                 source = "merge SSD"
             except (ValueError, OSError, RuntimeError):
-                # Fall back to raw duration of first mega-file
-                dur = getattr(clips[0], "duration", None)
-                if isinstance(dur, (int, float)) and dur > 0:
-                    have = float(dur)
-                    source = "merge SSD (длительность)"
+                # Clip exists but does not cover this trip window
+                have = 0.0
+                source = "merge SSD (не покрывает поездку)"
         elif clips:
             dur = getattr(clips[0], "duration", None)
             if isinstance(dur, (int, float)) and dur > 0:
@@ -1655,40 +1653,38 @@ def _camera_coverage(
     except Exception:
         pass
 
-    # 2) In-progress part file duration
-    if have <= 0 and output_name:
-        sibling = _sibling_merge_name(output_name, camera)
-        # Only probe partial for the camera that matches output name,
-        # or any camera if we're estimating the active one.
-        out_cam = "Front" if sibling.upper().endswith("_F.MP4") else (
-            "Back" if sibling.upper().endswith("_B.MP4") else camera
-        )
-        if out_cam == camera or (
-            merge_d and str(merge_d.get("camera") or "").endswith(camera)
-        ):
-            batch = None
-            if merge_d and merge_d.get("batch_cur") is not None:
-                batch = int(merge_d["batch_cur"])
-            partial = _find_merge_partial(video_dir, sibling, batch)
-            if partial is None and output_name:
-                partial = _find_merge_partial(video_dir, output_name, batch)
-            if partial is not None:
-                dur = _ffprobe_duration_sec(partial)
-                if dur and dur > 0:
-                    have = dur
-                    source = f"partial {partial.name}"
+    # Active camera only: in-progress part/partial (ignore stale sibling leftovers)
+    active_cam = ""
+    if merge_d and merge_d.get("camera"):
+        active_cam = str(merge_d["camera"]).rsplit("/", 1)[-1]
+    elif copy_d and copy_d.get("camera"):
+        active_cam = str(copy_d["camera"]).rsplit("/", 1)[-1]
+    is_active = bool(active_cam) and active_cam == camera
 
-    # 3) Rough estimate from batch/copy progress while Front/Back building
-    if have <= 0 and merge_d and str(merge_d.get("camera") or "").endswith(camera):
+    if have <= 0 and is_active and output_name:
+        sibling = _sibling_merge_name(output_name, camera)
+        batch = None
+        if merge_d and merge_d.get("batch_cur") is not None:
+            batch = int(merge_d["batch_cur"])
+        partial = _find_merge_partial(video_dir, sibling, batch)
+        if partial is None:
+            partial = _find_merge_partial(video_dir, output_name, batch)
+        if partial is not None:
+            dur = _ffprobe_duration_sec(partial)
+            if dur and dur > 0:
+                have = dur
+                source = f"partial {partial.name}"
+
+    # Rough estimate from batch/copy while this camera is building
+    if have <= 0 and is_active and merge_d:
         bc = merge_d.get("batch_cur")
         bt = merge_d.get("batch_total")
         if isinstance(bc, int) and isinstance(bt, int) and bt > 0:
-            # Growing concat: batch N/M ≈ N/M of final duration
             have = need_sec * (bc / bt)
             source = f"оценка merge {bc}/{bt}"
         elif copy_d and copy_d.get("cur") is not None and copy_d.get("total"):
             cur, total = int(copy_d["cur"]), int(copy_d["total"])
-            if total > 0 and str(copy_d.get("camera") or "").endswith(camera):
+            if total > 0:
                 have = need_sec * (cur / total)
                 source = f"оценка copy {cur}/{total}"
 
@@ -1709,15 +1705,15 @@ def _format_coverage_line(cov: dict) -> str:
     pct = float(cov.get("pct") or 0)
     need = float(cov.get("need_sec") or 0)
     have = float(cov.get("have_sec") or 0)
-    mark = "✓" if cov.get("ok") else "·"
+    mark = "✓" if cov.get("ok") else "✗"
     need_m = need / 60.0
     have_m = have / 60.0
     src = str(cov.get("source") or "")
     return (
         f"{mark} {cov.get('label')}: {pct:.0f}% "
-        f"({have_m:.0f}/{need_m:.0f}м, нужно ≥{_MIN_COVERAGE * 100:.0f}%) "
-        f"[{src}]"
+        f"({have_m:.0f}/{need_m:.0f}м) [{src}]"
     )
+
 
 
 def format_compose_wait(
