@@ -1189,6 +1189,37 @@ def merge_duration_tolerance(record_type: str = "") -> float:
     return MERGE_DURATION_TOLERANCE
 
 
+def merge_validation_error(
+    path: Path,
+    ffprobe: str,
+    expected_duration_sec: float,
+    *,
+    record_type: str = "",
+) -> str | None:
+    """None if merge looks sane; else a short reason (for logs / dashboard)."""
+    if not path.is_file():
+        return "output missing"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return "output unreadable"
+    if size < MIN_MERGE_BYTES:
+        return f"output too small ({size} B)"
+    duration = probe_duration_safe(path, ffprobe)
+    if duration is None:
+        return "ffprobe duration unreadable"
+    if duration < 0.5:
+        return f"ffprobe duration too short ({duration:.2f}s)"
+    tol = merge_duration_tolerance(record_type)
+    if expected_duration_sec > 0 and duration < expected_duration_sec * tol:
+        need = expected_duration_sec * tol
+        return (
+            f"merge short: {duration:.1f}s < {tol * 100:.0f}% of "
+            f"expected {expected_duration_sec:.1f}s (need ≥{need:.1f}s)"
+        )
+    return None
+
+
 def is_valid_merge_output(
     path: Path,
     ffprobe: str,
@@ -1197,20 +1228,15 @@ def is_valid_merge_output(
     record_type: str = "",
 ) -> bool:
     """True when output exists, is non-trivial size, and ffprobe duration looks sane."""
-    if not path.is_file():
-        return False
-    try:
-        if path.stat().st_size < MIN_MERGE_BYTES:
-            return False
-    except OSError:
-        return False
-    duration = probe_duration_safe(path, ffprobe)
-    if duration is None or duration < 0.5:
-        return False
-    tol = merge_duration_tolerance(record_type)
-    if expected_duration_sec > 0 and duration < expected_duration_sec * tol:
-        return False
-    return True
+    return (
+        merge_validation_error(
+            path,
+            ffprobe,
+            expected_duration_sec,
+            record_type=record_type,
+        )
+        is None
+    )
 
 
 def _ffmpeg_merge_error(result: subprocess.CompletedProcess[str]) -> str:
@@ -1781,13 +1807,14 @@ def merge_clips(
             if err:
                 return _fail(err)
 
-        if not is_valid_merge_output(
+        bad = merge_validation_error(
             output_path,
             ffprobe,
             expected_duration,
             record_type=record_type,
-        ):
-            return _fail("output failed ffprobe validation")
+        )
+        if bad:
+            return _fail(f"ffprobe validation: {bad}")
 
         size_mb = output_path.stat().st_size / 1_000_000
         elapsed = time.monotonic() - merge_start

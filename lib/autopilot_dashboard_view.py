@@ -12,7 +12,6 @@ from typing import Any
 def render(dash: Any) -> None:
     """Paint one dashboard frame to dash._tty."""
     import autopilot_dashboard as d
-    from import_70mai import format_duration
 
     if not dash.enabled or dash._tty is None:
         return
@@ -51,7 +50,12 @@ def render(dash: Any) -> None:
     except OSError:
         term_cols = 100
         term_rows = 40
-    col_widths = d._column_widths(term_cols)
+    two_col = d._use_two_col_trips(term_cols)
+    trip_cols = 2 if two_col else 1
+    gap = " │ "
+    trip_col_w = (
+        max(28, (term_cols - len(gap)) // 2) if two_col else max(40, term_cols)
+    )
 
     st = d.resolve_live_status(dash.temp_dir)
     procs = d.list_pipeline_processes()
@@ -147,19 +151,15 @@ def render(dash: Any) -> None:
         lines.append(hl)
     for hl in d._wrap_line(disk_line, term_cols):
         lines.append(hl)
-    # repair_log.jsonl is audit history (often hours old) — do not clutter the live TUI.
 
     show_rows, collapse_note = d._visible_rows(
-        dash.rows, term_rows=term_rows, total=total
+        dash.rows, term_rows=term_rows, total=total, columns=trip_cols
     )
     if collapse_note:
         lines.append(collapse_note)
 
-    lines.append(d._table_top(col_widths))
-    lines.append(d._table_row(d._COL_HEADERS, col_widths))
-    lines.append(d._table_sep(col_widths))
+    trip_lines: list[str] = []
     for i, row in enumerate(show_rows, start=1):
-        dur = format_duration(row.duration_sec)
         size_b = d._row_compose_bytes(
             dash.temp_dir, row, active_key=active_key
         )
@@ -178,16 +178,19 @@ def render(dash: Any) -> None:
         )
         marker = "►" if is_active else " "
         num = row.overall_index or i
-        cells = (
-            f"{marker}{num}/{total}",
-            d._fit_text(d._trip_display(row), col_widths[1]),
-            d._fit_text(dur, col_widths[2]),
-            d._fit_text(stage, col_widths[3]),
-            d._fit_text(d._fmt_gb(size_b), col_widths[4]),
-            d._youtube_for_column(row.youtube_url, col_widths[5]),
+        trip_lines.append(
+            d._trip_compact_line(
+                marker=marker,
+                num=f"{num}/{total}",
+                trip=d._trip_display(row),
+                dur=d._fmt_dur_short(row.duration_sec),
+                stage=stage,
+                size=d._fmt_gb(size_b),
+                youtube=d._youtube_for_column(row.youtube_url, 11),
+                width=trip_col_w,
+            )
         )
-        lines.append(d._table_row(cells, col_widths))
-    lines.append(d._table_bottom(col_widths))
+    lines.extend(d._two_column_pack(trip_lines, term_cols=term_cols, gap=gap))
     for leg in d._STATUS_LEGEND:
         lines.extend(d._wrap_line(leg, term_cols))
     for row in dash.rows:
@@ -200,6 +203,7 @@ def render(dash: Any) -> None:
                     term_cols,
                 )
             )
+    lines.extend(d.format_failures_block(dash.temp_dir, term_cols=term_cols))
     block = "\n".join(lines)
     out = dash._tty
     if dash._alt_screen:

@@ -534,8 +534,60 @@ def _column_widths(term_cols: int) -> tuple[int, ...]:
     return tuple(widths)
 
 
-def _use_compact_table(term_cols: int) -> bool:
-    return term_cols < 90
+def _use_two_col_trips(term_cols: int) -> bool:
+    """Two side-by-side trip columns when the terminal is wide enough."""
+    return term_cols >= 88
+
+
+def _fmt_dur_short(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, _secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m"
+    return f"{_secs}s"
+
+
+def _trip_compact_line(
+    *,
+    marker: str,
+    num: str,
+    trip: str,
+    dur: str,
+    stage: str,
+    size: str,
+    youtube: str,
+    width: int,
+) -> str:
+    """One dense trip line for the two-column list (no box table)."""
+    stage_s = stage.replace("↑ YouTube ", "↑").replace("сборка F+B ", "F+B ")
+    bits = [f"{marker}{num}", trip, dur, stage_s, size]
+    if youtube and youtube not in ("—", "-"):
+        bits.append(youtube)
+    return _fit_text(" ".join(bits), width)
+
+
+def _two_column_pack(items: list[str], *, term_cols: int, gap: str = " │ ") -> list[str]:
+    """Pack already-formatted lines into two columns (left gets the ceiling half)."""
+    if not items:
+        return []
+    if not _use_two_col_trips(term_cols):
+        return [_fit_text(x, term_cols) for x in items]
+    gap_w = len(gap)
+    col_w = max(28, (term_cols - gap_w) // 2)
+    mid = (len(items) + 1) // 2
+    left, right = items[:mid], items[mid:]
+    out: list[str] = []
+    for i in range(mid):
+        l = _fit_text(left[i], col_w) if i < len(left) else ""
+        r = _fit_text(right[i], col_w) if i < len(right) else ""
+        if r:
+            out.append(f"{l:<{col_w}}{gap}{r}")
+        else:
+            out.append(l)
+    return out
 
 
 def _wrap_line(text: str, width: int) -> list[str]:
@@ -654,6 +706,103 @@ def _short_reason(reason: str) -> str:
     if text.startswith("ffmpeg"):
         return text[:80]
     return text[:80]
+
+
+_FAIL_LOG_RE = re.compile(
+    r"(?:ERROR:|✗ merge failed|Import failed|Import had merge failure|"
+    r"\[repair\] retry|ffprobe validation:|forcing import rebuild)",
+    re.I,
+)
+
+
+def _strip_log_ts(line: str) -> str:
+    """Drop leading `YYYY-MM-DD HH:MM:SS ` if present."""
+    if len(line) > 20 and line[4] == "-" and line[10] == " " and line[13] == ":":
+        return line[20:].lstrip()
+    return line
+
+
+def collect_failure_lines(temp_dir: Path, *, limit: int = 6) -> list[str]:
+    """Recent repair + import/merge errors for the dashboard «Сбои» footer."""
+    repair_ranked: list[tuple[int, str]] = []
+    log_items: list[str] = []
+    _code_rank = {
+        "merge_short": 0,
+        "merge_fb_mismatch": 1,
+        "merge_stale": 2,
+        "compose_gap": 3,
+        "compose_part_stale": 4,
+        "state_drift": 5,
+        "rebuild_merge": 6,
+    }
+
+    try:
+        from pipeline_repair import read_recent_repairs
+
+        for entry in read_recent_repairs(temp_dir, limit=16):
+            action = str(entry.get("action") or "")
+            code = str(entry.get("code") or "")
+            detail = str(entry.get("detail") or "").strip()
+            rec = str(entry.get("record_type") or "")
+            cam = str(entry.get("camera") or "")
+            where = "/".join(p for p in (rec, cam) if p)
+            label = code or action or "repair"
+            head = f"repair {label}"
+            if where:
+                head += f" {where}"
+            if detail:
+                head += f": {detail}"
+            text = head[:120]
+            rank = _code_rank.get(code, 50)
+            if action == "diagnosed":
+                rank -= 10
+            repair_ranked.append((rank, text))
+    except Exception:
+        pass
+
+    log_text = _tail_text(temp_dir / "publish_all.log", max_bytes=160_000)
+    for raw in log_text.splitlines():
+        if not _FAIL_LOG_RE.search(raw):
+            continue
+        # Skip noisy probe/progress lines that mention "fail" in ETA.
+        if "Merge [" in raw and "fail " in raw and "ERROR" not in raw:
+            continue
+        body = _strip_log_ts(raw).strip()
+        if not body or body in log_items:
+            continue
+        log_items.append(body[:120])
+
+    repair_ranked.sort(key=lambda x: x[0])
+    repair_items: list[str] = []
+    for _, text in repair_ranked:
+        if text not in repair_items:
+            repair_items.append(text)
+
+    half = max(2, limit // 2)
+    repairs = repair_items[:half]
+    logs = log_items[-(limit - len(repairs)) :]
+    out = repairs + logs
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for text in out:
+        if text in seen:
+            continue
+        seen.add(text)
+        uniq.append(text)
+    return uniq[-limit:]
+
+
+def format_failures_block(temp_dir: Path, *, term_cols: int, limit: int = 5) -> list[str]:
+    """Footer lines: «Сбои» header + recent failure lines (or «нет»)."""
+    fails = collect_failure_lines(temp_dir, limit=limit)
+    out: list[str] = []
+    out.extend(_wrap_line("── Сбои ──", term_cols))
+    if not fails:
+        out.extend(_wrap_line("нет свежих сбоев", term_cols))
+        return out
+    for line in fails:
+        out.extend(_wrap_line(f"⚠ {line}", term_cols))
+    return out
 
 
 def _human_etime_seconds(sec: int) -> str:
@@ -1903,9 +2052,17 @@ def _format_import_conveyors(st: dict) -> list[str]:
     return _format_pipeline_block(st, [])
 
 
-def _visible_rows(rows: list, *, term_rows: int, total: int) -> tuple[list, str | None]:
+def _visible_rows(
+    rows: list,
+    *,
+    term_rows: int,
+    total: int,
+    columns: int = 1,
+) -> tuple[list, str | None]:
     """Collapse a long leading run of done trips so the table fits."""
-    if term_rows >= 36 or len(rows) <= 14:
+    # Two columns ≈ half the vertical cost → show roughly 2× before collapsing.
+    soft_cap = 14 * max(1, min(2, columns))
+    if term_rows >= 36 or len(rows) <= soft_cap:
         return list(rows), None
 
     leading = 0
