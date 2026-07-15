@@ -53,7 +53,7 @@ cd /Users/cuthbert/work_local/70mai_project
 ./scripts/publish_all_70mai.sh --dry-run
 ./scripts/publish_all_70mai.sh --types Parking --skip-import
 
-# Прогресс (отдельное окно): copy/merge/compose/upload; внизу «Сбои»;
+# Прогресс (отдельное окно): copy/merge/compose/upload; внизу «Сбои» (дата/время);
 # Parking/Event: stage батчами → независимые parts → один final concat.
 # Правки экрана — lib/autopilot_dashboard_view.py (автоперезагрузка).
 ./scripts/autopilot_dashboard.sh

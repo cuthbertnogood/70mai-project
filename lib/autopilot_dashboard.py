@@ -732,11 +732,29 @@ _FAIL_LOG_RE = re.compile(
 )
 
 
-def _strip_log_ts(line: str) -> str:
-    """Drop leading `YYYY-MM-DD HH:MM:SS ` if present."""
+def _format_fail_ts(ts: str) -> str:
+    """Normalize repair/log timestamps to `YYYY-MM-DD HH:MM:SS` (local)."""
+    raw = (ts or "").strip()
+    if not raw:
+        return ""
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        if len(raw) >= 19 and raw[4] == "-" and raw[10] == " " and raw[13] == ":":
+            return raw[:19]
+        return ""
+
+
+def _split_log_ts(line: str) -> tuple[str, str]:
+    """Return (`YYYY-MM-DD HH:MM:SS` or '', body)."""
     if len(line) > 20 and line[4] == "-" and line[10] == " " and line[13] == ":":
-        return line[20:].lstrip()
-    return line
+        return line[:19], line[20:].lstrip()
+    return "", line
 
 
 def collect_failure_lines(temp_dir: Path, *, limit: int = 6) -> list[str]:
@@ -769,7 +787,9 @@ def collect_failure_lines(temp_dir: Path, *, limit: int = 6) -> list[str]:
                 head += f" {where}"
             if detail:
                 head += f": {detail}"
-            text = head[:120]
+            ts = _format_fail_ts(str(entry.get("ts") or ""))
+            text = f"{ts} {head}" if ts else head
+            text = text[:140]
             rank = _code_rank.get(code, 50)
             if action == "diagnosed":
                 rank -= 10
@@ -784,10 +804,15 @@ def collect_failure_lines(temp_dir: Path, *, limit: int = 6) -> list[str]:
         # Skip noisy probe/progress lines that mention "fail" in ETA.
         if "Merge [" in raw and "fail " in raw and "ERROR" not in raw:
             continue
-        body = _strip_log_ts(raw).strip()
-        if not body or body in log_items:
+        ts, body = _split_log_ts(raw.strip())
+        body = body.strip()
+        if not body:
             continue
-        log_items.append(body[:120])
+        text = f"{ts} {body}" if ts else body
+        text = text[:140]
+        if text in log_items:
+            continue
+        log_items.append(text)
 
     repair_ranked.sort(key=lambda x: x[0])
     repair_items: list[str] = []
@@ -1517,6 +1542,184 @@ def _sibling_merge_name(output: str, camera: str) -> str:
     return out
 
 
+_COVERAGE_CACHE: dict[str, tuple[float, dict]] = {}
+_COVERAGE_TTL_SEC = 8.0
+_MIN_COVERAGE = 0.98
+
+
+def _ffprobe_duration_sec(path: Path) -> float | None:
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nk=1:nw=1",
+                str(path),
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        ).strip()
+        return float(out) if out else None
+    except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+
+
+def _trip_need_from_plan(
+    temp_dir: Path | None, record_type: str
+) -> tuple[float | None, object | None]:
+    """Return (duration_sec, trip_start) for the single-video type trip."""
+    if temp_dir is None:
+        return None, None
+    try:
+        from plan_estimate import load_autopilot_plan
+
+        chunks = load_autopilot_plan(temp_dir) or []
+    except Exception:
+        return None, None
+    for chunk in chunks:
+        if getattr(chunk, "record_type", "") != record_type:
+            continue
+        trips = getattr(chunk, "trips", None) or []
+        if not trips:
+            continue
+        trip = trips[0]
+        dur = float(getattr(trip, "duration_sec", 0) or 0)
+        start = getattr(trip, "start", None)
+        if dur > 0:
+            return dur, start
+    return None, None
+
+
+def _camera_coverage(
+    *,
+    video_dir: Path | None,
+    temp_dir: Path | None,
+    record_type: str,
+    camera: str,
+    need_sec: float,
+    trip_start,
+    output_name: str = "",
+    merge_d: dict | None = None,
+    copy_d: dict | None = None,
+) -> dict:
+    """Live coverage for one camera vs trip need (≥98%)."""
+    label = f"{record_type}/{camera}"
+    result = {
+        "label": label,
+        "pct": 0.0,
+        "have_sec": 0.0,
+        "need_sec": need_sec,
+        "source": "нет файла",
+        "ok": False,
+    }
+    if need_sec <= 0 or video_dir is None:
+        return result
+
+    cache_key = f"{video_dir}:{label}:{output_name}"
+    now = time.monotonic()
+    cached = _COVERAGE_CACHE.get(cache_key)
+    if cached and now - cached[0] < _COVERAGE_TTL_SEC:
+        return dict(cached[1])
+
+    have = 0.0
+    source = "нет файла"
+
+    # 1) Finished merge on SSD — plan_segments coverage (accurate)
+    try:
+        from compose_70mai import plan_segments, scan_merged_clips
+
+        clips = scan_merged_clips(
+            video_dir, camera, record_type=record_type, probe=True
+        )
+        if clips and trip_start is not None:
+            try:
+                segs = plan_segments(clips, trip_start, need_sec, 0.0)
+                have = sum(seg.duration for seg in segs)
+                source = "merge SSD"
+            except (ValueError, OSError, RuntimeError):
+                # Fall back to raw duration of first mega-file
+                dur = getattr(clips[0], "duration", None)
+                if isinstance(dur, (int, float)) and dur > 0:
+                    have = float(dur)
+                    source = "merge SSD (длительность)"
+        elif clips:
+            dur = getattr(clips[0], "duration", None)
+            if isinstance(dur, (int, float)) and dur > 0:
+                have = float(dur)
+                source = "merge SSD (длительность)"
+    except Exception:
+        pass
+
+    # 2) In-progress part file duration
+    if have <= 0 and output_name:
+        sibling = _sibling_merge_name(output_name, camera)
+        # Only probe partial for the camera that matches output name,
+        # or any camera if we're estimating the active one.
+        out_cam = "Front" if sibling.upper().endswith("_F.MP4") else (
+            "Back" if sibling.upper().endswith("_B.MP4") else camera
+        )
+        if out_cam == camera or (
+            merge_d and str(merge_d.get("camera") or "").endswith(camera)
+        ):
+            batch = None
+            if merge_d and merge_d.get("batch_cur") is not None:
+                batch = int(merge_d["batch_cur"])
+            partial = _find_merge_partial(video_dir, sibling, batch)
+            if partial is None and output_name:
+                partial = _find_merge_partial(video_dir, output_name, batch)
+            if partial is not None:
+                dur = _ffprobe_duration_sec(partial)
+                if dur and dur > 0:
+                    have = dur
+                    source = f"partial {partial.name}"
+
+    # 3) Rough estimate from batch/copy progress while Front/Back building
+    if have <= 0 and merge_d and str(merge_d.get("camera") or "").endswith(camera):
+        bc = merge_d.get("batch_cur")
+        bt = merge_d.get("batch_total")
+        if isinstance(bc, int) and isinstance(bt, int) and bt > 0:
+            # Growing concat: batch N/M ≈ N/M of final duration
+            have = need_sec * (bc / bt)
+            source = f"оценка merge {bc}/{bt}"
+        elif copy_d and copy_d.get("cur") is not None and copy_d.get("total"):
+            cur, total = int(copy_d["cur"]), int(copy_d["total"])
+            if total > 0 and str(copy_d.get("camera") or "").endswith(camera):
+                have = need_sec * (cur / total)
+                source = f"оценка copy {cur}/{total}"
+
+    pct = min(100.0, 100.0 * have / need_sec) if need_sec > 0 else 0.0
+    result = {
+        "label": label,
+        "pct": pct,
+        "have_sec": have,
+        "need_sec": need_sec,
+        "source": source,
+        "ok": have >= need_sec * _MIN_COVERAGE,
+    }
+    _COVERAGE_CACHE[cache_key] = (now, result)
+    return result
+
+
+def _format_coverage_line(cov: dict) -> str:
+    pct = float(cov.get("pct") or 0)
+    need = float(cov.get("need_sec") or 0)
+    have = float(cov.get("have_sec") or 0)
+    mark = "✓" if cov.get("ok") else "·"
+    need_m = need / 60.0
+    have_m = have / 60.0
+    src = str(cov.get("source") or "")
+    return (
+        f"{mark} {cov.get('label')}: {pct:.0f}% "
+        f"({have_m:.0f}/{need_m:.0f}м, нужно ≥{_MIN_COVERAGE * 100:.0f}%) "
+        f"[{src}]"
+    )
+
+
 def format_compose_wait(
     *,
     temp_dir: Path | None,
@@ -1543,14 +1746,33 @@ def format_compose_wait(
     if not record:
         record = "Parking"
 
-    need = [f"{record}/Front", f"{record}/Back"]
-    ready: list[str] = []
+    need_sec, trip_start = _trip_need_from_plan(temp_dir, record)
+    if need_sec is None and merge_d and merge_d.get("session_min"):
+        try:
+            need_sec = float(merge_d["session_min"]) * 60.0
+        except (TypeError, ValueError):
+            need_sec = None
+    if need_sec is None:
+        need_sec = 0.0
+
     out_name = str((merge_d or {}).get("output") or "")
-    for label in need:
-        cam = label.rsplit("/", 1)[-1]
-        candidate = _sibling_merge_name(out_name, cam) if out_name else ""
-        if candidate and _merge_output_exists(video_dir, candidate):
-            ready.append(label)
+    coverages = [
+        _camera_coverage(
+            video_dir=video_dir,
+            temp_dir=temp_dir,
+            record_type=record,
+            camera=cam,
+            need_sec=float(need_sec),
+            trip_start=trip_start,
+            output_name=out_name,
+            merge_d=merge_d,
+            copy_d=copy_d,
+        )
+        for cam in ("Front", "Back")
+    ]
+
+    need = [f"{record}/Front", f"{record}/Back"]
+    ready = [c["label"] for c in coverages if c.get("ok")]
 
     current = ""
     if copy_d and copy_d.get("camera"):
@@ -1562,7 +1784,6 @@ def format_compose_wait(
     if current and "/" not in current:
         current = f"{record}/{current}"
 
-    # Current camera is still being built → not ready
     if current in ready:
         ready = [r for r in ready if r != current]
 
@@ -1593,7 +1814,6 @@ def format_compose_wait(
             )
 
     remain_cams = [c for c in need if c not in ready]
-    # Prefer live copy/merge camera over stale log order
     latest_cam = current or (cameras[-1] if cameras else "")
     back_not_started = (
         f"{record}/Back" in remain_cams
@@ -1602,9 +1822,16 @@ def format_compose_wait(
     )
 
     extra = f"{record} Front+Back"
+    both_ok = all(c.get("ok") for c in coverages)
+    if both_ok:
+        extra = f"{record} Front+Back ✓ готово к compose"
+
     lines = [
-        f"условие: на SSD есть merge {record}/Front и {record}/Back "
-        f"(покрытие ≥98% поездки)",
+        f"условие: merge {record}/Front и {record}/Back на SSD "
+        f"(покрытие ≥{_MIN_COVERAGE * 100:.0f}% поездки"
+        + (f", нужно {_human_etime_seconds(int(need_sec))}" if need_sec else "")
+        + ")",
+        "покрытие: " + " · ".join(_format_coverage_line(c) for c in coverages),
     ]
     if ready:
         lines.append(f"уже готово: {', '.join(ready)}")
