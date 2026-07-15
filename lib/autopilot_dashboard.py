@@ -829,11 +829,14 @@ def _status_age_line(st: dict | None) -> str | None:
 
 
 _COPY_OK_RE = re.compile(
-    r"\[copy\]\s+\d+/\d+:\s+ok in (\d+)s",
+    r"\[copy\]\s+(?:(Front|Back)\s+)?\d+/\d+:\s+ok in (\d+)s",
 )
 _COPY_SIZE_RE = re.compile(r"\((\d+)\s*MB\)")
 _COPY_LOG_RE = re.compile(
-    r"\[copy\]\s+(\d+/\d+):\s+(\S+)(?:\s+\(([^)]+)\))?",
+    r"\[copy\]\s+(?:(Front|Back)\s+)?(\d+/\d+):\s+(\S+)(?:\s+\(([^)]+)\))?",
+)
+_MERGE_CAMERA_LINE_RE = re.compile(
+    r"Merging\s+((?:Normal|Event|Parking)/(?:Front|Back))",
 )
 _MERGE_LOG_RE = re.compile(
     r"\[merge\]\s+(.+)$",
@@ -1086,11 +1089,25 @@ def _parse_copy_fraction(text: str) -> tuple[int, int] | None:
     return int(m.group(1)), int(m.group(2))
 
 
+def _camera_from_clip_name(name: str) -> str:
+    """Infer Front/Back from 70mai clip / merge names (*F.MP4, *_F.mp4)."""
+    upper = name.upper()
+    if upper.endswith("F.MP4") or upper.endswith("_F.MP4") or "/_F" in upper:
+        return "Front"
+    if upper.endswith("B.MP4") or upper.endswith("_B.MP4") or "/_B" in upper:
+        return "Back"
+    if upper.endswith("F") or "_F/" in upper or upper.endswith("_F"):
+        return "Front"
+    if upper.endswith("B") or "_B/" in upper or upper.endswith("_B"):
+        return "Back"
+    return ""
+
+
 def parse_copy_log_detail(temp_dir: Path | None) -> dict | None:
     """Rich copy snapshot: file, N/M, size, speed, camera, ETA."""
     if temp_dir is None:
         return None
-    text = _tail_text(temp_dir / "publish_all.log", max_bytes=64_000)
+    text = _tail_text(temp_dir / "publish_all.log", max_bytes=96_000)
     if not text:
         return None
 
@@ -1114,6 +1131,9 @@ def parse_copy_log_detail(temp_dir: Path | None) -> dict | None:
             except ValueError:
                 ts = None
 
+        m_merge_cam = _MERGE_CAMERA_LINE_RE.search(line)
+        if m_merge_cam:
+            camera = m_merge_cam.group(1).strip()
         m_cam = _MERGE_CAMERA_RE.search(line)
         if m_cam:
             camera = m_cam.group(1).strip()
@@ -1123,7 +1143,19 @@ def parse_copy_log_detail(temp_dir: Path | None) -> dict | None:
 
         m_ok = _COPY_OK_RE.search(line)
         if m_ok:
-            sec = float(m_ok.group(1))
+            if m_ok.group(1):
+                cam_only = m_ok.group(1)
+                if cam_only and "/" not in camera:
+                    camera = cam_only
+                elif cam_only:
+                    # Keep Type/Cam if we have it; else Front/Back
+                    if not camera.endswith(cam_only):
+                        camera = (
+                            f"{camera.rsplit('/', 1)[0]}/{cam_only}"
+                            if "/" in camera
+                            else cam_only
+                        )
+            sec = float(m_ok.group(2))
             if sec > 0:
                 ok_secs.append(sec)
                 speeds.append(last_start_mb / sec)
@@ -1134,9 +1166,24 @@ def parse_copy_log_detail(temp_dir: Path | None) -> dict | None:
         m = _COPY_LOG_RE.search(line)
         if not m or "ok in" in line:
             continue
-        frac = m.group(1)
-        file_name = m.group(2)
-        size_raw = m.group(3) or ""
+        cam_tok = m.group(1) or ""
+        frac = m.group(2)
+        file_name = m.group(3)
+        size_raw = m.group(4) or ""
+        if cam_tok:
+            if "/" in camera and camera.rsplit("/", 1)[-1] in ("Front", "Back"):
+                camera = f"{camera.rsplit('/', 1)[0]}/{cam_tok}"
+            elif "/" in camera:
+                camera = f"{camera}/{cam_tok}" if not camera.endswith(cam_tok) else camera
+            else:
+                camera = cam_tok
+        else:
+            inferred = _camera_from_clip_name(file_name)
+            if inferred:
+                if "/" in camera:
+                    camera = f"{camera.rsplit('/', 1)[0]}/{inferred}"
+                else:
+                    camera = inferred
         try:
             cur_s, total_s = frac.split("/", 1)
             cur, total = int(cur_s), int(total_s)
@@ -1157,6 +1204,9 @@ def parse_copy_log_detail(temp_dir: Path | None) -> dict | None:
 
     if not file_name and cur is None:
         return None
+
+    if not camera and file_name:
+        camera = _camera_from_clip_name(file_name)
 
     avg_mbps = sum(speeds[-5:]) / len(speeds[-5:]) if speeds else None
     avg_sec = sum(ok_secs[-5:]) / len(ok_secs[-5:]) if ok_secs else None
@@ -1193,16 +1243,28 @@ def format_copy_detail(detail: dict | None) -> tuple[str, str | None]:
     if not detail:
         return "", None
     file_name = str(detail.get("file") or "").strip()
-    short = file_name[:40] if file_name else ""
+    camera = str(detail.get("camera") or "").strip()
+    # Prefer short cam label on the main lane: Front / Back / Parking/Front
+    cam_short = camera
+    if camera.endswith("/Front"):
+        cam_short = "Front"
+    elif camera.endswith("/Back"):
+        cam_short = "Back"
+    short = file_name[:36] if file_name else ""
+    if cam_short and short:
+        short = f"{cam_short} {short}"
+    elif cam_short:
+        short = cam_short
     cur = detail.get("cur")
     total = detail.get("total")
     size_mb = detail.get("size_mb")
-    camera = str(detail.get("camera") or "").strip()
     avg_mbps = detail.get("avg_mbps")
     elapsed = str(detail.get("elapsed") or "").strip()
     eta = str(detail.get("eta") or "").strip()
 
     parts: list[str] = []
+    if camera:
+        parts.append(camera)
     if cur is not None and total is not None:
         parts.append(f"{cur}/{total}")
         if total > 0:
@@ -1210,8 +1272,6 @@ def format_copy_detail(detail: dict | None) -> tuple[str, str | None]:
     if isinstance(size_mb, (int, float)) and size_mb > 0:
         parts.append(f"{size_mb:.0f} MB")
     parts.append("SD→SSD")
-    if camera:
-        parts.append(camera)
     if isinstance(avg_mbps, (int, float)) and avg_mbps > 0:
         parts.append(f"{avg_mbps:.1f} MB/s")
     if elapsed:
@@ -1219,6 +1279,159 @@ def format_copy_detail(detail: dict | None) -> tuple[str, str | None]:
     if eta:
         parts.append(f"ETA {eta}")
     return short, " · ".join(parts) if parts else None
+
+
+def _cameras_seen_in_log(temp_dir: Path | None) -> list[str]:
+    if temp_dir is None:
+        return []
+    text = _tail_text(temp_dir / "publish_all.log", max_bytes=120_000)
+    if not text:
+        return []
+    seen: list[str] = []
+    for line in text.splitlines():
+        cam = ""
+        m = _MERGE_CAMERA_LINE_RE.search(line)
+        if m:
+            cam = m.group(1).strip()
+        else:
+            m2 = _MERGE_CAMERA_RE.search(line)
+            if m2:
+                cam = m2.group(1).strip()
+        if cam and cam not in seen:
+            seen.append(cam)
+    return seen
+
+
+def _merge_output_exists(video_dir: Path | None, name: str) -> bool:
+    if not video_dir or not name:
+        return False
+    base = Path(name).name
+    for rt in ("Parking", "Event", "Normal"):
+        for cam in ("Front", "Back"):
+            path = video_dir / rt / cam / base
+            try:
+                if path.is_file() and path.stat().st_size > 1_000_000:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _sibling_merge_name(output: str, camera: str) -> str:
+    """PA_…_F.mp4 ↔ PA_…_B.mp4 for the requested camera."""
+    out = output
+    upper = out.upper()
+    if upper.endswith("_F.MP4"):
+        return out[:-6] + ("_F.mp4" if camera == "Front" else "_B.mp4")
+    if upper.endswith("_B.MP4"):
+        return out[:-6] + ("_B.mp4" if camera == "Back" else "_F.mp4")
+    return out
+
+
+def format_compose_wait(
+    *,
+    temp_dir: Path | None,
+    video_dir: Path | None = None,
+    import_alive: bool = False,
+    compose_on: bool = False,
+    compose_done: bool = False,
+    upload_on: bool = False,
+    st: dict | None = None,
+) -> tuple[str, list[str]]:
+    """Explain why compose waits and how much import remains."""
+    if compose_on or compose_done or upload_on:
+        return "", []
+
+    copy_d = parse_copy_log_detail(temp_dir) if import_alive or temp_dir else None
+    merge_d = parse_merge_log_detail(temp_dir) if temp_dir else None
+    cameras = _cameras_seen_in_log(temp_dir)
+
+    record = str((st or {}).get("record_type") or "").strip()
+    if not record and cameras:
+        record = cameras[-1].split("/", 1)[0]
+    if not record and copy_d and "/" in str(copy_d.get("camera") or ""):
+        record = str(copy_d["camera"]).split("/", 1)[0]
+    if not record:
+        record = "Parking"
+
+    need = [f"{record}/Front", f"{record}/Back"]
+    ready: list[str] = []
+    out_name = str((merge_d or {}).get("output") or "")
+    for label in need:
+        cam = label.rsplit("/", 1)[-1]
+        candidate = _sibling_merge_name(out_name, cam) if out_name else ""
+        if candidate and _merge_output_exists(video_dir, candidate):
+            ready.append(label)
+
+    current = ""
+    if copy_d and copy_d.get("camera"):
+        current = str(copy_d["camera"])
+    elif merge_d and merge_d.get("camera"):
+        current = str(merge_d["camera"])
+    elif cameras:
+        current = cameras[-1]
+    if current and "/" not in current:
+        current = f"{record}/{current}"
+
+    # Current camera is still being built → not ready
+    if current in ready:
+        ready = [r for r in ready if r != current]
+
+    now_bits: list[str] = []
+    eta_left: list[str] = []
+    if copy_d and copy_d.get("cur") is not None and copy_d.get("total"):
+        cur, total = int(copy_d["cur"]), int(copy_d["total"])
+        now_bits.append(f"copy {cur}/{total}")
+        if copy_d.get("eta"):
+            eta_left.append(f"copy {copy_d['eta']}")
+        elif copy_d.get("avg_sec"):
+            left = max(0, total - cur + (1 if copy_d.get("in_progress") else 0))
+            if left:
+                eta_left.append(
+                    f"copy {_human_etime_seconds(int(float(copy_d['avg_sec']) * left))}"
+                )
+    if merge_d and merge_d.get("batch_cur") is not None and merge_d.get("batch_total"):
+        bc, bt = int(merge_d["batch_cur"]), int(merge_d["batch_total"])
+        now_bits.append(f"merge batch {bc}/{bt}")
+        left_b = max(0, bt - bc)
+        batch_sec = 90.0
+        es = _parse_duration_token(str(merge_d.get("elapsed") or ""))
+        if es and es >= 10:
+            batch_sec = float(es)
+        if left_b:
+            eta_left.append(
+                f"merge {_human_etime_seconds(int(batch_sec * left_b))}"
+            )
+
+    remain_cams = [c for c in need if c not in ready]
+    back_not_started = f"{record}/Back" in remain_cams and not any(
+        c.endswith("/Back") for c in cameras
+    )
+
+    extra = f"{record} Front+Back"
+    lines = [
+        f"условие: на SSD есть merge {record}/Front и {record}/Back "
+        f"(покрытие ≥98% поездки)",
+    ]
+    if ready:
+        lines.append(f"уже готово: {', '.join(ready)}")
+    if current or now_bits:
+        lines.append(
+            "сейчас: "
+            + " · ".join(x for x in [current or None, " · ".join(now_bits) or None] if x)
+        )
+    left = []
+    if remain_cams:
+        left.append(" → ".join(remain_cams))
+    if eta_left:
+        left.append("текущая камера: " + ", ".join(eta_left))
+    if back_not_started:
+        left.append("потом весь Back (~столько же)")
+    if left:
+        lines.append("осталось: " + " · ".join(left))
+    elif not import_alive:
+        lines.append("осталось: очередь до import/compose этой поездки")
+    return extra, lines
 
 
 def diagnose_pipeline_bottleneck(
@@ -1326,15 +1539,16 @@ def _import_progress_from_log(
     for line in chunk.splitlines():
         if "[copy]" in line:
             m = _COPY_LOG_RE.search(line)
-            if m:
-                bits = [m.group(1), m.group(2)[:40]]
-                if m.group(3):
-                    bits.append(m.group(3))
-                # Prefer the "N/N: name" start line over "ok in Ns"
-                if "ok in" not in line:
-                    copy_txt = " ".join(bits)
+            if m and "ok in" not in line:
+                bits: list[str] = []
+                if m.group(1):
+                    bits.append(m.group(1))
+                bits.append(m.group(2))
+                bits.append(m.group(3)[:36])
+                if m.group(4):
+                    bits.append(m.group(4))
+                copy_txt = " ".join(bits)
             elif "ok in" not in line:
-                # keep raw short fragment
                 idx = line.find("[copy]")
                 copy_txt = line[idx + 7 :].strip()[:56]
         if "[merge]" in line:
@@ -1347,9 +1561,19 @@ def _import_progress_from_log(
     copy_detail = parse_copy_log_detail(temp_dir)
     copy_short, copy_extra = format_copy_detail(copy_detail)
     if copy_short:
-        # Keep N/M on the main lane when available.
+        # Main lane: Front 17/248 name 126 MB
         if copy_detail and copy_detail.get("cur") is not None and copy_detail.get("total"):
-            copy_txt = f"{copy_detail['cur']}/{copy_detail['total']} {copy_short}"
+            cam = ""
+            raw_cam = str(copy_detail.get("camera") or "")
+            if raw_cam.endswith("/Front") or raw_cam == "Front":
+                cam = "Front "
+            elif raw_cam.endswith("/Back") or raw_cam == "Back":
+                cam = "Back "
+            elif raw_cam:
+                cam = f"{raw_cam} "
+            # copy_short already has camera prefix — avoid doubling
+            name = str(copy_detail.get("file") or copy_short)
+            copy_txt = f"{cam}{copy_detail['cur']}/{copy_detail['total']} {name[:32]}"
             if copy_detail.get("size_mb"):
                 copy_txt += f" {int(copy_detail['size_mb'])} MB"
         else:
@@ -1555,6 +1779,7 @@ def _format_pipeline_block(
                 merge_extra = Path(str(md["output"])).name[:36]
 
     compose_extra = ""
+    compose_wait_lines: list[str] = []
     if compose_on:
         bits = []
         if detail:
@@ -1564,6 +1789,16 @@ def _format_pipeline_block(
         if active_row is not None:
             bits.append(_trip_display(active_row))
         compose_extra = " ".join(bits)
+    elif not compose_done and not upload_on:
+        compose_extra, compose_wait_lines = format_compose_wait(
+            temp_dir=temp_dir,
+            video_dir=video_dir,
+            import_alive=import_alive or import_on,
+            compose_on=compose_on,
+            compose_done=compose_done,
+            upload_on=upload_on,
+            st=st,
+        )
 
     upload_extra = ""
     if upload_on:
@@ -1587,6 +1822,8 @@ def _format_pipeline_block(
             status = f"► активно {extra}".strip() if extra else "► активно"
         elif done:
             status = "✓ готово"
+        elif extra:
+            status = f"· ждёт — {extra}"
         else:
             status = "· ждёт"
         return f"{name:<8} {status}"
@@ -1600,16 +1837,18 @@ def _format_pipeline_block(
     lines.append(_line("merge", on=merge_on, done=merge_done, extra=merge_extra))
     if merge_on and merge_detail_line:
         lines.append(f"         {merge_detail_line}")
-    lines.extend(
-        [
-            _line("compose", on=compose_on, done=compose_done, extra=compose_extra),
-            _line(
-                "upload",
-                on=upload_on,
-                done=video_done,
-                extra=upload_extra,
-            ),
-        ]
+    lines.append(
+        _line("compose", on=compose_on, done=compose_done, extra=compose_extra)
+    )
+    for wl in compose_wait_lines:
+        lines.append(f"         {wl}")
+    lines.append(
+        _line(
+            "upload",
+            on=upload_on,
+            done=video_done,
+            extra=upload_extra,
+        )
     )
     if log_fallback and (copy_on or merge_on) and stale:
         lines.append("источник: publish_all.log (status.json устарел)")

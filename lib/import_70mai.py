@@ -1405,20 +1405,24 @@ def stage_clips_locally(
             except Exception:
                 pass
         if dest.is_file() and dest.stat().st_size == src_size:
-            log(f"  [copy] {idx}/{total}: {clip.path.name} (already on SSD)")
+            log(
+                f"  [copy] {clip.camera} {idx}/{total}: "
+                f"{clip.path.name} (already on SSD)"
+            )
             staged.append(dest)
             continue
         partial = dest.with_suffix(dest.suffix + ".partial")
         partial.unlink(missing_ok=True)
         log(
-            f"  [copy] {idx}/{total}: {clip.path.name} "
+            f"  [copy] {clip.camera} {idx}/{total}: {clip.path.name} "
             f"({src_size / 1_000_000:.0f} MB) SD→SSD"
         )
         t0 = time.monotonic()
         shutil.copyfile(clip.path, partial)
         partial.replace(dest)
         log(
-            f"  [copy] {idx}/{total}: ok in {format_duration(time.monotonic() - t0)}"
+            f"  [copy] {clip.camera} {idx}/{total}: ok in "
+            f"{format_duration(time.monotonic() - t0)}"
         )
         staged.append(dest)
     return staged
