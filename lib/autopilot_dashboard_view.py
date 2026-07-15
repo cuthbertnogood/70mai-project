@@ -206,7 +206,11 @@ def render(dash: Any) -> None:
         import_alive=import_alive,
         video_dir=dash.video_dir,
     ))
-    lines.extend(d.format_failures_block(dash.temp_dir, term_cols=term_cols))
+    lines.extend(d.format_failures_block(
+        dash.temp_dir,
+        term_cols=term_cols,
+        source=getattr(dash, "source", None),
+    ))
     block = "\n".join(lines)
     out = dash._tty
     if dash._alt_screen:

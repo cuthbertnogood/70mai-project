@@ -13,9 +13,11 @@ from import_70mai import (
     Clip,
     append_bad_clip_record,
     bad_clips_log_path,
+    count_bad_files_on_sd,
     drop_unreadable_clips,
     mp4_has_moov_atom,
     quarantine_corrupt_clip,
+    sd_bad_clips_log_path,
 )
 
 
@@ -112,9 +114,13 @@ class BadClipsTests(unittest.TestCase):
 
     def test_append_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            hist = Path(tmp)
+            root = Path(tmp)
+            front = root / "Parking" / "Front"
+            front.mkdir(parents=True)
+            clip = front / "x.MP4"
+            hist = root / "hist"
             append_bad_clip_record(
-                path=Path("/Volumes/Untitled/Parking/Front/x.MP4"),
+                path=clip,
                 reason="moov",
                 action="skip_only",
                 record_type="Parking",
@@ -124,6 +130,42 @@ class BadClipsTests(unittest.TestCase):
             lines = bad_clips_log_path(hist).read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 1)
             self.assertIn("moov", lines[0])
+
+    def test_append_mirrors_to_sd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Parking" / "Front"
+            front.mkdir(parents=True)
+            clip = front / "PA20250101-120000-000001F.MP4"
+            clip.write_bytes(b"x")
+            hist = root / "hist"
+            append_bad_clip_record(
+                path=clip,
+                reason="moov missing",
+                action="quarantined",
+                record_type="Parking",
+                camera="Front",
+                history_dir=hist,
+            )
+            host = bad_clips_log_path(hist)
+            sd = sd_bad_clips_log_path(root)
+            self.assertTrue(host.is_file())
+            self.assertTrue(sd.is_file())
+            self.assertEqual(
+                host.read_text(encoding="utf-8"),
+                sd.read_text(encoding="utf-8"),
+            )
+
+    def test_count_bad_files_on_sd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Parking" / "Front"
+            front.mkdir(parents=True)
+            (front / "good.MP4").write_bytes(b"ok")
+            (front / "bad.MP4.bad").write_bytes(b"no")
+            (front / "other.MP4.20260101.bad").write_bytes(b"no")
+            self.assertEqual(count_bad_files_on_sd(root), 2)
+            self.assertEqual(count_bad_files_on_sd(None), 0)
 
 
 if __name__ == "__main__":

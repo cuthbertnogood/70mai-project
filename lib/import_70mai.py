@@ -1459,10 +1459,72 @@ def probe_duration_retry(
 
 DEFAULT_BAD_CLIPS_DIR = Path("video/Output/.publish_tmp")
 BAD_CLIPS_LOG_FILENAME = "bad_clips.jsonl"
+SD_BAD_CLIPS_REL = Path(".70mai") / "import" / BAD_CLIPS_LOG_FILENAME
+_RECORD_TYPE_DIRS = frozenset({"Normal", "Event", "Parking", "Lapse"})
+_CAMERA_DIRS = frozenset({"Front", "Back"})
 
 
 def bad_clips_log_path(history_dir: Path | None = None) -> Path:
     return (history_dir or DEFAULT_BAD_CLIPS_DIR) / BAD_CLIPS_LOG_FILENAME
+
+
+def sd_bad_clips_log_path(source: Path) -> Path:
+    """Portable bad-clip history on the card: ``/.70mai/import/bad_clips.jsonl``."""
+    return source.resolve() / SD_BAD_CLIPS_REL
+
+
+def infer_sd_root_from_clip(path: Path) -> Path | None:
+    """``…/Parking/Front/file.MP4`` → SD root; else None."""
+    try:
+        camera_dir = path.parent
+        type_dir = camera_dir.parent
+        if camera_dir.name in _CAMERA_DIRS and type_dir.name in _RECORD_TYPE_DIRS:
+            return type_dir.parent
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def count_bad_files_on_sd(source: Path | None) -> int:
+    """Count ``*.MP4.bad`` (and ``*.bad``) quarantined clips on the card."""
+    if source is None or not source.is_dir():
+        return 0
+    total = 0
+    for record_type in _RECORD_TYPE_DIRS:
+        for camera in _CAMERA_DIRS:
+            folder = source / record_type / camera
+            if not folder.is_dir():
+                continue
+            try:
+                total += sum(1 for p in folder.iterdir() if p.name.endswith(".bad"))
+            except OSError:
+                continue
+    return total
+
+
+def count_bad_clip_records(history_dir: Path | None = None) -> int:
+    """Unique clip names recorded in local ``bad_clips.jsonl``."""
+    path = bad_clips_log_path(history_dir)
+    if not path.is_file():
+        return 0
+    names: set[str] = set()
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                import json
+
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            name = str(entry.get("name") or "").strip()
+            if name:
+                names.add(name)
+    except OSError:
+        return 0
+    return len(names)
 
 
 def mp4_has_moov_atom(path: Path) -> bool:
@@ -1541,7 +1603,7 @@ def append_bad_clip_record(
     history_dir: Path | None = None,
     size: int | None = None,
 ) -> dict:
-    """Append one bad-clip event to bad_clips.jsonl (history for later review)."""
+    """Append one bad-clip event to bad_clips.jsonl (host + SD when possible)."""
     import json
 
     if size is None:
@@ -1560,18 +1622,27 @@ def append_bad_clip_record(
         "quarantine": str(quarantine) if quarantine else "",
         "size": size,
     }
-    log_path = bad_clips_log_path(history_dir)
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except OSError as exc:
-        log(f"  [bad] could not write {log_path.name}: {exc}")
+    line = json.dumps(entry, ensure_ascii=False) + "\n"
+    targets: list[Path] = [bad_clips_log_path(history_dir)]
+    sd_root = infer_sd_root_from_clip(path)
+    if sd_root is None and quarantine is not None:
+        sd_root = infer_sd_root_from_clip(quarantine)
+    if sd_root is not None:
+        sd_log = sd_bad_clips_log_path(sd_root)
+        if sd_log not in targets:
+            targets.append(sd_log)
+    for log_path in targets:
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError as exc:
+            log(f"  [bad] could not write {log_path}: {exc}")
     try:
         from pipeline_repair import append_repair_log
 
         append_repair_log(
-            log_path.parent,
+            (history_dir or DEFAULT_BAD_CLIPS_DIR),
             action="bad_clip",
             detail=f"{action} {path.name}: {reason}",
             record_type=record_type,

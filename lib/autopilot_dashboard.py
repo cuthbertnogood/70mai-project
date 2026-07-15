@@ -757,11 +757,14 @@ def _split_log_ts(line: str) -> tuple[str, str]:
     return "", line
 
 
-def collect_failure_lines(temp_dir: Path, *, limit: int = 6) -> list[str]:
+def collect_failure_lines(
+    temp_dir: Path, *, limit: int = 6, source: Path | None = None
+) -> list[str]:
     """Recent repair + import/merge errors for the dashboard «Сбои» footer."""
     repair_ranked: list[tuple[int, str]] = []
     log_items: list[str] = []
     _code_rank = {
+        "bad_clip_skip": -20,
         "merge_short": 0,
         "merge_fb_mismatch": 1,
         "merge_stale": 2,
@@ -769,16 +772,24 @@ def collect_failure_lines(temp_dir: Path, *, limit: int = 6) -> list[str]:
         "compose_part_stale": 4,
         "state_drift": 5,
         "rebuild_merge": 6,
-        "bad_clip_skip": 1,
     }
 
     try:
-        from import_70mai import bad_clips_log_path
+        from import_70mai import bad_clips_log_path, sd_bad_clips_log_path
 
-        bad_path = bad_clips_log_path(temp_dir)
-        if bad_path.is_file():
-            import json
+        bad_paths = [bad_clips_log_path(temp_dir)]
+        if source is not None:
+            try:
+                sd_path = sd_bad_clips_log_path(source)
+                if sd_path not in bad_paths:
+                    bad_paths.append(sd_path)
+            except OSError:
+                pass
+        import json
 
+        for bad_path in bad_paths:
+            if not bad_path.is_file():
+                continue
             for line in bad_path.read_text(encoding="utf-8").splitlines()[-12:]:
                 line = line.strip()
                 if not line:
@@ -807,7 +818,7 @@ def collect_failure_lines(temp_dir: Path, *, limit: int = 6) -> list[str]:
                     head += f" ({reason})"
                 ts = _format_fail_ts(str(entry.get("ts") or ""))
                 text = f"{ts} {head}" if ts else head
-                repair_ranked.append((1, text[:140]))
+                repair_ranked.append((-20, text[:140]))
     except Exception:
         pass
 
@@ -874,11 +885,29 @@ def collect_failure_lines(temp_dir: Path, *, limit: int = 6) -> list[str]:
     return uniq[-limit:]
 
 
-def format_failures_block(temp_dir: Path, *, term_cols: int, limit: int = 5) -> list[str]:
-    """Footer lines: «Сбои» header + recent failure lines (or «нет»)."""
-    fails = collect_failure_lines(temp_dir, limit=limit)
+def format_failures_block(
+    temp_dir: Path,
+    *,
+    term_cols: int,
+    limit: int = 5,
+    source: Path | None = None,
+) -> list[str]:
+    """Footer lines: «Сбои» header (with bad-file counter) + recent failures."""
+    fails = collect_failure_lines(temp_dir, limit=limit, source=source)
+    bad_n = 0
+    try:
+        from import_70mai import count_bad_clip_records, count_bad_files_on_sd
+
+        on_sd = count_bad_files_on_sd(source)
+        in_log = count_bad_clip_records(temp_dir)
+        bad_n = max(on_sd, in_log)
+    except Exception:
+        bad_n = 0
+    header = "── Сбои ──"
+    if bad_n:
+        header += f"  битых файлов: {bad_n}"
     out: list[str] = []
-    out.extend(_wrap_line("── Сбои ──", term_cols))
+    out.extend(_wrap_line(header, term_cols))
     if not fails:
         out.extend(_wrap_line("нет свежих сбоев", term_cols))
         return out
