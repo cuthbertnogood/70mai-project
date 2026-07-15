@@ -1441,6 +1441,22 @@ def _file_edge_digest(path: Path, window: int = 2_000_000) -> str:
     return digest.hexdigest()
 
 
+def probe_duration_retry(
+    path: Path,
+    ffprobe: str,
+    *,
+    tries: int = 3,
+) -> float | None:
+    """ffprobe with short backoff — USB/SD occasionally fails moov-at-end reads."""
+    for attempt in range(tries):
+        dur = probe_duration_safe(path, ffprobe)
+        if dur is not None:
+            return dur
+        if attempt + 1 < tries:
+            time.sleep(0.4 * (attempt + 1))
+    return None
+
+
 def _staged_matches_source(
     dest: Path,
     src: Path,
@@ -1454,8 +1470,12 @@ def _staged_matches_source(
             return False
         if _file_edge_digest(dest) != _file_edge_digest(src):
             return False
-        dur = probe_duration_safe(dest, ffprobe)
+        dur = probe_duration_retry(dest, ffprobe)
         if dur is None or dur < 0.5:
+            # Digest matches source: if source also won't probe, treat as USB
+            # flakiness rather than a bad copy (retry later).
+            if probe_duration_retry(src, ffprobe) is None:
+                return True
             return False
         if expected_duration is not None and expected_duration > 0:
             if dur < expected_duration * 0.95:
@@ -1522,6 +1542,7 @@ def stage_clips_locally(
             except OSError as exc:
                 last_err = str(exc)
                 partial.unlink(missing_ok=True)
+                time.sleep(0.5 * attempt)
                 continue
             log(
                 f"  [copy] {clip.camera} {idx}/{total}: ok in "
@@ -1541,6 +1562,7 @@ def stage_clips_locally(
                 f"{last_err} — will re-copy"
             )
             dest.unlink(missing_ok=True)
+            time.sleep(0.5 * attempt)
         if not copied_ok:
             raise OSError(
                 f"staging failed for {clip.path.name} after 3 tries: {last_err}"
