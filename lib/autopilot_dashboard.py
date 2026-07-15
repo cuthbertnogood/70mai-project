@@ -480,10 +480,10 @@ def _fmt_gb(n: int) -> str:
 _COL_HEADERS = ("№", "Поездка", "Длит", "Этап", "Размер", "YouTube")
 
 _STATUS_LEGEND = (
-    "► активный этап  ·  ✓ готово  ·  · ждёт  ·  copy→merge→compose→upload",
+    "► активно  ·  ✓ готово  ·  · ждёт",
 )
 
-# Treat status.json older than this (with no live processes) as idle/stale.
+# status.json older than this → idle (no ghost ►), even if procs still listed.
 _STALE_STATUS_SEC = 300
 
 
@@ -819,7 +819,7 @@ def _format_pipeline_block(
     temp_dir: Path | None = None,
     stale: bool = False,
 ) -> list[str]:
-    """Compact 4-stage conveyor: one status strip + optional active detail."""
+    """One line per pipeline step: copy / merge / compose / upload + status."""
     phase = str((st or {}).get("phase") or "").strip()
     conveyors = (st or {}).get("conveyors") if isinstance(st, dict) else None
     if not isinstance(conveyors, dict):
@@ -840,7 +840,7 @@ def _format_pipeline_block(
         None,
     )
     if stale:
-        # Old status.json without live procs — do not show ghost "► compose".
+        # Old status.json — do not show ghost "► compose".
         active_row = None
         phase = ""
 
@@ -858,13 +858,6 @@ def _format_pipeline_block(
     done_on = phase == "done" or (
         active_row is not None and active_row.status == "done"
     )
-
-    def _mark(step_on: bool, *, done: bool = False) -> str:
-        if step_on:
-            return "►"
-        if done:
-            return "✓"
-        return "·"
 
     copy_done = (not import_on and phase in ("compose", "upload", "done")) or (
         bool(copy) and not copy_on and merge_on
@@ -899,10 +892,10 @@ def _format_pipeline_block(
     compose_extra = ""
     if compose_on:
         bits = []
-        if pct_s:
-            bits.append(pct_s)
         if detail:
-            bits.append(detail[:40])
+            bits.append(detail[:48])
+        elif pct_s:
+            bits.append(pct_s)
         if active_row is not None:
             bits.append(_trip_display(active_row))
         compose_extra = " ".join(bits)
@@ -924,26 +917,29 @@ def _format_pipeline_block(
             bits.append(_trip_display(active_row))
         upload_extra = " ".join(bits)
 
-    def _cell(mark: str, name: str, extra: str) -> str:
-        if extra:
-            return f"{mark}{name}:{extra}"
-        return f"{mark}{name}"
+    def _line(name: str, *, on: bool, done: bool, extra: str = "") -> str:
+        if on:
+            status = f"► активно {extra}".strip() if extra else "► активно"
+        elif done:
+            status = "✓ готово"
+        else:
+            status = "· ждёт"
+        return f"{name:<8} {status}"
 
-    strip = "  ".join(
-        [
-            _cell(_mark(copy_on, done=copy_done), "copy", copy_extra),
-            _cell(_mark(merge_on, done=merge_done), "merge", merge_extra),
-            _cell(_mark(compose_on, done=compose_done), "compose", compose_extra),
-            _cell(
-                _mark(upload_on or video_done, done=video_done),
-                "upload",
-                upload_extra,
-            ),
-        ]
-    )
-    lines = [f"этапы  {strip}"]
+    lines = [
+        "этапы:",
+        _line("copy", on=copy_on, done=copy_done, extra=copy_extra),
+        _line("merge", on=merge_on, done=merge_done, extra=merge_extra),
+        _line("compose", on=compose_on, done=compose_done, extra=compose_extra),
+        _line(
+            "upload",
+            on=upload_on,
+            done=video_done,
+            extra=upload_extra,
+        ),
+    ]
     if stale:
-        lines.append("      idle — автопилот не пишет status (см. proc)")
+        lines.append("idle — status.json устарел (см. proc)")
     return lines
 
 
@@ -1467,11 +1463,8 @@ class Dashboard:
         st = resolve_live_status(self.temp_dir)
         procs = list_pipeline_processes()
         age_sec = _status_age_seconds(st)
-        stale = bool(
-            (not procs)
-            and age_sec is not None
-            and age_sec >= _STALE_STATUS_SEC
-        )
+        # Age alone: old status.json must not drive ► markers (procs may be zombies).
+        stale = bool(age_sec is not None and age_sec >= _STALE_STATUS_SEC)
         if stale:
             active_rows = []
         active_key = None if stale else _status_active_key(self.rows, st)
