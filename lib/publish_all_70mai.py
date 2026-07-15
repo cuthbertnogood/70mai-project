@@ -1015,6 +1015,10 @@ def main() -> int:
                                 import_cmd.extend(
                                     ["--state-on-sd", "--skip-inventory-refresh"]
                                 )
+                            # Live dashboard: copy∥merge heartbeats → autopilot_status.json
+                            import_cmd.extend(
+                                ["--status-dir", str(args.temp_dir)]
+                            )
                             log(
                                 "  Import: SD→SSD stage, then concat "
                                 f"(window only for {record_type})"

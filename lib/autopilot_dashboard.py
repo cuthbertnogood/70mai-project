@@ -812,12 +812,60 @@ def _status_age_line(st: dict | None) -> str | None:
     return f"status: {phase} {_human_etime_seconds(sec)} ago"
 
 
+_COPY_LOG_RE = re.compile(
+    r"\[copy\]\s+(\d+/\d+):\s+(\S+)(?:\s+\(([^)]+)\))?",
+)
+_MERGE_LOG_RE = re.compile(
+    r"\[merge\]\s+(.+)$",
+)
+
+
+def _import_progress_from_log(temp_dir: Path | None) -> dict[str, str] | None:
+    """When status.json is stale but import is alive, scrape publish_all.log."""
+    if temp_dir is None:
+        return None
+    log_path = temp_dir / "publish_all.log"
+    if not log_path.is_file():
+        return None
+    try:
+        with log_path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 96_000))
+            chunk = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    copy_txt = ""
+    merge_txt = ""
+    for line in chunk.splitlines():
+        if "[copy]" in line:
+            m = _COPY_LOG_RE.search(line)
+            if m:
+                bits = [m.group(1), m.group(2)[:28]]
+                if m.group(3):
+                    bits.append(m.group(3))
+                # Prefer the "N/N: name" start line over "ok in Ns"
+                if "ok in" not in line:
+                    copy_txt = " ".join(bits)
+            elif "ok in" not in line:
+                # keep raw short fragment
+                idx = line.find("[copy]")
+                copy_txt = line[idx + 7 :].strip()[:48]
+        if "[merge]" in line:
+            m = _MERGE_LOG_RE.search(line)
+            merge_txt = (m.group(1).strip() if m else line.strip())[:48]
+    if not copy_txt and not merge_txt:
+        return None
+    return {"copy": copy_txt, "merge": merge_txt}
+
+
 def _format_pipeline_block(
     st: dict | None,
     rows: list,
     *,
     temp_dir: Path | None = None,
     stale: bool = False,
+    log_fallback: dict[str, str] | None = None,
 ) -> list[str]:
     """One line per pipeline step: copy / merge / compose / upload + status."""
     phase = str((st or {}).get("phase") or "").strip()
@@ -889,6 +937,22 @@ def _format_pipeline_block(
     elif pct_s and merge_on:
         merge_extra = f"{pct_s} {merge_extra}".strip()
 
+    # Live import but stale/missing status.json → scrape publish_all.log
+    if log_fallback and not copy_on and not merge_on:
+        if log_fallback.get("copy"):
+            copy_on = True
+            copy_extra = log_fallback["copy"]
+            copy_done = False
+        if log_fallback.get("merge"):
+            merge_on = True
+            merge_extra = log_fallback["merge"]
+            merge_done = False
+        import_on = copy_on or merge_on
+        compose_on = False
+        upload_on = False
+        compose_done = False
+        video_done = False
+
     compose_extra = ""
     if compose_on:
         bits = []
@@ -938,7 +1002,9 @@ def _format_pipeline_block(
             extra=upload_extra,
         ),
     ]
-    if stale:
+    if log_fallback and (copy_on or merge_on) and stale:
+        lines.append("источник: publish_all.log (status.json устарел)")
+    elif stale:
         lines.append("idle — status.json устарел (см. proc)")
     return lines
 
@@ -1465,6 +1531,12 @@ class Dashboard:
         age_sec = _status_age_seconds(st)
         # Age alone: old status.json must not drive ► markers (procs may be zombies).
         stale = bool(age_sec is not None and age_sec >= _STALE_STATUS_SEC)
+        import_alive = any(p.role == "import" for p in procs)
+        log_fallback = None
+        if import_alive and (
+            stale or not st or str(st.get("phase") or "") != "import"
+        ):
+            log_fallback = _import_progress_from_log(self.temp_dir)
         if stale:
             active_rows = []
         active_key = None if stale else _status_active_key(self.rows, st)
@@ -1490,6 +1562,13 @@ class Dashboard:
                 )
                 parts.append(f"{stage} {_trip_display(ar)}")
             summary += "  |  " + " · ".join(parts)
+        elif log_fallback:
+            bits = []
+            if log_fallback.get("copy"):
+                bits.append(f"copy {log_fallback['copy']}")
+            if log_fallback.get("merge"):
+                bits.append(f"merge {log_fallback['merge']}")
+            summary += "  |  import " + (" · ".join(bits) if bits else "…")
         elif stale:
             summary += "  |  idle"
         elif st and st.get("phase") == "import":
@@ -1513,7 +1592,11 @@ class Dashboard:
         for hl in _wrap_line(summary, term_cols):
             lines.append(hl)
         for cl in _format_pipeline_block(
-            st, self.rows, temp_dir=self.temp_dir, stale=stale
+            st,
+            self.rows,
+            temp_dir=self.temp_dir,
+            stale=stale,
+            log_fallback=log_fallback,
         ):
             for hl in _wrap_line(cl, term_cols):
                 lines.append(hl)
