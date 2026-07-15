@@ -476,18 +476,15 @@ def _fmt_gb(n: int) -> str:
     return f"{n / (1024**2):.0f}M"
 
 
-# Six columns — one readable row per trip (no Status/Progress/Disk/Path split).
+# Six columns — compact defaults (do not inflate trip column to fill the terminal).
 _COL_HEADERS = ("№", "Поездка", "Длит", "Этап", "Размер", "YouTube")
 
 _STATUS_LEGEND = (
-    "№ = ролик N из M (очередь на YouTube)  |  ► = сейчас в работе",
-    "Конвейер одного ролика (~2ч):",
-    "  1) [copy]  SD→SSD          — клипы с карты на локальный диск",
-    "  2) [merge] 10-мин файлы    — concat Front/Back по ~10 мин",
-    "  3) [compose] Front↑+Back↓  — сборка 2-cam MP4 для YouTube",
-    "  4) [ролик]  ~2ч готов      — upload → ✓ (потом prune)",
-    "процессы: pid + время жизни (autopilot/import/compose/upload/ffmpeg)",
+    "► активный этап  ·  ✓ готово  ·  · ждёт  ·  copy→merge→compose→upload",
 )
+
+# Treat status.json older than this (with no live processes) as idle/stale.
+_STALE_STATUS_SEC = 300
 
 
 def _table_width(widths: tuple[int, ...]) -> int:
@@ -499,17 +496,19 @@ def _table_width(widths: tuple[int, ...]) -> int:
 
 
 def _column_widths(term_cols: int) -> tuple[int, ...]:
-    """Fit 6-column table into terminal width."""
-    term_cols = max(60, term_cols)
-    widths = [6, 22, 9, 16, 7, 14]
-    floors = [5, 10, 7, 10, 4, 6]
+    """Fit 6-column table into terminal; prefer Этап over empty Поездка padding."""
+    term_cols = max(56, term_cols)
+    # №, trip, dur, stage, size, yt
+    widths = [6, 14, 8, 18, 6, 12]
+    floors = [5, 10, 6, 12, 4, 8]
+    caps = [7, 18, 9, 28, 7, 14]
 
     def fits(w: list[int]) -> bool:
         return _table_width(tuple(w)) <= term_cols
 
     while not fits(widths):
         shrunk = False
-        for idx in (1, 3, 5, 2, 4, 0):
+        for idx in (1, 5, 3, 2, 4, 0):
             if fits(widths):
                 break
             if widths[idx] > floors[idx]:
@@ -518,14 +517,18 @@ def _column_widths(term_cols: int) -> tuple[int, ...]:
         if not shrunk:
             break
 
-    while fits([*widths[:1], widths[1] + 1, *widths[2:]]):
-        widths[1] += 1
+    # Extra space → Этап (progress), then YouTube id — never balloon trip date.
+    for idx in (3, 5, 2, 4):
+        while widths[idx] < caps[idx] and fits(
+            [*widths[:idx], widths[idx] + 1, *widths[idx + 1 :]]
+        ):
+            widths[idx] += 1
 
     return tuple(widths)
 
 
 def _use_compact_table(term_cols: int) -> bool:
-    return False
+    return term_cols < 90
 
 
 def _wrap_line(text: str, width: int) -> list[str]:
@@ -539,9 +542,11 @@ def _wrap_line(text: str, width: int) -> list[str]:
             break
         cut = rest.rfind(" | ", 0, width + 1)
         if cut < width // 3:
+            cut = rest.rfind(" · ", 0, width + 1)
+        if cut < width // 3:
             cut = width
         lines.append(rest[:cut].rstrip())
-        rest = rest[cut:].lstrip(" |")
+        rest = rest[cut:].lstrip(" |·")
     return lines
 
 
@@ -771,21 +776,20 @@ def list_pipeline_processes() -> list[PipelineProc]:
     return found
 
 
-def _format_pipeline_processes(procs: list[PipelineProc], *, limit: int = 8) -> list[str]:
+def _format_pipeline_processes(procs: list[PipelineProc], *, limit: int = 6) -> list[str]:
     if not procs:
-        return ["  процессы: нет (автопилот не запущен?)"]
-    lines = ["  процессы:"]
-    for p in procs[:limit]:
-        lines.append(
-            f"    pid {p.pid:<6}  {_human_etime_seconds(p.etime_sec):>8}  "
-            f"{p.role:<9}  {p.tip}"
-        )
+        return ["proc: —"]
+    bits = [
+        f"{p.role}:{p.pid}/{_human_etime_seconds(p.etime_sec)}"
+        for p in procs[:limit]
+    ]
+    line = "proc: " + " · ".join(bits)
     if len(procs) > limit:
-        lines.append(f"    … ещё {len(procs) - limit}")
-    return lines
+        line += f" · +{len(procs) - limit}"
+    return [line]
 
 
-def _status_age_line(st: dict | None) -> str | None:
+def _status_age_seconds(st: dict | None) -> int | None:
     if not st:
         return None
     raw = st.get("ts")
@@ -795,9 +799,17 @@ def _status_age_line(st: dict | None) -> str | None:
         t0 = datetime.fromisoformat(raw.strip())
     except ValueError:
         return None
-    sec = max(0, int((datetime.now() - t0).total_seconds()))
-    phase = str(st.get("phase") or "?")
-    return f"  status.json: phase={phase}  обновлён {_human_etime_seconds(sec)} назад"
+    return max(0, int((datetime.now() - t0).total_seconds()))
+
+
+def _status_age_line(st: dict | None) -> str | None:
+    sec = _status_age_seconds(st)
+    if sec is None:
+        return None
+    phase = str(st.get("phase") or "?") if st else "?"
+    if sec >= _STALE_STATUS_SEC:
+        return f"status: {phase} STALE {_human_etime_seconds(sec)} ago"
+    return f"status: {phase} {_human_etime_seconds(sec)} ago"
 
 
 def _format_pipeline_block(
@@ -805,15 +817,15 @@ def _format_pipeline_block(
     rows: list,
     *,
     temp_dir: Path | None = None,
+    stale: bool = False,
 ) -> list[str]:
-    """Show the 4-stage conveyor: copy → merge 10m → compose F+B → 2h ролик."""
+    """Compact 4-stage conveyor: one status strip + optional active detail."""
     phase = str((st or {}).get("phase") or "").strip()
     conveyors = (st or {}).get("conveyors") if isinstance(st, dict) else None
     if not isinstance(conveyors, dict):
         conveyors = {}
     copy = conveyors.get("copy") if isinstance(conveyors.get("copy"), dict) else {}
     merge = conveyors.get("merge") if isinstance(conveyors.get("merge"), dict) else {}
-    ahead = str((st or {}).get("stage_ahead") or "").strip()
     detail = str((st or {}).get("detail") or "").strip()
     pct = (st or {}).get("percent") if isinstance(st, dict) else None
     pct_s = f"{float(pct):.0f}%" if isinstance(pct, (int, float)) else ""
@@ -822,56 +834,27 @@ def _format_pipeline_block(
         (
             r
             for r in rows
-            if getattr(r, "status", "") in ("compose", "upload", "import", "stall", "oauth")
+            if getattr(r, "status", "")
+            in ("compose", "upload", "import", "stall", "oauth")
         ),
         None,
     )
+    if stale:
+        # Old status.json without live procs — do not show ghost "► compose".
+        active_row = None
+        phase = ""
 
-    def _age(info: dict) -> str:
-        started = str(info.get("started") or "").strip()
-        if not started:
-            return ""
-        try:
-            t0 = datetime.fromisoformat(started)
-            return _human_etime_seconds(
-                max(0, int((datetime.now() - t0).total_seconds()))
-            )
-        except ValueError:
-            return ""
-
-    def _lane_detail(info: dict) -> str:
-        parts: list[str] = []
-        chunk = str(info.get("chunk") or "").strip()
-        file_name = str(info.get("file") or "").strip()
-        clip = str(info.get("clip") or "").strip()
-        det = str(info.get("detail") or "").strip()
-        elapsed = str(info.get("elapsed") or "").strip() or _age(info)
-        if chunk:
-            parts.append(chunk)
-        if file_name:
-            parts.append(file_name)
-        if clip:
-            parts.append(f"клип {clip}")
-        bd = info.get("bytes_done")
-        bt = info.get("bytes_total")
-        if isinstance(bd, (int, float)) and isinstance(bt, (int, float)) and bt > 0:
-            p = min(100.0, 100.0 * float(bd) / float(bt))
-            parts.append(f"{bd / 1_000_000:.0f}/{bt / 1_000_000:.0f} MB ({p:.0f}%)")
-        if elapsed:
-            parts.append(f"⏱ {elapsed}")
-        if det:
-            parts.append(det)
-        return "  ".join(parts)
-
-    copy_on = bool(copy.get("active"))
-    merge_on = bool(merge.get("active"))
-    compose_on = phase == "compose" or (
-        active_row is not None and active_row.status == "compose"
+    copy_on = bool(copy.get("active")) and not stale
+    merge_on = bool(merge.get("active")) and not stale
+    compose_on = (not stale) and (
+        phase == "compose"
+        or (active_row is not None and active_row.status == "compose")
     )
-    upload_on = phase == "upload" or (
-        active_row is not None and active_row.status == "upload"
+    upload_on = (not stale) and (
+        phase == "upload"
+        or (active_row is not None and active_row.status == "upload")
     )
-    import_on = phase == "import" or copy_on or merge_on
+    import_on = (not stale) and (phase == "import" or copy_on or merge_on)
     done_on = phase == "done" or (
         active_row is not None and active_row.status == "done"
     )
@@ -892,33 +875,39 @@ def _format_pipeline_block(
     )
     video_done = done_on
 
-    copy_txt = _lane_detail(copy) if copy else ""
-    if ahead and copy_txt:
-        copy_txt += f"  (ahead {ahead})"
-    if not copy_txt and import_on:
-        copy_txt = "ожидание / SD→SSD"
-    merge_txt = _lane_detail(merge) if merge else ""
-    if not merge_txt and import_on:
-        merge_txt = "ожидание / concat ~10 мин"
-    if pct_s and import_on:
-        if merge_txt:
-            merge_txt = f"{pct_s}  {merge_txt}"
-        else:
-            merge_txt = pct_s
+    def _short_lane(info: dict) -> str:
+        file_name = str(info.get("file") or "").strip()
+        chunk = str(info.get("chunk") or "").strip()
+        bd = info.get("bytes_done")
+        bt = info.get("bytes_total")
+        parts: list[str] = []
+        if chunk:
+            parts.append(chunk)
+        if file_name:
+            parts.append(file_name[:28])
+        if isinstance(bd, (int, float)) and isinstance(bt, (int, float)) and bt > 0:
+            parts.append(f"{100.0 * float(bd) / float(bt):.0f}%")
+        return " ".join(parts)
 
-    compose_txt = ""
+    copy_extra = _short_lane(copy) if copy_on else ""
+    merge_extra = _short_lane(merge) if merge_on else ""
+    if pct_s and import_on and not merge_extra:
+        merge_extra = pct_s
+    elif pct_s and merge_on:
+        merge_extra = f"{pct_s} {merge_extra}".strip()
+
+    compose_extra = ""
     if compose_on:
-        compose_txt = "Front↑ + Back↓ → MP4"
-        if detail:
-            compose_txt += f"  ·  {detail}"
+        bits = []
         if pct_s:
-            compose_txt += f"  ·  {pct_s}"
+            bits.append(pct_s)
+        if detail:
+            bits.append(detail[:40])
         if active_row is not None:
-            compose_txt += f"  ·  {_trip_display(active_row)}"
-    elif compose_done:
-        compose_txt = "готово"
+            bits.append(_trip_display(active_row))
+        compose_extra = " ".join(bits)
 
-    video_txt = ""
+    upload_extra = ""
     if upload_on:
         up_pct = None
         if active_row is not None and active_row.percent is not None:
@@ -926,36 +915,63 @@ def _format_pipeline_block(
         elif active_row is not None and temp_dir is not None:
             got = _read_upload_percent(temp_dir, active_row.trip_index)
             up_pct = float(got) if got is not None else None
-        video_txt = "заливка ~2ч ролика на YouTube"
+        bits = []
         if isinstance(up_pct, (int, float)):
-            video_txt = f"заливка ~2ч  ·  {float(up_pct):.0f}%"
+            bits.append(f"{up_pct:.0f}%")
         elif pct_s:
-            video_txt += f"  ·  {pct_s}"
+            bits.append(pct_s)
         if active_row is not None:
-            video_txt += f"  ·  {_trip_display(active_row)}"
-    elif video_done:
-        video_txt = "✓ ролик на YouTube"
-    elif compose_done or compose_on:
-        video_txt = "ждёт готовности MP4"
-    elif import_on:
-        video_txt = "после merge + compose"
+            bits.append(_trip_display(active_row))
+        upload_extra = " ".join(bits)
 
-    return [
-        "Конвейер ролика (~2ч):",
-        f"  {_mark(copy_on, done=copy_done)} [copy]    SD→SSD"
-        + (f"  —  {copy_txt}" if copy_txt else ""),
-        f"  {_mark(merge_on, done=merge_done)} [merge]   10-мин файлы"
-        + (f"  —  {merge_txt}" if merge_txt else ""),
-        f"  {_mark(compose_on, done=compose_done)} [compose] Front↑+Back↓"
-        + (f"  —  {compose_txt}" if compose_txt else ""),
-        f"  {_mark(upload_on or video_done, done=video_done)} [ролик]   ~2ч YouTube"
-        + (f"  —  {video_txt}" if video_txt else ""),
-    ]
+    def _cell(mark: str, name: str, extra: str) -> str:
+        if extra:
+            return f"{mark}{name}:{extra}"
+        return f"{mark}{name}"
+
+    strip = "  ".join(
+        [
+            _cell(_mark(copy_on, done=copy_done), "copy", copy_extra),
+            _cell(_mark(merge_on, done=merge_done), "merge", merge_extra),
+            _cell(_mark(compose_on, done=compose_done), "compose", compose_extra),
+            _cell(
+                _mark(upload_on or video_done, done=video_done),
+                "upload",
+                upload_extra,
+            ),
+        ]
+    )
+    lines = [f"этапы  {strip}"]
+    if stale:
+        lines.append("      idle — автопилот не пишет status (см. proc)")
+    return lines
 
 
 def _format_import_conveyors(st: dict) -> list[str]:
     """Backward-compatible alias (import-only lanes). Prefer _format_pipeline_block."""
     return _format_pipeline_block(st, [])
+
+
+def _visible_rows(rows: list, *, term_rows: int, total: int) -> tuple[list, str | None]:
+    """Collapse a long leading run of done trips so the table fits."""
+    if term_rows >= 36 or len(rows) <= 14:
+        return list(rows), None
+
+    leading = 0
+    for row in rows:
+        if row.status == "done":
+            leading += 1
+        else:
+            break
+    if leading <= 3:
+        return list(rows), None
+
+    # Keep last done as context, hide the rest of the prefix.
+    keep_from = leading - 1
+    first_idx = rows[0].overall_index or 1
+    last_hidden = rows[keep_from - 1].overall_index or keep_from
+    note = f"✓ {first_idx}–{last_hidden}/{total} готово (свёрнуто)"
+    return list(rows[keep_from:]), note
 
 
 def _stage_label(
@@ -1425,37 +1441,50 @@ class Dashboard:
             if r.status in ("compose", "upload", "import", "stall", "oauth")
         ]
         if self._youtube_ok is True:
-            yt_net = "сеть YouTube OK"
+            yt_net = "YT net OK"
         elif self._youtube_ok is False:
-            yt_net = f"сеть YouTube OFF ({self._youtube_detail})"
+            yt_net = f"YT net OFF ({self._youtube_detail})"
         else:
-            yt_net = "сеть YouTube …"
+            yt_net = "YT net …"
         if self._upload_health == "error":
-            yt_upload = f"UPLOAD ОШИБКА: {self._upload_health_detail}"
+            yt_upload = f"UPLOAD ERR: {self._upload_health_detail}"
         elif self._upload_health == "retry":
             yt_upload = f"upload retry: {self._upload_health_detail}"
         elif self._upload_health == "upload":
-            yt_upload = "upload запущен"
+            yt_upload = "upload…"
         elif self._upload_health == "ok":
-            yt_upload = f"upload OK: {self._upload_health_detail}"
+            yt_upload = f"upload OK {self._upload_health_detail}"
         else:
-            yt_upload = "upload: данных нет"
+            yt_upload = "upload —"
         try:
             term_cols = shutil.get_terminal_size().columns
+            term_rows = shutil.get_terminal_size().lines
         except OSError:
             term_cols = 100
+            term_rows = 40
         col_widths = _column_widths(term_cols)
 
         st = resolve_live_status(self.temp_dir)
-        active_key = _status_active_key(self.rows, st)
+        procs = list_pipeline_processes()
+        age_sec = _status_age_seconds(st)
+        stale = bool(
+            (not procs)
+            and age_sec is not None
+            and age_sec >= _STALE_STATUS_SEC
+        )
+        if stale:
+            active_rows = []
+        active_key = None if stale else _status_active_key(self.rows, st)
 
-        total = len(self.rows)
-        summary = f"YouTube: {done}/{total} загружено"
+        summary = f"YouTube {done}/{total}"
         if fail:
-            summary += f", {fail} ошибок"
+            summary += f"  fail:{fail}"
+        pending = total - done - fail
+        if pending:
+            summary += f"  todo:{pending}"
         if active_rows:
             parts = []
-            for ar in active_rows[:3]:
+            for ar in active_rows[:2]:
                 pct = ar.percent
                 if ar.status == "upload" and pct is None:
                     pct = _read_upload_percent(self.temp_dir, ar.trip_index)
@@ -1466,64 +1495,69 @@ class Dashboard:
                     overall_index=ar.overall_index or None,
                     overall_total=total,
                 )
-                extra = ""
-                if ar.status == "import" and st and (st.get("detail") or "").strip():
-                    extra = f" · {str(st.get('detail')).strip()}"
-                parts.append(f"{stage} · {_trip_display(ar)}{extra}")
-            summary += "  |  сейчас: " + ", ".join(parts)
+                parts.append(f"{stage} {_trip_display(ar)}")
+            summary += "  |  " + " · ".join(parts)
+        elif stale:
+            summary += "  |  idle"
         elif st and st.get("phase") == "import":
             pct = st.get("percent")
             detail = str(st.get("detail") or "").strip()
-            stage = "импорт"
+            stage = "import"
             if isinstance(pct, (int, float)):
-                stage = f"импорт {float(pct):.0f}%"
-            summary += "  |  сейчас: " + stage
+                stage = f"import {float(pct):.0f}%"
+            summary += f"  |  {stage}"
             if detail:
-                summary += f" · {detail}"
+                summary += f" {detail[:40]}"
         else:
-            summary += "  |  сейчас: ожидание"
+            summary += "  |  wait"
 
         disk_line = (
-            f"Диск: {free:.0f} GB свободно (резерв {self.min_free_gb:.0f})"
-            f"  |  видео {format_gb(usage['total'])}"
-            f"  |  {yt_net}  |  {yt_upload}"
+            f"disk {free:.0f}G free (min {self.min_free_gb:.0f})  ·  "
+            f"video {format_gb(usage['total'])}  ·  {yt_net}  ·  {yt_upload}"
         )
 
         lines: list[str] = []
         for hl in _wrap_line(summary, term_cols):
             lines.append(hl)
-        for cl in _format_pipeline_block(st, self.rows, temp_dir=self.temp_dir):
+        for cl in _format_pipeline_block(
+            st, self.rows, temp_dir=self.temp_dir, stale=stale
+        ):
             for hl in _wrap_line(cl, term_cols):
                 lines.append(hl)
+        meta_bits: list[str] = []
         age = _status_age_line(st)
         if age:
-            for hl in _wrap_line(age, term_cols):
-                lines.append(hl)
-        for pl in _format_pipeline_processes(list_pipeline_processes()):
-            for hl in _wrap_line(pl, term_cols):
-                lines.append(hl)
+            meta_bits.append(age)
+        meta_bits.extend(_format_pipeline_processes(procs))
+        for hl in _wrap_line("  ·  ".join(meta_bits), term_cols):
+            lines.append(hl)
         for hl in _wrap_line(disk_line, term_cols):
             lines.append(hl)
         try:
             from pipeline_repair import read_recent_repairs
 
-            repairs = read_recent_repairs(self.temp_dir, limit=4)
+            repairs = read_recent_repairs(self.temp_dir, limit=2)
             if repairs:
                 bits = []
-                for entry in repairs[-4:]:
+                for entry in repairs[-2:]:
                     code = entry.get("code") or entry.get("action") or "repair"
-                    detail = str(entry.get("detail") or "")[:60]
-                    bits.append(f"{code}: {detail}" if detail else str(code))
-                health = "Health [repair]: " + " · ".join(bits)
-                for hl in _wrap_line(health, term_cols):
+                    detail = str(entry.get("detail") or "")[:40]
+                    bits.append(f"{code}:{detail}" if detail else str(code))
+                for hl in _wrap_line("repair  " + " · ".join(bits), term_cols):
                     lines.append(hl)
         except Exception:
             pass
-        lines.append("")
+
+        show_rows, collapse_note = _visible_rows(
+            self.rows, term_rows=term_rows, total=total
+        )
+        if collapse_note:
+            lines.append(collapse_note)
+
         lines.append(_table_top(col_widths))
         lines.append(_table_row(_COL_HEADERS, col_widths))
         lines.append(_table_sep(col_widths))
-        for i, row in enumerate(self.rows, start=1):
+        for i, row in enumerate(show_rows, start=1):
             dur = format_duration(row.duration_sec)
             size_b = _row_compose_bytes(
                 self.temp_dir, row, active_key=active_key
@@ -1533,7 +1567,14 @@ class Dashboard:
                 overall_index=row.overall_index or i,
                 overall_total=total,
             )
-            is_active = row.status in ("compose", "upload", "import", "stall")
+            if stale and row.status in ("compose", "upload", "import", "stall"):
+                stage = "ожидание"
+            is_active = (not stale) and row.status in (
+                "compose",
+                "upload",
+                "import",
+                "stall",
+            )
             marker = "►" if is_active else " "
             num = row.overall_index or i
             cells = (
@@ -1546,7 +1587,6 @@ class Dashboard:
             )
             lines.append(_table_row(cells, col_widths))
         lines.append(_table_bottom(col_widths))
-        lines.append("")
         for leg in _STATUS_LEGEND:
             lines.extend(_wrap_line(leg, term_cols))
         for row in self.rows:
