@@ -1,99 +1,86 @@
-# 70mai — от флешки до YouTube
+# 70mai — SD → YouTube
 
-Проект берёт запись с регистратора **70mai**, склеивает ролики и заливает на YouTube.
+Автопилот: карта 70mai → склейка → 2-cam MP4 → YouTube.
 
-Кратко для запуска. Флаги, OAuth, профили, тюнинг — в [детальное_описание.md](детальное_описание.md).
-
----
-
-## Схема пайплайна
-
-```mermaid
-flowchart LR
-  SD["SD"] --> COPY["1a. Copy окно<br/>SD→SSD"]
-  COPY --> MERGE["1b. Concat<br/>на SSD"]
-  MERGE --> COMP["2. Compose ~2ч"]
-  COMP --> PRUNE["3. Удалить<br/>10-мин merges"]
-  PRUNE --> YT["4. YouTube"]
-  YT --> DEL["5. Удалить 2ч MP4"]
-  DEL --> SD
-```
-
-Один цикл = **один ролик** (~120 мин). С SD копируется только окно этого ролика; если склейки уже на SSD — copy/import skip.
+Детали, OAuth, тюнинг: [детальное_описание.md](детальное_описание.md) · цели: [GOALS.md](GOALS.md).
 
 ---
 
-## Что происходит по шагам
-
-1. **Import (SD→SSD)** — `[copy]` клипы окна на SSD → `[merge]` concat локально. Уже есть `NO_`/`PA_` на SSD → skip.
-2. **Compose** — Front↑ Back↓ → один ~2ч MP4 (`balanced`).
-3. **Prune merges** — 10‑мин файлы на SSD удаляются сразу после compose.
-4. **Upload** — YouTube; затем удаляется 2ч MP4.
-5. Следующий chunk.
-
-Статус/ссылки — в `/.70mai/` на SD.
-
----
-
-## Как запустить
-
-Нужны: Mac, Python 3.10+, ffmpeg, вставленная SD-карта 70mai.
+## Один раз
 
 ```bash
-scripts/setup-venv.sh          # первый раз
-./scripts/publish_all_70mai.sh --wait
-./scripts/watch_publish_all_70mai.sh --wait   # то же + авто-рестарт
+scripts/setup-venv.sh
+# OAuth: ~/.config/70mai/youtube_credentials.json  (первый upload — вход в браузере)
 ```
 
-Карта уже вставлена: те же команды без `--wait`.
-
-Прогресс: `./scripts/autopilot_dashboard.sh` — компактный статус:
-`этапы  ✓copy  ✓merge  ►compose …%  ·upload` + таблица роликов (готовые в начале сворачиваются на низком терминале).
-
----
-## Первый запуск YouTube
-
-Положите OAuth-файл в `~/.config/70mai/youtube_credentials.json` и при первом upload войдите в браузере.  
-Подробности: [детальное_описание.md](детальное_описание.md#youtube-oauth-one-time).
+Нужны: Mac, Python 3.10+, ffmpeg, SD-карта 70mai (обычно `/Volumes/Untitled`).
 
 ---
 
-## Тюнинг
+## Основные скрипты (только эти)
 
-Compose-профиль и запас диска — флаги autopilot:
+| Скрипт | Зачем |
+|--------|--------|
+| `./scripts/publish_all_70mai.sh` | **Автопилот** — import → compose → YouTube |
+| `./scripts/watch_publish_all_70mai.sh` | То же + авто-рестарт при падении |
+| `./scripts/autopilot_dashboard.sh` | Живой статус (второй терминал) |
+| `./scripts/generate_card_reports.sh` | Отчёт по карте (MD/CSV) |
+
+Остальные `.py` / `scripts/*` — внутренности; руками обычно не нужны.
+
+---
+
+## Как запускать
 
 ```bash
-./scripts/publish_all_70mai.sh --profile balanced --min-free-gb 20 --chunk-minutes 120
+# Карты ещё нет — ждать вставки
+./scripts/watch_publish_all_70mai.sh --wait
+
+# Карта уже вставлена
+./scripts/publish_all_70mai.sh
+
+# Только Parking / только план / без import
+./scripts/publish_all_70mai.sh --types Parking
+./scripts/publish_all_70mai.sh --dry-run
+./scripts/publish_all_70mai.sh --types Parking --skip-import
+
+# Прогресс (отдельное окно)
+./scripts/autopilot_dashboard.sh
 ```
 
-Import staging: [`70mai_runtime.json`](70mai_runtime.json) — `stage_batch_clips`, `chunk_clips`, `prefetch_batches`.
-
-`--prune-merged after-compose` (default) — 10‑мин склейки удаляются сразу после 2ч compose; 2ч MP4 — после YouTube.
-
-### Auto-repair (Parking/Event)
-
-По умолчанию `--repair auto`: перед import/compose проверяет, что SSD-merge покрывает план (≥98%). Короткий/устаревший `PA_`/`EV_` удаляется и пересобирается; если rebuild недоступен — compose берёт `min(trip, front, back)`.
-
-```bash
-./scripts/publish_all_70mai.sh --wait --repair auto       # default
-./scripts/publish_all_70mai.sh --types Parking --repair diagnose
-./scripts/publish_all_70mai.sh --repair off               # legacy skip
-```
-
-Лог фиксов: `video/Output/.publish_tmp/repair_log.jsonl`.
+По умолчанию типы: **Normal Event Parking**.
 
 ---
 
-## Полезное
+## Полезные параметры автопилота
 
-| Действие | Команда |
-|----------|---------|
-| Что на карте | `python3 import_70mai.py --scan` |
-| Только план | `./scripts/publish_all_70mai.sh --dry-run` |
-| Отметить залитое | `python3 publish_70mai.py --types Parking --mark-uploaded 1:1:VIDEO_ID --state-on-sd --resume` |
-| Лог автопилота | `tail -f video/Output/.publish_tmp/publish_all.log` |
-| Лог watchdog | `tail -f video/Output/.publish_tmp/publish_all_watchdog.log` |
-| Лог auto-repair | `tail -f video/Output/.publish_tmp/repair_log.jsonl` |
-| Отчёт по карте | `./scripts/generate_card_reports.sh` |
+| Флаг | Default | Смысл |
+|------|---------|--------|
+| `--wait` | off | Ждать SD |
+| `--types …` | Normal Event Parking | Что заливать |
+| `--profile` | `balanced` | `balanced` / `draft` / `quality` / `hevc` |
+| `--chunk-minutes` | `120` | Длина ролика (~мин) |
+| `--min-free-gb` | `20` | Не compose, если мало места |
+| `--prune-merged` | `after-compose` | Удалять 10‑мин склейки: `after-compose` / `after-upload` / `off` |
+| `--repair` | `auto` | Чинить короткий Parking/Event merge: `auto` / `diagnose` / `off` |
+| `--skip-import` | off | Только compose+upload (merge уже на диске) |
+| `--dry-run` | off | План без работы |
+| `--no-dashboard` | off | Без таблицы в том же терминале (удобно с `autopilot_dashboard.sh`) |
 
-Цели: [GOALS.md](GOALS.md). Детали: [детальное_описание.md](детальное_описание.md).
+Пример:
+
+```bash
+./scripts/watch_publish_all_70mai.sh --wait --profile balanced --min-free-gb 20
+```
+
+---
+
+## Логи
+
+```bash
+tail -f video/Output/.publish_tmp/publish_all.log
+tail -f video/Output/.publish_tmp/publish_all_watchdog.log
+tail -f video/Output/.publish_tmp/repair_log.jsonl
+```
+
+Статус на карте: `/.70mai/` (publish state, OAuth, inventory).
