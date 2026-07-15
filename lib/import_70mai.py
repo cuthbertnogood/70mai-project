@@ -52,11 +52,16 @@ MERGE_RETRY_DELAY_SEC = 3.0
 MIN_MERGE_BYTES = 10_000
 MERGE_DURATION_TOLERANCE = 0.85  # Normal: merged file must be >= 85% of source clips sum
 MERGE_DURATION_TOLERANCE_EVENT = 0.98  # Event/Parking single-file merges are stricter
+MERGE_SHORT_STRIKE_LIMIT = 3  # then ask user: ignore check / retry
+EXIT_MERGE_NEEDS_USER = 4  # interactive decision required (or run with TTY)
 MERGE_WORKERS = 1  # default 1: USB/SD seeks worse with parallel concat
 MERGE_HEARTBEAT_SEC = 30.0  # log while ffmpeg concat is silent
 PREFETCH_BLOCK = 4 * 1024 * 1024  # sequential read block for page-cache warmup
 # Prefetch only helps when a single merge worker is reading the SD sequentially.
 LOG_TIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+# Set when merge short struck out and needs a human (no TTY or user deferred).
+_merge_needs_user = False
 
 
 def format_log_line(msg: str) -> str:
@@ -1474,6 +1479,119 @@ def cleanup_stage_dir(stage_dir: Path | None) -> None:
         shutil.rmtree(stage_dir, ignore_errors=True)
     except OSError:
         pass
+
+
+def clean_stage_raw_clips(stage_dir: Path) -> None:
+    """Remove staged SD copies / leftovers; keep `_part_*.mp4` for resume."""
+    if not stage_dir.is_dir():
+        return
+    for path in stage_dir.iterdir():
+        name = path.name
+        if name.startswith("_part_") and name.endswith(".mp4"):
+            continue
+        if name in (".strikes.json",):
+            continue
+        if path.is_file():
+            path.unlink(missing_ok=True)
+
+
+def accept_short_marker_path(output_path: Path) -> Path:
+    return output_path.with_name(output_path.name + ".accept_short")
+
+
+def user_accepted_short_merge(output_path: Path) -> bool:
+    return accept_short_marker_path(output_path).is_file()
+
+
+def mark_accept_short_merge(output_path: Path, reason: str) -> None:
+    marker = accept_short_marker_path(output_path)
+    marker.write_text(
+        f"{datetime.now().strftime(LOG_TIME_FMT)}\n{reason}\n",
+        encoding="utf-8",
+    )
+
+
+def clear_accept_short_merge(output_path: Path) -> None:
+    accept_short_marker_path(output_path).unlink(missing_ok=True)
+
+
+def _strikes_path(stage_dir: Path) -> Path:
+    return stage_dir / ".strikes.json"
+
+
+def read_merge_short_strikes(stage_dir: Path) -> int:
+    path = _strikes_path(stage_dir)
+    if not path.is_file():
+        return 0
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return int(data.get("count") or 0)
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def write_merge_short_strikes(
+    stage_dir: Path, count: int, *, detail: str = ""
+) -> None:
+    import json
+
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "count": int(count),
+        "detail": detail,
+        "ts": datetime.now().strftime(LOG_TIME_FMT),
+    }
+    _strikes_path(stage_dir).write_text(
+        json.dumps(payload, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def clear_merge_short_strikes(stage_dir: Path | None) -> None:
+    if stage_dir is None:
+        return
+    _strikes_path(stage_dir).unlink(missing_ok=True)
+
+
+def bump_merge_short_strikes(stage_dir: Path, *, detail: str) -> int:
+    count = read_merge_short_strikes(stage_dir) + 1
+    write_merge_short_strikes(stage_dir, count, detail=detail)
+    return count
+
+
+def ask_merge_short_action(
+    *,
+    output_name: str,
+    detail: str,
+    strikes: int,
+) -> str:
+    """Return 'ignore' | 'retry' | 'stop' (no TTY → stop)."""
+    banner = (
+        f"\n=== Merge short ×{strikes}: {output_name} ===\n"
+        f"{detail}\n"
+        f"Хорошие _part_* сохранены (SD copy не нужен).\n"
+        f"  [i] ignore — принять файл как есть (ослабить проверку)\n"
+        f"  [r] retry  — ещё раз final concat\n"
+    )
+    log(banner.rstrip())
+    if not is_tty() or not sys.stdin.isatty():
+        log(
+            "Нет TTY — автопилот остановлен. Запусти import/publish "
+            "в интерактивном терминале и выбери [i]/[r]."
+        )
+        return "stop"
+    while True:
+        try:
+            ans = input("Выбор [i=ignore / r=retry]: ").strip().lower()
+        except EOFError:
+            return "stop"
+        if ans in ("i", "ignore", "и"):
+            return "ignore"
+        if ans in ("r", "retry", "п"):
+            return "retry"
+        print("Введи i или r", flush=True)
 
 
 def _ffmpeg_concat_copy(
