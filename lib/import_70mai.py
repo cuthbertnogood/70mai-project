@@ -1457,6 +1457,173 @@ def probe_duration_retry(
     return None
 
 
+DEFAULT_BAD_CLIPS_DIR = Path("video/Output/.publish_tmp")
+BAD_CLIPS_LOG_FILENAME = "bad_clips.jsonl"
+
+
+def bad_clips_log_path(history_dir: Path | None = None) -> Path:
+    return (history_dir or DEFAULT_BAD_CLIPS_DIR) / BAD_CLIPS_LOG_FILENAME
+
+
+def clip_unreadable_reason(path: Path, ffprobe: str) -> str | None:
+    """None if ffprobe can read a sane duration; else a short reason."""
+    if not path.is_file():
+        return "missing"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return "unreadable"
+    if size < MIN_MERGE_BYTES:
+        return f"too small ({size} B)"
+    dur = probe_duration_retry(path, ffprobe)
+    if dur is None:
+        return "ffprobe unreadable (moov/corrupt)"
+    if dur < 0.5:
+        return f"duration too short ({dur:.2f}s)"
+    return None
+
+
+def append_bad_clip_record(
+    *,
+    path: Path,
+    reason: str,
+    action: str,
+    record_type: str = "",
+    camera: str = "",
+    quarantine: Path | None = None,
+    history_dir: Path | None = None,
+    size: int | None = None,
+) -> dict:
+    """Append one bad-clip event to bad_clips.jsonl (history for later review)."""
+    import json
+
+    if size is None:
+        try:
+            size = path.stat().st_size if path.exists() else None
+        except OSError:
+            size = None
+    entry = {
+        "ts": datetime.now().strftime(LOG_TIME_FMT),
+        "name": path.name,
+        "path": str(path),
+        "record_type": record_type,
+        "camera": camera,
+        "reason": reason,
+        "action": action,
+        "quarantine": str(quarantine) if quarantine else "",
+        "size": size,
+    }
+    log_path = bad_clips_log_path(history_dir)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log(f"  [bad] could not write {log_path.name}: {exc}")
+    try:
+        from pipeline_repair import append_repair_log
+
+        append_repair_log(
+            log_path.parent,
+            action="bad_clip",
+            detail=f"{action} {path.name}: {reason}",
+            record_type=record_type,
+            camera=camera,
+            code="bad_clip_skip",
+        )
+    except Exception:
+        pass
+    return entry
+
+
+def quarantine_corrupt_clip(
+    path: Path,
+    *,
+    reason: str,
+    record_type: str = "",
+    camera: str = "",
+    history_dir: Path | None = None,
+) -> Path | None:
+    """Move clip aside (``.MP4`` → ``.MP4.bad``) so scan/merge skip it.
+
+    Does not try to repair — skip and continue. Returns quarantine path or None.
+    """
+    if not path.exists():
+        append_bad_clip_record(
+            path=path,
+            reason=reason,
+            action="missing",
+            record_type=record_type,
+            camera=camera,
+            history_dir=history_dir,
+        )
+        return None
+    try:
+        size_before = path.stat().st_size
+    except OSError:
+        size_before = None
+    dest = path.with_name(path.name + ".bad")
+    if dest.exists():
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        dest = path.with_name(f"{path.name}.{stamp}.bad")
+    try:
+        path.rename(dest)
+    except OSError as exc:
+        log(f"  [bad] quarantine failed for {path.name}: {exc}")
+        append_bad_clip_record(
+            path=path,
+            reason=f"{reason} (rename failed: {exc})",
+            action="skip_only",
+            record_type=record_type,
+            camera=camera,
+            history_dir=history_dir,
+            size=size_before,
+        )
+        return None
+    log(f"  [bad] quarantined {path.name} → {dest.name} ({reason})")
+    append_bad_clip_record(
+        path=path,
+        reason=reason,
+        action="quarantined",
+        record_type=record_type,
+        camera=camera,
+        quarantine=dest,
+        history_dir=history_dir,
+        size=size_before,
+    )
+    return dest
+
+
+def drop_unreadable_clips(
+    clips: list[Clip],
+    ffprobe: str,
+    *,
+    record_type: str = "",
+    camera: str = "",
+    history_dir: Path | None = None,
+    stage_dir: Path | None = None,
+) -> list[Clip]:
+    """Quarantine unreadable SD clips and return the survivors."""
+    kept: list[Clip] = []
+    for clip in clips:
+        reason = clip_unreadable_reason(clip.path, ffprobe)
+        if reason is None:
+            kept.append(clip)
+            continue
+        quarantine_corrupt_clip(
+            clip.path,
+            reason=reason,
+            record_type=record_type or clip.record_type,
+            camera=camera or clip.camera,
+            history_dir=history_dir,
+        )
+        if stage_dir is not None:
+            staged = stage_dir / clip.path.name
+            staged.unlink(missing_ok=True)
+            staged.with_suffix(staged.suffix + ".partial").unlink(missing_ok=True)
+    return kept
+
+
 def _staged_matches_source(
     dest: Path,
     src: Path,
@@ -1472,10 +1639,8 @@ def _staged_matches_source(
             return False
         dur = probe_duration_retry(dest, ffprobe)
         if dur is None or dur < 0.5:
-            # Digest matches source: if source also won't probe, treat as USB
-            # flakiness rather than a bad copy (retry later).
-            if probe_duration_retry(src, ffprobe) is None:
-                return True
+            # Unreadable dest is never usable — even if source matches
+            # (corrupt-on-card copies used to slip through here).
             return False
         if expected_duration is not None and expected_duration > 0:
             if dur < expected_duration * 0.95:
@@ -1503,6 +1668,20 @@ def stage_clips_locally(
     for i, clip in enumerate(chunk):
         idx = index_offset + i + 1
         dest = stage_dir / clip.path.name
+        src_bad = clip_unreadable_reason(clip.path, probe)
+        if src_bad:
+            quarantine_corrupt_clip(
+                clip.path,
+                reason=src_bad,
+                record_type=clip.record_type,
+                camera=clip.camera,
+                history_dir=DEFAULT_BAD_CLIPS_DIR,
+            )
+            dest.unlink(missing_ok=True)
+            log(
+                f"  [bad] skip staging {clip.path.name}: {src_bad}"
+            )
+            continue
         src_size = clip.path.stat().st_size
         if on_clip is not None:
             try:
@@ -1781,68 +1960,163 @@ def concat_copy_with_heal(
     expected_duration: float,
     *,
     record_type: str = "",
+    camera: str = "",
     heartbeat: str | None = None,
     on_heartbeat: Callable[[float], None] | None = None,
+    sd_origins: dict[str, Path] | None = None,
+    clip_durations: dict[str, float] | None = None,
+    history_dir: Path | None = None,
 ) -> str | None:
-    """Concat -c copy; on short/moov failure remux→faststart and retry.
+    """Concat -c copy; on short/moov failure drop bad clips (or remux) and retry.
 
-    Returns None on success, else error string.
+    Prefer skip/quarantine over repairing dead files. Returns None on success,
+    else error string.
     """
-    result = _ffmpeg_concat_copy(
-        ffmpeg,
-        sources,
-        output_path,
-        heartbeat=heartbeat,
-        on_heartbeat=on_heartbeat,
-    )
-    if result.returncode != 0:
-        err = _ffmpeg_merge_error(result)
-        output_path.unlink(missing_ok=True)
-        return err
+    working = list(sources)
+    expected = float(expected_duration)
+    origins = sd_origins or {}
+    durations = clip_durations or {}
+    hist = history_dir or DEFAULT_BAD_CLIPS_DIR
 
-    bad = merge_validation_error(
-        output_path, ffprobe, expected_duration, record_type=record_type
-    )
-    if bad is None:
-        return None
+    def _drop(path: Path, reason: str) -> None:
+        nonlocal expected
+        name = path.name
+        dropped_dur = durations.get(name)
+        if dropped_dur is None and working:
+            dropped_dur = expected / max(len(working), 1)
+        expected = max(0.0, expected - float(dropped_dur or 0.0))
+        path.unlink(missing_ok=True)
+        sd = origins.get(name)
+        if sd is not None and sd.exists():
+            quarantine_corrupt_clip(
+                sd,
+                reason=reason,
+                record_type=record_type,
+                camera=camera,
+                history_dir=hist,
+            )
+        else:
+            append_bad_clip_record(
+                path=path,
+                reason=reason,
+                action="dropped_staged",
+                record_type=record_type,
+                camera=camera,
+                history_dir=hist,
+            )
+            log(f"  [bad] dropped staged {name}: {reason}")
 
-    # Auto-heal: remux each source to faststart, then concat again.
-    log(f"       concat short/bad ({bad}) — remux faststart + retry")
-    output_path.unlink(missing_ok=True)
-    remux_dir = output_path.parent / f".remux_{output_path.stem}"
-    remux_dir.mkdir(parents=True, exist_ok=True)
-    remuxed: list[Path] = []
-    try:
-        for i, src in enumerate(sources):
-            dest = remux_dir / f"{i:03d}_{src.name}"
-            rr = _ffmpeg_remux_faststart(ffmpeg, src, dest)
-            if rr.returncode != 0:
-                return (
-                    f"faststart remux failed for {src.name}: "
-                    f"{_ffmpeg_merge_error(rr)}"
-                )
-            remuxed.append(dest)
+    for _round in range(1, 6):
+        if not working:
+            return "all clips unreadable/corrupt"
+
         result = _ffmpeg_concat_copy(
             ffmpeg,
-            remuxed,
+            working,
             output_path,
-            heartbeat=(f"{heartbeat} heal" if heartbeat else "concat heal"),
+            heartbeat=heartbeat,
             on_heartbeat=on_heartbeat,
         )
         if result.returncode != 0:
             err = _ffmpeg_merge_error(result)
             output_path.unlink(missing_ok=True)
-            return err
-        bad2 = merge_validation_error(
-            output_path, ffprobe, expected_duration, record_type=record_type
+            # Identify unreadable sources first — do not keep retrying them.
+            bad = [
+                (p, clip_unreadable_reason(p, ffprobe) or "concat input error")
+                for p in working
+            ]
+            bad = [(p, r) for p, r in bad if r]
+            if not bad:
+                return err
+            log(
+                f"       concat failed — dropping {len(bad)} bad clip(s), "
+                f"retry with {len(working) - len(bad)} left"
+            )
+            bad_set = {p for p, _ in bad}
+            for path, reason in bad:
+                _drop(path, reason)
+            working = [p for p in working if p not in bad_set]
+            continue
+
+        bad = merge_validation_error(
+            output_path, ffprobe, expected, record_type=record_type
         )
-        if bad2 is None:
-            log("       concat healed after faststart remux")
+        if bad is None:
+            if _round > 1:
+                log(
+                    f"       concat ok after dropping bad clips "
+                    f"({len(working)} kept, expected ~{expected:.0f}s)"
+                )
             return None
+
+        # Prefer identifying dead sources over remuxing everything.
+        unreadable = [
+            (p, clip_unreadable_reason(p, ffprobe) or "unreadable")
+            for p in working
+        ]
+        unreadable = [(p, r) for p, r in unreadable if r]
+        if unreadable:
+            log(
+                f"       concat short/bad ({bad}) — "
+                f"skip {len(unreadable)} corrupt clip(s)"
+            )
+            output_path.unlink(missing_ok=True)
+            bad_set = {p for p, _ in unreadable}
+            for path, reason in unreadable:
+                _drop(path, reason)
+            working = [p for p in working if p not in bad_set]
+            continue
+
+        # All sources probe OK but concat short — try faststart remux once.
+        log(f"       concat short/bad ({bad}) — remux faststart + retry")
         output_path.unlink(missing_ok=True)
-        return f"ffprobe validation after heal: {bad2}"
-    finally:
-        shutil.rmtree(remux_dir, ignore_errors=True)
+        remux_dir = output_path.parent / f".remux_{output_path.stem}"
+        remux_dir.mkdir(parents=True, exist_ok=True)
+        remuxed: list[Path] = []
+        remux_failed: list[tuple[Path, str]] = []
+        try:
+            for i, src in enumerate(working):
+                dest = remux_dir / f"{i:03d}_{src.name}"
+                rr = _ffmpeg_remux_faststart(ffmpeg, src, dest)
+                if rr.returncode != 0:
+                    remux_failed.append((src, _ffmpeg_merge_error(rr)))
+                    continue
+                remuxed.append(dest)
+            if remux_failed:
+                log(
+                    f"       remux failed for {len(remux_failed)} clip(s) — "
+                    f"quarantine and retry without them"
+                )
+                bad_set = {p for p, _ in remux_failed}
+                for path, reason in remux_failed:
+                    _drop(path, f"faststart remux failed: {reason}")
+                working = [p for p in working if p not in bad_set]
+                continue
+            if not remuxed:
+                return "faststart remux produced no clips"
+            result = _ffmpeg_concat_copy(
+                ffmpeg,
+                remuxed,
+                output_path,
+                heartbeat=(f"{heartbeat} heal" if heartbeat else "concat heal"),
+                on_heartbeat=on_heartbeat,
+            )
+            if result.returncode != 0:
+                err = _ffmpeg_merge_error(result)
+                output_path.unlink(missing_ok=True)
+                return err
+            bad2 = merge_validation_error(
+                output_path, ffprobe, expected, record_type=record_type
+            )
+            if bad2 is None:
+                log("       concat healed after faststart remux")
+                return None
+            output_path.unlink(missing_ok=True)
+            return f"ffprobe validation after heal: {bad2}"
+        finally:
+            shutil.rmtree(remux_dir, ignore_errors=True)
+
+    return "concat heal: too many bad-clip rounds"
 
 
 def merge_clips(
@@ -2029,8 +2303,14 @@ def merge_clips(
         label: str,
         *,
         expected: float | None = None,
+        clips_for_meta: list[Clip] | None = None,
     ) -> str | None:
         """Return None on success, else error string."""
+        meta = clips_for_meta or []
+        sd_origins = {c.path.name: c.path for c in meta}
+        clip_durs = {
+            c.path.name: float(c.duration or 0.0) for c in meta if c.duration
+        }
         if expected is not None and expected > 0:
             return concat_copy_with_heal(
                 ffmpeg,
@@ -2039,8 +2319,12 @@ def merge_clips(
                 dest,
                 expected,
                 record_type=record_type,
+                camera=camera,
                 heartbeat=label,
                 on_heartbeat=on_hb,
+                sd_origins=sd_origins,
+                clip_durations=clip_durs,
+                history_dir=DEFAULT_BAD_CLIPS_DIR,
             )
         last_error = ""
         for attempt in range(1, attempts + 1):
@@ -2081,6 +2365,8 @@ def merge_clips(
                 pre_staged_paths,
                 output_path,
                 f"merging {output_path.name}",
+                expected=expected_duration,
+                clips_for_meta=chunk,
             )
             if err:
                 return _fail(err)
@@ -2097,6 +2383,23 @@ def merge_clips(
                 f"{len(batches)} batch(es) of ≤{batch_size} → {stage_dir.name}/"
             )
             if len(batches) == 1:
+                single = drop_unreadable_clips(
+                    chunk,
+                    ffprobe,
+                    record_type=record_type,
+                    camera=camera,
+                    history_dir=DEFAULT_BAD_CLIPS_DIR,
+                    stage_dir=stage_dir,
+                )
+                if not single:
+                    return _fail("all clips unreadable/corrupt")
+                if len(single) < len(chunk):
+                    log(
+                        f"  [bad] skipped {len(chunk) - len(single)} corrupt "
+                        f"clip(s); merging {len(single)} remaining"
+                    )
+                    chunk = single
+                    expected_duration = sum(c.duration or 0.0 for c in chunk)
                 try:
                     concat_sources = stage_clips_locally(
                         chunk,
@@ -2111,7 +2414,11 @@ def merge_clips(
                     f"({len(concat_sources)} clips) → {output_path.name}"
                 )
                 err = _concat_sources(
-                    concat_sources, output_path, f"merging {output_path.name}"
+                    concat_sources,
+                    output_path,
+                    f"merging {output_path.name}",
+                    expected=expected_duration,
+                    clips_for_meta=chunk,
                 )
                 if err:
                     return _fail(err)
@@ -2146,6 +2453,23 @@ def merge_clips(
                             part_out.unlink(missing_ok=True)
                     if reused:
                         continue
+                    planned_n = len(batch)
+                    batch = drop_unreadable_clips(
+                        batch,
+                        ffprobe,
+                        record_type=record_type,
+                        camera=camera,
+                        history_dir=DEFAULT_BAD_CLIPS_DIR,
+                        stage_dir=stage_dir,
+                    )
+                    if not batch:
+                        log(
+                            f"  [merge] part {batch_idx}/{len(batches)}: "
+                            "all clips corrupt — skip part"
+                        )
+                        offset += planned_n
+                        continue
+                    part_expected = sum(c.duration or 0.0 for c in batch)
                     try:
                         staged = stage_clips_locally(
                             batch,
@@ -2159,6 +2483,16 @@ def merge_clips(
                             f"staging failed: {exc}",
                             keep_stage_parts=True,
                         )
+                    if not staged:
+                        log(
+                            f"  [merge] part {batch_idx}/{len(batches)}: "
+                            "nothing staged (corrupt) — skip part"
+                        )
+                        offset += planned_n
+                        continue
+                    staged_names = {p.name for p in staged}
+                    batch = [c for c in batch if c.path.name in staged_names]
+                    part_expected = sum(c.duration or 0.0 for c in batch)
                     log(
                         f"  [merge] part {batch_idx}/{len(batches)} "
                         f"({len(staged)} clips) …"
@@ -2169,6 +2503,7 @@ def merge_clips(
                         f"merging {output_path.name} "
                         f"part {batch_idx}/{len(batches)}",
                         expected=part_expected,
+                        clips_for_meta=batch,
                     )
                     if err:
                         log(
@@ -2178,6 +2513,23 @@ def merge_clips(
                         for path in staged:
                             path.unlink(missing_ok=True)
                         part_out.unlink(missing_ok=True)
+                        # Re-drop anything that went bad on SD since staging.
+                        batch = drop_unreadable_clips(
+                            batch,
+                            ffprobe,
+                            record_type=record_type,
+                            camera=camera,
+                            history_dir=DEFAULT_BAD_CLIPS_DIR,
+                            stage_dir=stage_dir,
+                        )
+                        if not batch:
+                            log(
+                                f"  [merge] part {batch_idx}/{len(batches)}: "
+                                "all clips corrupt after retry — skip part"
+                            )
+                            offset += planned_n
+                            continue
+                        part_expected = sum(c.duration or 0.0 for c in batch)
                         try:
                             staged = stage_clips_locally(
                                 batch,
@@ -2198,12 +2550,17 @@ def merge_clips(
                             f"merging {output_path.name} "
                             f"part {batch_idx}/{len(batches)} retry",
                             expected=part_expected,
+                            clips_for_meta=batch,
                         )
                     for path in staged:
                         path.unlink(missing_ok=True)
                     if err:
                         part_out.unlink(missing_ok=True)
                         return _fail(err, keep_stage_parts=True)
+                    # Heal may have dropped more clips — validate against survivors.
+                    part_expected = sum(
+                        (c.duration or 0.0) for c in batch if c.path.is_file()
+                    )
                     part_bad = merge_validation_error(
                         part_out,
                         ffprobe,
@@ -2218,7 +2575,18 @@ def merge_clips(
                             keep_stage_parts=True,
                         )
                     parts.append(part_out)
-                    offset += len(batch)
+                    offset += planned_n
+
+                if not parts:
+                    return _fail(
+                        "no mergeable parts (all clips corrupt?)",
+                        keep_stage_parts=True,
+                    )
+
+                # Exclude quarantined clips from final duration target.
+                expected_duration = sum(
+                    (c.duration or 0.0) for c in chunk if c.path.is_file()
+                )
 
                 def _run_final() -> str | None:
                     log(

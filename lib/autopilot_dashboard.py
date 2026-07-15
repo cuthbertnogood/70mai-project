@@ -769,7 +769,47 @@ def collect_failure_lines(temp_dir: Path, *, limit: int = 6) -> list[str]:
         "compose_part_stale": 4,
         "state_drift": 5,
         "rebuild_merge": 6,
+        "bad_clip_skip": 1,
     }
+
+    try:
+        from import_70mai import bad_clips_log_path
+
+        bad_path = bad_clips_log_path(temp_dir)
+        if bad_path.is_file():
+            import json
+
+            for line in bad_path.read_text(encoding="utf-8").splitlines()[-12:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                name = str(entry.get("name") or "")
+                reason = str(entry.get("reason") or "")
+                action = str(entry.get("action") or "skip")
+                where = "/".join(
+                    p
+                    for p in (
+                        str(entry.get("record_type") or ""),
+                        str(entry.get("camera") or ""),
+                    )
+                    if p
+                )
+                head = f"bad_clip {action}"
+                if where:
+                    head += f" {where}"
+                if name:
+                    head += f": {name}"
+                if reason:
+                    head += f" ({reason})"
+                ts = _format_fail_ts(str(entry.get("ts") or ""))
+                text = f"{ts} {head}" if ts else head
+                repair_ranked.append((1, text[:140]))
+    except Exception:
+        pass
 
     try:
         from pipeline_repair import read_recent_repairs
