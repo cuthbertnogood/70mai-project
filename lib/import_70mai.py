@@ -2239,6 +2239,75 @@ def concat_copy_with_heal(
     return "concat heal: too many bad-clip rounds"
 
 
+def write_timeline_manifest(
+    output_path: Path,
+    chunk: list[Clip],
+    *,
+    record_type: str,
+    camera: str,
+) -> None:
+    """Write the aligned-timeline sidecar for a merged file (best-effort).
+
+    Uses only clips that still survive on the SD card (quarantined ``.bad``
+    clips are excluded) so the manifest reflects what is actually in the merge.
+    """
+    try:
+        from clip_timeline import build_manifest, write_manifest_atomic
+
+        survivors = [
+            c for c in chunk if c.duration and _clip_source_present(c)
+        ]
+        if not survivors:
+            return
+        manifest = build_manifest(
+            record_type=record_type,
+            camera=camera,
+            merge_name=output_path.name,
+            clips=survivors,
+        )
+        write_manifest_atomic(output_path, manifest)
+    except Exception as exc:  # never fail a merge because of the sidecar
+        log(f"  [timeline] manifest write skipped for {output_path.name}: {exc}")
+
+
+def _clip_source_present(clip: Clip) -> bool:
+    try:
+        return clip.path.is_file()
+    except OSError:
+        return False
+
+
+def _ensure_timeline_manifest(
+    output_path: Path,
+    chunk: list[Clip],
+    *,
+    record_type: str,
+    camera: str,
+) -> None:
+    """Write the sidecar only when it is missing or does not match the merge."""
+    try:
+        from clip_timeline import load_manifest, manifest_is_fresh
+
+        last_clip = chunk[-1].path.name if chunk else None
+        survivors = [
+            c for c in chunk if c.duration and _clip_source_present(c)
+        ]
+        manifest = load_manifest(output_path)
+        if manifest_is_fresh(
+            manifest,
+            expected_clip_count=len(survivors),
+            expected_last_clip=(
+                survivors[-1].path.name if survivors else last_clip
+            ),
+        ):
+            return
+    except Exception:
+        pass
+    write_timeline_manifest(
+        output_path, chunk, record_type=record_type, camera=camera
+    )
+
+
 def merge_clips(
     chunk: list[Clip],
     output_path: Path,
@@ -2316,6 +2385,9 @@ def merge_clips(
         ):
             size_mb = output_path.stat().st_size / 1_000_000
             _record("skipped", size_mb=size_mb)
+            _ensure_timeline_manifest(
+                output_path, chunk, record_type=record_type, camera=camera
+            )
             if reporter:
                 reporter.skip(output_path.name, size_mb, pipeline)
             else:
@@ -2812,6 +2884,9 @@ def merge_clips(
             f"in {format_duration(elapsed)}"
         )
         clear_merge_short_strikes(stage_dir)
+        write_timeline_manifest(
+            output_path, chunk, record_type=record_type, camera=camera
+        )
         _record("merged", size_mb=size_mb, elapsed_sec=elapsed)
         if reporter:
             reporter.finish_merge(

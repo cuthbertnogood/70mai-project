@@ -69,6 +69,8 @@ cd /Users/cuthbert/work_local/70mai_project
 
 По умолчанию типы: **Normal Event Parking**.
 
+**Синхронизация камер:** import пишет рядом с каждым merge timeline-manifest (`<merge>.timeline.json`), а compose выравнивает Front/Back по общим слотам и заменяет пропавшую/короткую камеру чёрным экраном + тишиной — время Front и Back не расходится к концу ролика. Логи compose показывают `Slots/Black fill` и `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
+
 ---
 
 ## Полезные параметры автопилота

@@ -441,6 +441,18 @@ def chunk_merges_ready(
     )
     if not front or not back:
         return False
+    # Slot-aligned merges (both carry a timeline manifest) are ready by
+    # construction: compose black-fills any per-camera gap, so a short camera
+    # must not block readiness.
+    try:
+        from clip_timeline import load_manifest
+
+        if all(
+            load_manifest(clips[0].path) is not None for clips in (front, back)
+        ):
+            return True
+    except Exception:
+        pass
     for trip in chunk.trips:
         try:
             fs = plan_segments(front, trip.start, trip.duration_sec, 0.0)

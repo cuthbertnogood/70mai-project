@@ -89,6 +89,89 @@ class PipelineRepairTests(unittest.TestCase):
         self.assertIn("merge_short", codes)
         self.assertTrue(any(i.camera == "Front" for i in issues if i.code == "merge_short"))
 
+    def test_merge_short_is_warn_when_aligned(self) -> None:
+        chunk = self._parking_chunk(7309.0)
+        start = chunk.start
+        front = [
+            _FakeClip(
+                path=Path("PA_front.mp4"),
+                start=start,
+                end=start + timedelta(seconds=6889.6),
+                camera="Front",
+                duration=6889.6,
+            )
+        ]
+        back = [
+            _FakeClip(
+                path=Path("PA_back.mp4"),
+                start=start,
+                end=start + timedelta(seconds=7314.0),
+                camera="Back",
+                duration=7314.0,
+            )
+        ]
+
+        def fake_scan(video_dir, camera, *, record_type="Normal", probe=True):
+            return front if camera == "Front" else back
+
+        def fake_plan(clips, wall_start, duration, sync_offset):
+            from compose_70mai import Segment
+
+            dur = clips[0].duration or 0.0
+            return [Segment(path=clips[0].path, ss=0.0, duration=min(duration, dur))]
+
+        with (
+            mock.patch("compose_70mai.scan_merged_clips", side_effect=fake_scan),
+            mock.patch("compose_70mai.plan_segments", side_effect=fake_plan),
+            mock.patch("pipeline_repair._aligned_ready", return_value=True),
+            mock.patch("pipeline_repair._manifest_matches_file", return_value=True),
+        ):
+            issues = diagnose_chunk(None, Path("video/Output"), chunk)
+        # With slot-aligned manifests, coverage shortfalls are warnings, not
+        # blockers — nothing forces a rebuild.
+        blockers = [i for i in issues if i.severity == "blocker"]
+        self.assertEqual(blockers, [])
+        self.assertTrue(any(i.code == "merge_short" for i in issues))
+
+    def test_manifest_missing_blocks_when_not_aligned(self) -> None:
+        chunk = self._parking_chunk(7309.0)
+        start = chunk.start
+        front = [
+            _FakeClip(
+                path=Path("PA_front.mp4"),
+                start=start,
+                end=start + timedelta(seconds=7309.6),
+                camera="Front",
+                duration=7309.6,
+            )
+        ]
+        back = [
+            _FakeClip(
+                path=Path("PA_back.mp4"),
+                start=start,
+                end=start + timedelta(seconds=7309.6),
+                camera="Back",
+                duration=7309.6,
+            )
+        ]
+
+        def fake_scan(video_dir, camera, *, record_type="Normal", probe=True):
+            return front if camera == "Front" else back
+
+        def fake_plan(clips, wall_start, duration, sync_offset):
+            from compose_70mai import Segment
+
+            return [Segment(path=clips[0].path, ss=0.0, duration=duration)]
+
+        with (
+            mock.patch("compose_70mai.scan_merged_clips", side_effect=fake_scan),
+            mock.patch("compose_70mai.plan_segments", side_effect=fake_plan),
+            mock.patch("pipeline_repair._manifest_matches_file", return_value=False),
+        ):
+            issues = diagnose_chunk(None, Path("video/Output"), chunk)
+        codes = {i.code for i in issues if i.severity == "blocker"}
+        self.assertIn("manifest_missing", codes)
+
     def test_remediate_deletes_and_invalidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

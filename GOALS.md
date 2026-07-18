@@ -73,6 +73,11 @@ Watchdog `./scripts/watch_publish_all_70mai.sh` подхватывает Parking
 
 **Self-healing (Jul 2026):** короткий/stale `PA_` больше не скипается import’ом (tolerance Event/Parking **0.98**; fingerprint `clip_count`/`last_clip`). Autopilot `--repair auto` диагностирует gap до compose, удаляет битый merge и пересобирает; compose fallback = `min(trip, front, back)`. Stage-merge: независимые parts + один final concat; при fail parts сохраняются; после **3× merge short** — интерактивный выбор ignore/retry (маркер `.accept_short`). Битый клип без `moov` (битый `mdat` на карте) → quarantine `*.MP4.bad`, merge без него; история host + SD (`bad_clips.jsonl`); счётчик в дашборде «Сбои».
 
+**Синхронизация Front/Back без drift (Jul 2026):** раньше камеры склеивались независимо, и один пропавший/короткий клип сдвигал всю дорожку до конца (drift до 5–6 мин). Теперь import пишет рядом с merge атомарный timeline-manifest (`<merge>.timeline.json`: ключ клипа, wall-time, длительность, media-offset), а `compose_2cam` строит для каждой камеры дорожку одинаковой длины по общим слотам:
+- **Parking/Event** — compressed timeline из union слотов `(timestamp, sequence)` (реальные многомесячные паузы между событиями не вставляются, длина слота = большая из пары);
+- **Normal** — wall-clock timeline поездки.
+Отсутствующая/короткая камера в слоте заменяется **чёрным видео + тишиной** (`color=black` / `anullsrc`), длина `plan_estimate` для Parking/Event = сумма union-слотов `max(front, back)`. После compose ffprobe сверяет итоговую длительность с целевой. `--repair` требует свежий manifest (иначе `manifest_missing` → rebuild); при наличии manifest coverage-gap’ы — предупреждение с black-fill, а не blocker/cap. Legacy-путь (без manifest) сохранён для старых merge. Логика: `lib/clip_timeline.py`.
+
 ### Ускорение пайплайна (Jul 2026)
 
 - **Import:** 2 параллельных ffmpeg concat, фоновый прогрев page cache следующего чанка, общий ffprobe-кэш (`.probe_cache.json`) для plan/import/publish. Concat **без** `-probesize 1M` (у 70mai `moov` в конце файла — иначе part схлопывался до ~30s). Перед ffprobe — быстрый walk атомов (`mp4_has_moov_atom`), чтобы не зависать на битом `mdat`.

@@ -25,6 +25,7 @@ REBUILD_CODES = frozenset(
         "compose_gap",
         "compose_part_stale",
         "state_drift",
+        "manifest_missing",
     }
 )
 
@@ -151,6 +152,31 @@ def _merged_duration(
     return sum(_clip_duration(c) or 0.0 for c in clips), clips[0].path
 
 
+def _manifest_matches_file(merge_path: Path | None) -> bool:
+    """True when a fresh timeline manifest exists whose duration matches the
+    merge file (so compose can align gaps with black instead of drifting)."""
+    if merge_path is None or not merge_path.is_file():
+        return False
+    try:
+        from clip_timeline import load_manifest
+        from compose_70mai import probe_duration
+
+        manifest = load_manifest(merge_path)
+        if manifest is None or not manifest.clips:
+            return False
+        declared = sum(c.duration for c in manifest.clips)
+        actual = probe_duration(merge_path)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if actual <= 0:
+        return False
+    return abs(declared - actual) <= max(2.0, actual * FB_MISMATCH_RATIO)
+
+
+def _aligned_ready(front_path: Path | None, back_path: Path | None) -> bool:
+    return _manifest_matches_file(front_path) and _manifest_matches_file(back_path)
+
+
 def diagnose_chunk(
     source: Path | None,
     video_dir: Path,
@@ -187,6 +213,32 @@ def diagnose_chunk(
         )
         return issues
 
+    # When both merges carry a fresh timeline manifest, compose is slot-aligned
+    # and fills missing/short clips with black — coverage gaps are then expected
+    # (warn), not blockers. A missing/stale manifest stays a blocker so import
+    # rebuilds it.
+    aligned = record_type in SINGLE_VIDEO_TYPES and _aligned_ready(
+        front_path, back_path
+    )
+    cov_sev = "warn" if aligned else "blocker"
+    if record_type in SINGLE_VIDEO_TYPES and not aligned:
+        for camera, path in (("Front", front_path), ("Back", back_path)):
+            if path is not None and not _manifest_matches_file(path):
+                issues.append(
+                    HealthIssue(
+                        code="manifest_missing",
+                        record_type=record_type,
+                        camera=camera,
+                        severity="blocker",
+                        message=(
+                            f"{record_type}/{camera} {path.name} has no fresh "
+                            "timeline manifest — rebuild for slot-aligned compose"
+                        ),
+                        remediation="rebuild_merge",
+                        path=path,
+                    )
+                )
+
     if record_type in SINGLE_VIDEO_TYPES:
         for camera, dur, path in (
             ("Front", front_dur, front_path),
@@ -203,7 +255,7 @@ def diagnose_chunk(
                         code="merge_short",
                         record_type=record_type,
                         camera=camera,
-                        severity="blocker",
+                        severity=cov_sev,
                         message=(
                             f"{record_type}/{camera} merge {dur:.1f}s < "
                             f"{COVERAGE_THRESHOLD:.0%} of trip {trip_duration:.1f}s"
@@ -222,7 +274,7 @@ def diagnose_chunk(
                     code="merge_fb_mismatch",
                     record_type=record_type,
                     camera=short_cam,
-                    severity="blocker",
+                    severity=cov_sev,
                     message=(
                         f"{record_type} Front/Back duration mismatch: "
                         f"{front_dur:.1f}s vs {back_dur:.1f}s"
@@ -277,7 +329,7 @@ def diagnose_chunk(
                         code="compose_gap",
                         record_type=record_type,
                         camera=camera,
-                        severity="blocker",
+                        severity=cov_sev,
                         message=(
                             f"plan_segments {record_type}/{camera} trip "
                             f"{trip.index}: {err or 'no coverage'}"
@@ -294,7 +346,7 @@ def diagnose_chunk(
                         code="compose_gap",
                         record_type=record_type,
                         camera=camera,
-                        severity="blocker",
+                        severity=cov_sev,
                         message=(
                             f"{record_type}/{camera} covers {covered:.1f}s of "
                             f"needed {trip.duration_sec:.1f}s "
@@ -371,6 +423,7 @@ def remediate(
 
         if path.is_file():
             path.unlink()
+            _delete_manifest_sidecar(path)
             line = f"[repair] rebuilt (deleted merge): {path.name}"
             actions.append(line)
             log(line)
@@ -400,6 +453,15 @@ def remediate(
                     log(line)
 
     return actions
+
+
+def _delete_manifest_sidecar(merge_path: Path) -> None:
+    try:
+        from clip_timeline import manifest_path_for
+
+        manifest_path_for(merge_path).unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def capped_compose_duration(

@@ -122,6 +122,12 @@ def prune_merged_for_trip(
                     clip.path.unlink()
                 except OSError:
                     continue
+                try:
+                    from clip_timeline import manifest_path_for
+
+                    manifest_path_for(clip.path).unlink(missing_ok=True)
+                except Exception:
+                    pass
                 freed += size
                 count += 1
     if freed:
@@ -571,10 +577,18 @@ def trip_part_complete(
         from compose_70mai import plan_segments, scan_merged_clips
 
         try:
-            for camera in ("Front", "Back"):
-                clips = scan_merged_clips(
-                    video_dir, camera, record_type=record_type, probe=True
-                )
+            front = scan_merged_clips(
+                video_dir, "Front", record_type=record_type, probe=True
+            )
+            back = scan_merged_clips(
+                video_dir, "Back", record_type=record_type, probe=True
+            )
+            # Slot-aligned compose fills gaps with black, so per-camera
+            # plan_segments coverage is expected to be short — the part-file
+            # duration check above already validates the timeline length.
+            if front and back and _both_merges_have_manifest(front, back):
+                return True
+            for camera, clips in (("Front", front), ("Back", back)):
                 segs = plan_segments(clips, trip_start, expected_sec, 0.0)
                 covered = sum(s.duration for s in segs)
                 if covered < expected_sec * 0.98:
@@ -582,6 +596,19 @@ def trip_part_complete(
         except (ValueError, OSError, RuntimeError):
             return False
     return True
+
+
+def _both_merges_have_manifest(front_clips: list, back_clips: list) -> bool:
+    try:
+        from clip_timeline import load_manifest
+
+        return all(
+            load_manifest(clips[0].path) is not None
+            for clips in (front_clips, back_clips)
+            if clips
+        )
+    except Exception:
+        return False
 
 
 def _compose_duration_for_trip(
@@ -600,6 +627,10 @@ def _compose_duration_for_trip(
 
     front = scan_merged_clips(video_dir, "Front", record_type=record_type, probe=True)
     back = scan_merged_clips(video_dir, "Back", record_type=record_type, probe=True)
+    # Slot-aligned compose (both merges carry a timeline manifest) computes the
+    # true union-slot length itself and black-fills gaps — never cap it down.
+    if front and back and _both_merges_have_manifest(front, back):
+        return trip.duration_sec
     front_dur = front[0].duration if front else None
     back_dur = back[0].duration if back else None
     capped = capped_compose_duration(trip.duration_sec, front_dur, back_dur)
@@ -1656,15 +1687,23 @@ def main() -> None:
 
             if args.compose_only:
                 log(f"  Compose-only: {output}")
-                mark_chunk_state(
-                    state,
-                    record_type=record_type,
-                    chunk=chunk,
-                    video_id=None,
-                    uploaded=False,
-                    output_path=output,
-                )
-                state_store.save(state)
+                if chunk_uploaded(state, record_type, chunk.index):
+                    # Local rebuild for verification — do not reset the
+                    # already-uploaded chunk's state or drop its video_id.
+                    log(
+                        "  Compose-only: chunk already uploaded — "
+                        "state left unchanged"
+                    )
+                else:
+                    mark_chunk_state(
+                        state,
+                        record_type=record_type,
+                        chunk=chunk,
+                        video_id=None,
+                        uploaded=False,
+                        output_path=output,
+                    )
+                    state_store.save(state)
                 if youtube_sync:
                     sync_card_youtube_inventory(state, state_store, **youtube_sync)
                 if not args.keep:

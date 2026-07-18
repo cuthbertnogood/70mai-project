@@ -325,6 +325,19 @@ def format_youtube_quota_note(
     )
 
 
+def _union_slot_duration(front: list[Clip], back: list[Clip]) -> float:
+    """Sum of union slots: each slot lasts as long as the longer paired clip."""
+    from clip_timeline import clip_key
+
+    slots: dict[str, float] = {}
+    for clip in list(front) + list(back or []):
+        key = clip_key(clip.timestamp, clip.sequence)
+        dur = float(clip.duration or 0.0)
+        if dur > slots.get(key, 0.0):
+            slots[key] = dur
+    return sum(slots.values())
+
+
 def event_trip_from_all_clips(
     record_type: str,
     front: list[Clip],
@@ -337,7 +350,10 @@ def event_trip_from_all_clips(
     sorted_front = sorted(front, key=lambda c: (c.timestamp, c.sequence))
     front_dur = sum(c.duration or 0.0 for c in sorted_front)
     back_dur = sum(c.duration or 0.0 for c in back) if back else 0.0
-    duration = min(front_dur, back_dur) if back else front_dur
+    # Aligned timeline: length is the sum of union slots (max of the paired
+    # Front/Back clip), not min(sum) — a missing/short clip becomes black, not
+    # a shift that drops the tail.
+    duration = _union_slot_duration(sorted_front, back)
     if duration <= 0:
         duration = max(front_dur, back_dur, 15.0)
 

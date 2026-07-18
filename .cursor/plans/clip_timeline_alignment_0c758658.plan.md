@@ -4,19 +4,19 @@ overview: "Перевести 2-cam compose с независимой склей
 todos:
   - id: timeline-model
     content: Добавить pair/wall-clock timeline model и атомарный manifest при import
-    status: pending
+    status: completed
   - id: aligned-compose
     content: Собрать real/black video и real/silence audio tracks одинаковой длины
-    status: pending
+    status: completed
   - id: planning-repair
     content: Перевести duration, health checks и fallback на timeline-aware логику
-    status: pending
+    status: completed
   - id: tests-docs
     content: Добавить drift/gap тесты и обновить README/GOALS
-    status: pending
+    status: completed
   - id: rebuild-parking
     content: После подключения SD локально пересобрать и проверить Parking без upload
-    status: pending
+    status: completed
 isProject: false
 ---
 
