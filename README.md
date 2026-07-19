@@ -95,7 +95,7 @@ cd /Users/cuthbert/work_local/70mai_project
 
 # Прогресс (отдельное окно): copy/merge/compose/upload; compose % из autopilot_status.json
 # (не stale Encode из publish_all.log); все *.log в .publish_tmp; proc: publish_70mai = publish;
-# блок «Локальные файлы» (open …/chunk_XX/trip_YY.mp4 до YouTube); внизу «Сбои»;
+# блок «Локальные файлы» — один путь (самая поздняя поездка, open до YouTube); внизу «Сбои»;
 # Parking: сейчас Xs / цель ~7309s; после 3× short — [i]gnore/[r]etry (parts keep).
 # Битый клип (moov/ffprobe) → quarantine `*.MP4.bad`, merge без него; счётчик в «Сбои»;
 # история: host `video/Output/.publish_tmp/bad_clips.jsonl` + SD `/.70mai/import/bad_clips.jsonl`

@@ -697,27 +697,24 @@ def format_local_files_block(
     rows: list[TripRow],
     *,
     term_cols: int,
-    limit: int = 8,
+    limit: int = 1,
 ) -> list[str]:
-    """Paths to composed MP4 / merged sources for trips not yet on YouTube."""
-    candidates = sorted(
-        (r for r in rows if _row_show_local_path(r)),
-        key=_local_path_priority,
-    )
-    picked: list[TripRow] = []
-    seen_paths: set[str] = set()
-    for row in candidates:
-        path = (row.local_path or "").strip()
-        if path in ("—", "-", ""):
-            continue
-        if path in seen_paths:
-            continue
-        seen_paths.add(path)
-        picked.append(row)
-        if len(picked) >= limit:
-            break
-    if not picked:
+    """Single newest local path (by trip date) for trips not yet on YouTube."""
+    del limit  # kept for callers; always one row
+    candidates = [r for r in rows if _row_show_local_path(r)]
+    if not candidates:
         return []
+
+    def _trip_when(row: TripRow) -> datetime:
+        if row.trip_start is not None:
+            return row.trip_start
+        return datetime.min
+
+    row = max(candidates, key=lambda r: (_trip_when(r), r.overall_index or 0))
+    path = (row.local_path or "").strip()
+    if path in ("—", "-", ""):
+        return []
+
     total = len(rows)
     out: list[str] = []
     out.extend(
@@ -726,15 +723,10 @@ def format_local_files_block(
             term_cols,
         )
     )
-    for row in picked:
-        num = row.overall_index or 0
-        trip = _trip_display(row)
-        path = row.local_path
-        line = f"{num}/{total} {trip}  {path}"
-        out.extend(_wrap_line(line, term_cols))
-    hidden = len(candidates) - len(picked)
-    if hidden > 0:
-        out.extend(_wrap_line(f"… ещё {hidden} поездок с тем же путём", term_cols))
+    num = row.overall_index or 0
+    trip = _trip_display(row)
+    line = f"{num}/{total} {trip}  {path}"
+    out.extend(_wrap_line(line, term_cols))
     return out
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from autopilot_dashboard import (
@@ -79,17 +80,52 @@ class AutopilotDashboardPathsTests(unittest.TestCase):
                 record_type="Normal",
                 chunk_index=i,
                 trip_index=1,
-                label=f"trip {i}",
+                label=f"trip {i} 07-14 21:54",
                 duration_sec=600,
                 status="pending",
                 local_path=same,
                 overall_index=i,
+                trip_start=datetime(2026, 7, 14, 21, 54),
             )
             for i in range(1, 4)
         ]
         lines = format_local_files_block(rows, term_cols=120)
         text = "\n".join(lines)
         self.assertEqual(text.count("chunk_01/trip_01.mp4"), 1)
+        self.assertEqual(sum(1 for ln in lines if "chunk_01" in ln), 1)
+
+    def test_format_local_files_block_shows_newest_trip_only(self):
+        rows = [
+            TripRow(
+                key="n:1:1",
+                record_type="Normal",
+                chunk_index=1,
+                trip_index=1,
+                label="trip 1 07-14 21:54",
+                duration_sec=600,
+                status="pending",
+                local_path="video/Output/Normal/Front+Back",
+                overall_index=1,
+                trip_start=datetime(2026, 7, 14, 21, 54),
+            ),
+            TripRow(
+                key="n:2:1",
+                record_type="Normal",
+                chunk_index=2,
+                trip_index=5,
+                label="trip 12 07-17 22:47",
+                duration_sec=600,
+                status="pending",
+                local_path="video/Output/.publish_tmp/chunk_02/trip_05.mp4",
+                overall_index=12,
+                trip_start=datetime(2026, 7, 17, 22, 47),
+            ),
+        ]
+        lines = format_local_files_block(rows, term_cols=120)
+        text = "\n".join(lines)
+        self.assertIn("chunk_02/trip_05.mp4", text)
+        self.assertNotIn("Front+Back", text)
+        self.assertEqual(len([ln for ln in lines if ".mp4" in ln or "Front+Back" in ln]), 1)
 
 
 if __name__ == "__main__":
