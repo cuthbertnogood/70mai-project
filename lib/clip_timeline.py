@@ -189,6 +189,24 @@ def manifest_is_fresh(
     return True
 
 
+def filter_entries_to_window(
+    entries: list[ClipEntry],
+    wall_start: datetime,
+    wall_end: datetime,
+    *,
+    margin_sec: float = PAIR_DRIFT_TOLERANCE_SEC,
+) -> list[ClipEntry]:
+    """Keep manifest clips overlapping a compose window (drop other trips/chunks)."""
+    lo = wall_start - timedelta(seconds=margin_sec)
+    hi = wall_end + timedelta(seconds=margin_sec)
+    kept: list[ClipEntry] = []
+    for entry in entries:
+        entry_end = entry.wall + timedelta(seconds=entry.duration)
+        if entry.wall < hi and entry_end > lo:
+            kept.append(entry)
+    return kept
+
+
 def build_slots(
     front_clips: list[ClipEntry],
     back_clips: list[ClipEntry],

@@ -14,6 +14,7 @@ from clip_timeline import (
     build_manifest,
     build_slots,
     clip_key,
+    filter_entries_to_window,
     lane_black_seconds,
     lane_duration,
     load_manifest,
@@ -141,6 +142,25 @@ class SlotAlignmentTests(unittest.TestCase):
         lane = build_camera_lane(slots, "Front")
         self.assertEqual([s.kind for s in lane], ["video", "black", "video"])
         self.assertAlmostEqual(lane_black_seconds(lane), 60.0)
+
+    def test_filter_excludes_prefetch_outside_trip_window(self) -> None:
+        trip_start = BASE
+        trip_end = BASE + timedelta(hours=2)
+        front = [
+            _entry(0, 1, 30.0, "F.mp4"),
+            _entry(90 * 86400, 2, 30.0, "F.mp4"),
+        ]
+        back = [
+            _entry(0, 1, 30.0, "B.mp4"),
+            _entry(90 * 86400, 2, 30.0, "B.mp4"),
+        ]
+        front_f = filter_entries_to_window(front, trip_start, trip_end)
+        back_f = filter_entries_to_window(back, trip_start, trip_end)
+        self.assertEqual(len(front_f), 1)
+        self.assertEqual(len(back_f), 1)
+        slots = build_slots(front_f, back_f, mode="wall", timeline_start=trip_start)
+        self.assertAlmostEqual(timeline_duration(slots), 30.0)
+        self.assertLess(timeline_duration(slots), trip_end.timestamp() - trip_start.timestamp())
 
     def test_drift_report(self) -> None:
         front, back = self._pair([(30.0, 30.0), (None, 30.0), (20.0, 30.0)])

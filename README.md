@@ -126,7 +126,7 @@ cd /Users/cuthbert/work_local/70mai_project
 
 По умолчанию типы: **Normal Event Parking**.
 
-**Синхронизация камер (Normal, Event, Parking):** import пишет рядом с **каждым** merge timeline-manifest (`<merge>.timeline.json`); compose **всегда** выравнивает Front/Back по общим слотам (Event/Parking — slot, Normal — wall-clock) и заменяет пропавшую/короткую камеру чёрным + тишиной. Без manifest compose не стартует — нужен re-import. Логи: `Slots/Black fill`, `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
+**Синхронизация камер (Normal, Event, Parking):** import пишет рядом с **каждым** merge timeline-manifest (`<merge>.timeline.json`); compose **всегда** выравнивает Front/Back по общим слотам (Event/Parking — slot, Normal — wall-clock внутри окна поездки) и заменяет пропавшую/короткую камеру чёрным + тишиной. Клипы из prefetch других chunk'ов **не** попадают в timeline текущей поездки. Без manifest compose не стартует — нужен re-import. Логи: `Slots/Black fill`, `Window clips`, `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
 
 **YouTube — название и клипы:** при upload title = `70mai | {тип} | {начало} — {конец}` (тип: *простые записи* / *запись события* / *запись парковки*). В **описании и комментарии** — тот же список: `Клип N: дата время — дата время`. OAuth после обновления кода: удалить token и войти снова (нужен scope для comment + update). Уже залитое видео:
 

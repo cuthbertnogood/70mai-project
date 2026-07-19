@@ -32,6 +32,7 @@ from clip_timeline import (
     Span,
     build_camera_lane,
     build_slots,
+    filter_entries_to_window,
     lane_black_seconds,
     lane_duration,
     load_manifest,
@@ -242,6 +243,7 @@ def build_aligned_lanes(
     wall_start: datetime,
     duration: float,
     record_type: str,
+    wall_end: datetime | None = None,
     sync_offset_front: float = 0.0,
     sync_offset_back: float = 0.0,
 ) -> tuple[list[Span], list[Span], float, Path, Path, dict] | None:
@@ -274,6 +276,16 @@ def build_aligned_lanes(
     if not front_entries or not back_entries:
         return None
 
+    window_end = (
+        wall_end if wall_end is not None else wall_start + timedelta(seconds=duration)
+    )
+    raw_front = len(front_entries)
+    raw_back = len(back_entries)
+    front_entries = filter_entries_to_window(front_entries, wall_start, window_end)
+    back_entries = filter_entries_to_window(back_entries, wall_start, window_end)
+    if not front_entries and not back_entries:
+        return None
+
     mode = "slot" if record_type in SINGLE_VIDEO_TYPES else "wall"
     slots = build_slots(
         front_entries,
@@ -285,7 +297,8 @@ def build_aligned_lanes(
         return None
 
     if mode == "wall":
-        total = max(duration, timeline_duration(slots))
+        window_sec = max(0.0, (window_end - wall_start).total_seconds())
+        total = min(max(duration, timeline_duration(slots)), window_sec)
     else:
         total = timeline_duration(slots)
 
@@ -297,6 +310,10 @@ def build_aligned_lanes(
 
     report = {
         **pair_drift_report(slots),
+        "entries_front_raw": raw_front,
+        "entries_front_window": len(front_entries),
+        "entries_back_raw": raw_back,
+        "entries_back_window": len(back_entries),
         "front_black": lane_black_seconds(front_lane),
         "back_black": lane_black_seconds(back_lane),
         "front_max_black": max_contiguous_black(front_lane),
@@ -491,6 +508,15 @@ def _run_aligned_compose(
         f"back={report['back_black']:.1f}s "
         f"(max {report['back_max_black']:.1f}s)"
     )
+    raw_f = report.get("entries_front_raw", 0)
+    win_f = report.get("entries_front_window", raw_f)
+    if raw_f > win_f or report.get("entries_back_raw", 0) > report.get("entries_back_window", 0):
+        log(
+            f"Window clips:  front {win_f}/{raw_f}, "
+            f"back {report.get('entries_back_window', 0)}/"
+            f"{report.get('entries_back_raw', 0)} "
+            f"(outside trip window skipped)"
+        )
     log(f"Front lane:    {len(front_lane)} span(s), {lane_duration(front_lane):g}s")
     log(f"Back lane:     {len(back_lane)} span(s), {lane_duration(back_lane):g}s")
     log(f"Audio:         {audio_source}")
@@ -569,6 +595,7 @@ def run_compose_2cam(
     *,
     wall_start: datetime,
     duration: float,
+    wall_end: datetime | None = None,
     sync_offset_front: float = 0.0,
     sync_offset_back: float = 0.0,
     width: int,
@@ -589,7 +616,8 @@ def run_compose_2cam(
     dry_run: bool = False,
 ) -> None:
     codec, hw_quality = resolve_codec(codec, hw_quality, hw=hw)
-    wall_end = wall_start + timedelta(seconds=duration)
+    if wall_end is None:
+        wall_end = wall_start + timedelta(seconds=duration)
 
     if telemetry:
         raise SystemExit(
@@ -602,6 +630,7 @@ def run_compose_2cam(
         wall_start=wall_start,
         duration=duration,
         record_type=record_type,
+        wall_end=wall_end,
         sync_offset_front=sync_offset_front,
         sync_offset_back=sync_offset_back,
     )
@@ -896,6 +925,7 @@ def main() -> None:
             output,
             wall_start=args.wall_from,
             duration=duration,
+            wall_end=args.wall_to,
             sync_offset_front=args.sync_offset_front,
             sync_offset_back=args.sync_offset_back,
             width=args.width,
