@@ -32,9 +32,44 @@ cd /Users/cuthbert/work_local/70mai_project
 | `./scripts/watch_publish_all_70mai.sh` | То же + авто-рестарт при падении |
 | `./scripts/autopilot_dashboard.sh` | Живой статус (второй терминал) |
 | `./scripts/generate_card_reports.sh` | Отчёт по карте (MD/CSV) |
+| `./scripts/run-tests.sh` | Unit-тесты (`tests/`) |
+| `./scripts/smoke-test.sh` | **Smoke после правок** — тесты + синтаксис скриптов + `--help` CLI |
 | `./run scripts/update_youtube_metadata.py` | Обновить title/description/comment у уже залитых роликов |
 
-Python — в `lib/`, тесты — в `tests/` (`./scripts/run-tests.sh`). Вручную: `./run publish_70mai.py …`.
+Python — в `lib/`, тесты — в `tests/`. Вручную: `./run publish_70mai.py …`.
+
+---
+
+## Smoke-тесты после правок
+
+После изменений в `lib/`, `scripts/` или `tests/` прогоняй smoke **до** запуска автопилота на карте:
+
+```bash
+cd /Users/cuthbert/work_local/70mai_project
+./scripts/smoke-test.sh
+```
+
+Что проверяется:
+
+| Шаг | Что |
+|-----|-----|
+| `bash -n` | Синтаксис `./run`, `publish_all_70mai.sh`, `autopilot_dashboard.sh`, … |
+| `tests/` | Все unit-тесты (`unittest discover`) |
+| `tests/test_smoke.py` | Импорт ключевых модулей, API `Dashboard` (`start`, `render`, …), `--help` у CLI |
+
+Только smoke-модуль (быстрее):
+
+```bash
+./scripts/smoke-test.sh tests.test_smoke
+```
+
+Только unit-тесты без bash-проверок:
+
+```bash
+./scripts/run-tests.sh
+```
+
+**Если smoke падает** — чини код/скрипты и прогоняй снова, пока не будет `Smoke OK`. Типичные поломки после рефакторинга: метод класса оказался вне `@dataclass`, сломан `PYTHONPATH`, `--help` падает на импорте.
 
 ---
 
