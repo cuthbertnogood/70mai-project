@@ -1,6 +1,6 @@
 # 70mai — SD → YouTube
 
-Автопилот: карта 70mai → склейка → 2-cam MP4 → YouTube.
+Автопилот: карта 70mai → склейка → 2-cam MP4 → YouTube. Пока текущий ~2h чанк кодируется и заливается, следующий чанк может импортироваться с SD в фоне (prefetch import).
 
 Детали, OAuth, тюнинг: [детальное_описание.md](детальное_описание.md) · цели: [GOALS.md](GOALS.md).
 
@@ -131,6 +131,8 @@ cd /Users/cuthbert/work_local/70mai_project
 | `--prune-merged` | `after-compose` | Удалять 10‑мин склейки: `after-compose` / `after-upload` / `off` |
 | `--repair` | `auto` | Чинить короткий Parking/Event merge: `auto` / `diagnose` / `off` |
 | `--skip-import` | off | Только compose+upload (merge уже на диске) |
+| `--no-prefetch-import` | off | Не запускать import следующего ~2h чанка параллельно compose/upload текущего |
+| `--no-overlap` | off | Отключить overlap compose∥upload внутри `publish_70mai` |
 | `--dry-run` | off | План без работы |
 | `--no-dashboard` | off | Без таблицы в том же терминале (удобно с `autopilot_dashboard.sh`) |
 
