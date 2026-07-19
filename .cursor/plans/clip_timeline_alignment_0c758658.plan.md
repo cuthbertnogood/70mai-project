@@ -16,7 +16,7 @@ todos:
     status: completed
   - id: rebuild-parking
     content: После подключения SD локально пересобрать и проверить Parking без upload
-    status: completed
+    status: in_progress
 isProject: false
 ---
 
