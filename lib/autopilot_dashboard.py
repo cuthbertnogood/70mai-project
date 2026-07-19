@@ -730,6 +730,93 @@ def _compose_bytes(
         return 0
 
 
+def _trip_compose_fraction(
+    temp_dir: Path,
+    row: TripRow,
+    *,
+    video_dir: Path | None,
+    active_trip_index: int,
+    active_trip_pct: float | None,
+) -> float:
+    """0..1 progress for one trip within a chunk compose."""
+    if row.trip_index < active_trip_index:
+        path = _compose_trip_path(
+            temp_dir, row.record_type, row.chunk_index, row.trip_index
+        )
+        if not path.is_file():
+            return 0.0
+        try:
+            from publish_70mai import trip_part_complete
+
+            if trip_part_complete(
+                path,
+                row.duration_sec,
+                video_dir=video_dir,
+                record_type=row.record_type,
+                trip_start=row.trip_start,
+            ):
+                return 1.0
+        except (ImportError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+        try:
+            from compose_70mai import probe_duration
+
+            actual = probe_duration(path)
+            if row.duration_sec > 0:
+                return min(1.0, actual / row.duration_sec)
+        except (ImportError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+        return 0.0
+    if row.trip_index > active_trip_index:
+        return 0.0
+    if active_trip_pct is None:
+        return 0.0
+    return max(0.0, min(1.0, float(active_trip_pct) / 100.0))
+
+
+def chunk_compose_percent(
+    rows: list[TripRow],
+    temp_dir: Path,
+    st: dict,
+    *,
+    video_dir: Path | None = None,
+) -> float | None:
+    """Weighted chunk % — monotonic across per-trip ffmpeg runs (no reset to 0)."""
+    if not rows or not isinstance(st, dict):
+        return None
+    record_type = str(st.get("record_type") or "")
+    chunk_index = int(st.get("chunk_index") or 0)
+    active_trip = int(st.get("trip_index") or 0)
+    if not record_type or chunk_index <= 0 or active_trip <= 0:
+        return None
+    chunk_rows = [
+        r
+        for r in rows
+        if r.record_type == record_type and r.chunk_index == chunk_index
+    ]
+    if len(chunk_rows) <= 1:
+        pct = st.get("percent")
+        return float(pct) if isinstance(pct, (int, float)) else None
+    total = sum(max(0.0, r.duration_sec) for r in chunk_rows)
+    if total <= 0:
+        pct = st.get("percent")
+        return float(pct) if isinstance(pct, (int, float)) else None
+    trip_pct = st.get("percent")
+    active_trip_pct = float(trip_pct) if isinstance(trip_pct, (int, float)) else None
+    weighted = 0.0
+    for row in chunk_rows:
+        share = max(0.0, row.duration_sec) / total
+        frac = _trip_compose_fraction(
+            temp_dir,
+            row,
+            video_dir=video_dir,
+            active_trip_index=active_trip,
+            active_trip_pct=active_trip_pct,
+        )
+        weighted += share * frac
+    return weighted * 100.0
+
+
 def _row_compose_bytes(
     temp_dir: Path,
     row: TripRow,
@@ -2459,6 +2546,9 @@ def format_compose_detail(
     record_type = str(st.get("record_type") or "").strip()
     chunk = st.get("chunk_index")
     trip = st.get("trip_index")
+    trip_pct = st.get("trip_percent")
+    if trip_pct is None and isinstance(log_detail.get("percent"), (int, float)):
+        trip_pct = float(log_detail["percent"])
 
     short_bits: list[str] = []
     if isinstance(speed, (int, float)) and speed > 0:
@@ -2475,6 +2565,10 @@ def format_compose_detail(
     parts.append(action)
     if isinstance(chunk, int) and isinstance(trip, int) and (chunk or trip):
         parts.append(f"trip_{int(trip):02d}")
+    if isinstance(trip_pct, (int, float)) and (
+        not isinstance(pct, (int, float)) or abs(float(trip_pct) - float(pct)) > 0.5
+    ):
+        parts.append(f"trip {float(trip_pct):.0f}%")
     if position:
         parts.append(position)
     if isinstance(pct, (int, float)):
@@ -3321,8 +3415,18 @@ def _format_pipeline_block(
             if temp_dir
             else None
         )
+        st_compose = dict(st) if isinstance(st, dict) else {}
+        if isinstance(st, dict) and temp_dir is not None:
+            trip_pct_raw = st.get("percent")
+            chunk_pct = chunk_compose_percent(
+                rows, temp_dir, st, video_dir=video_dir
+            )
+            if chunk_pct is not None:
+                st_compose["percent"] = chunk_pct
+            if isinstance(trip_pct_raw, (int, float)):
+                st_compose["trip_percent"] = float(trip_pct_raw)
         compose_short, compose_detail_line = format_compose_detail(
-            st, log_detail=log_cd, trip_label=trip_lbl
+            st_compose, log_detail=log_cd, trip_label=trip_lbl
         )
         compose_extra = compose_short or (
             (detail[:48] if detail else "")
@@ -4042,6 +4146,15 @@ class Dashboard:
                     pct_f: float | None = float(pct)
                 else:
                     pct_f = None
+                if phase == "compose":
+                    chunk_pct = chunk_compose_percent(
+                        self.rows,
+                        self.temp_dir,
+                        st,
+                        video_dir=self.video_dir,
+                    )
+                    if chunk_pct is not None:
+                        pct_f = chunk_pct
                 if phase == "upload" and pct_f is None:
                     pct_f = _read_upload_percent(
                         self.temp_dir,
