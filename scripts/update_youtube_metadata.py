@@ -217,10 +217,12 @@ def main(argv: list[str] | None = None) -> int:
             wall_start = wall_end = None
             for chunk in chunks:
                 if chunk.record_type == job["record_type"]:
-                    wall_start, wall_end = chunk.start, chunk.end
                     break
         elif job["kind"] == "chunk":
-            wall_start, wall_end = _part_window(part, chunks)
+            if job["record_type"] in ("Event", "Parking"):
+                wall_start = wall_end = None
+            else:
+                wall_start, wall_end = _part_window(part, chunks)
         else:
             wall_start, wall_end = _trip_window(
                 chunks,

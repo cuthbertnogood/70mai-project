@@ -155,26 +155,21 @@ def _merged_duration(
 def _manifest_matches_file(merge_path: Path | None) -> bool:
     """True when a fresh timeline manifest exists whose duration matches the
     merge file (so compose can align gaps with black instead of drifting)."""
-    if merge_path is None or not merge_path.is_file():
+    if merge_path is None:
         return False
     try:
-        from clip_timeline import load_manifest
-        from compose_70mai import probe_duration
+        from clip_timeline import manifest_matches_merge
 
-        manifest = load_manifest(merge_path)
-        if manifest is None or not manifest.clips:
-            return False
-        declared = sum(c.duration for c in manifest.clips)
-        actual = probe_duration(merge_path)
-    except (OSError, RuntimeError, ValueError):
+        return manifest_matches_merge(merge_path)
+    except Exception:
         return False
-    if actual <= 0:
-        return False
-    return abs(declared - actual) <= max(2.0, actual * FB_MISMATCH_RATIO)
 
 
-def _aligned_ready(front_path: Path | None, back_path: Path | None) -> bool:
-    return _manifest_matches_file(front_path) and _manifest_matches_file(back_path)
+def _aligned_ready(video_dir: Path, record_type: str) -> bool:
+    from clip_timeline import merges_timeline_ready
+
+    ok, _ = merges_timeline_ready(video_dir, record_type)
+    return ok
 
 
 def diagnose_chunk(
@@ -217,27 +212,31 @@ def diagnose_chunk(
     # and fills missing/short clips with black — coverage gaps are then expected
     # (warn), not blockers. A missing/stale manifest stays a blocker so import
     # rebuilds it.
-    aligned = record_type in SINGLE_VIDEO_TYPES and _aligned_ready(
-        front_path, back_path
-    )
+    aligned = _aligned_ready(video_dir, record_type)
     cov_sev = "warn" if aligned else "blocker"
-    if record_type in SINGLE_VIDEO_TYPES and not aligned:
-        for camera, path in (("Front", front_path), ("Back", back_path)):
-            if path is not None and not _manifest_matches_file(path):
-                issues.append(
-                    HealthIssue(
-                        code="manifest_missing",
-                        record_type=record_type,
-                        camera=camera,
-                        severity="blocker",
-                        message=(
-                            f"{record_type}/{camera} {path.name} has no fresh "
-                            "timeline manifest — rebuild for slot-aligned compose"
-                        ),
-                        remediation="rebuild_merge",
-                        path=path,
+    if not aligned:
+        from compose_70mai import scan_merged_clips
+
+        for camera in ("Front", "Back"):
+            for clip in scan_merged_clips(
+                video_dir, camera, record_type=record_type, probe=False
+            ):
+                if not _manifest_matches_file(clip.path):
+                    issues.append(
+                        HealthIssue(
+                            code="manifest_missing",
+                            record_type=record_type,
+                            camera=camera,
+                            severity="blocker",
+                            message=(
+                                f"{record_type}/{camera} {clip.path.name} has no "
+                                "fresh timeline manifest — rebuild for slot-aligned "
+                                "compose"
+                            ),
+                            remediation="rebuild_merge",
+                            path=clip.path,
+                        )
                     )
-                )
 
     if record_type in SINGLE_VIDEO_TYPES:
         for camera, dur, path in (

@@ -36,6 +36,7 @@ from clip_timeline import (
     lane_duration,
     load_manifest,
     max_contiguous_black,
+    merges_timeline_ready,
     pair_drift_report,
     timeline_duration,
 )
@@ -590,33 +591,45 @@ def run_compose_2cam(
     codec, hw_quality = resolve_codec(codec, hw_quality, hw=hw)
     wall_end = wall_start + timedelta(seconds=duration)
 
-    if not telemetry:
-        aligned = build_aligned_lanes(
-            video_dir,
-            wall_start=wall_start,
-            duration=duration,
-            record_type=record_type,
-            sync_offset_front=sync_offset_front,
-            sync_offset_back=sync_offset_back,
+    if telemetry:
+        raise SystemExit(
+            "2-cam compose with --telemetry is not supported for slot-synced "
+            "Front/Back output. Run without --telemetry."
         )
-        if aligned is not None:
-            _run_aligned_compose(
-                aligned,
-                output,
-                video_dir=video_dir,
-                record_type=record_type,
-                width=width,
-                crf=crf,
-                preset=preset,
-                fps=fps,
-                hw=hw,
-                hw_quality=hw_quality,
-                hw_decode=hw_decode,
-                codec=codec,
-                audio_source=audio_source,
-                dry_run=dry_run,
-            )
-            return
+
+    aligned = build_aligned_lanes(
+        video_dir,
+        wall_start=wall_start,
+        duration=duration,
+        record_type=record_type,
+        sync_offset_front=sync_offset_front,
+        sync_offset_back=sync_offset_back,
+    )
+    if aligned is None:
+        _, detail = merges_timeline_ready(video_dir, record_type)
+        raise SystemExit(
+            f"Cannot compose {record_type}: Front/Back timeline manifests are "
+            f"required for slot-synced 2-cam output ({detail}). Re-import merges "
+            f"(import writes <merge>.timeline.json sidecars)."
+        )
+
+    _run_aligned_compose(
+        aligned,
+        output,
+        video_dir=video_dir,
+        record_type=record_type,
+        width=width,
+        crf=crf,
+        preset=preset,
+        fps=fps,
+        hw=hw,
+        hw_quality=hw_quality,
+        hw_decode=hw_decode,
+        codec=codec,
+        audio_source=audio_source,
+        dry_run=dry_run,
+    )
+    return
 
     front_clips = scan_merged_clips(video_dir, "Front", record_type=record_type)
     back_clips = scan_merged_clips(video_dir, "Back", record_type=record_type)

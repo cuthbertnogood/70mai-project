@@ -586,11 +586,7 @@ def trip_part_complete(
         return False
     if actual < expected_sec * tolerance:
         return False
-    if (
-        record_type in SINGLE_VIDEO_TYPES
-        and video_dir is not None
-        and trip_start is not None
-    ):
+    if video_dir is not None and trip_start is not None:
         from compose_70mai import plan_segments, scan_merged_clips
 
         try:
@@ -605,6 +601,8 @@ def trip_part_complete(
             # duration check above already validates the timeline length.
             if front and back and _both_merges_have_manifest(front, back):
                 return True
+            if record_type not in SINGLE_VIDEO_TYPES:
+                return False
             for camera, clips in (("Front", front), ("Back", back)):
                 segs = plan_segments(clips, trip_start, expected_sec, 0.0)
                 covered = sum(s.duration for s in segs)
@@ -617,13 +615,15 @@ def trip_part_complete(
 
 def _both_merges_have_manifest(front_clips: list, back_clips: list) -> bool:
     try:
-        from clip_timeline import load_manifest
+        from clip_timeline import manifest_matches_merge
 
-        return all(
-            load_manifest(clips[0].path) is not None
-            for clips in (front_clips, back_clips)
-            if clips
-        )
+        for clips in (front_clips, back_clips):
+            if not clips:
+                return False
+            for clip in clips:
+                if not manifest_matches_merge(clip.path):
+                    return False
+        return True
     except Exception:
         return False
 

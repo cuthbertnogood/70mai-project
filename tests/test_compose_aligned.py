@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from clip_timeline import Span
-from compose_2cam_70mai import build_compose_2cam_aligned_cmd
+from compose_2cam_70mai import build_compose_2cam_aligned_cmd, run_compose_2cam
 
 
 def _cmd(front_lane, back_lane, audio="front"):
@@ -72,6 +72,36 @@ class AlignedCmdTests(unittest.TestCase):
         self.assertEqual(cmd.count("-i"), 1)  # only back is a real input
         fc = cmd[cmd.index("-filter_complex") + 1]
         self.assertIn("color=c=black:s=1080x608", fc)
+
+    def test_run_compose_requires_timeline_manifest(self) -> None:
+        from datetime import datetime
+        from unittest import mock
+
+        with mock.patch(
+            "compose_2cam_70mai.build_aligned_lanes", return_value=None
+        ), mock.patch(
+            "compose_2cam_70mai.merges_timeline_ready",
+            return_value=(False, "PA_front.mp4 missing timeline manifest"),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                run_compose_2cam(
+                    Path("video/Output"),
+                    Path("out.mp4"),
+                    wall_start=datetime(2025, 8, 10, 8, 50, 33),
+                    duration=60.0,
+                    record_type="Parking",
+                    width=320,
+                    crf=28,
+                    preset="veryfast",
+                    fps=25,
+                    hw=False,
+                    hw_quality=50,
+                    hw_decode=False,
+                    use_vt_scale=False,
+                    codec="h264",
+                    dry_run=True,
+                )
+        self.assertIn("timeline manifest", str(ctx.exception).lower())
 
 
 if __name__ == "__main__":

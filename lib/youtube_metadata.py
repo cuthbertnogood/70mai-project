@@ -136,6 +136,8 @@ def collect_clip_ranges(
             timeline_start=wall_start if mode == "wall" else None,
         )
         ranges = _clip_ranges_from_slots(slots)
+        if record_type in SINGLE_VIDEO_TYPES:
+            return ranges
         filtered = _filter_ranges_by_window(ranges, wall_start, wall_end)
         if filtered:
             return filtered

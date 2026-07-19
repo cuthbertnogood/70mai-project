@@ -375,3 +375,46 @@ def max_contiguous_black(spans: list[Span]) -> float:
     return round(
         max((s.duration for s in spans if s.kind == "black"), default=0.0), 3
     )
+
+
+MANIFEST_DURATION_TOLERANCE_RATIO = 0.02
+
+
+def manifest_matches_merge(merge_path: Path) -> bool:
+    """True when a fresh timeline sidecar matches the merge file duration."""
+    if not merge_path.is_file():
+        return False
+    try:
+        from compose_70mai import probe_duration
+
+        manifest = load_manifest(merge_path)
+        if manifest is None or not manifest.clips:
+            return False
+        declared = sum(c.duration for c in manifest.clips)
+        actual = probe_duration(merge_path)
+        if actual <= 0:
+            return False
+        return abs(declared - actual) <= max(
+            2.0, actual * MANIFEST_DURATION_TOLERANCE_RATIO
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def merges_timeline_ready(video_dir: Path, record_type: str) -> tuple[bool, str]:
+    """True when every Front/Back merge has a loadable timeline manifest."""
+    from compose_70mai import scan_merged_clips
+
+    for camera in ("Front", "Back"):
+        clips = scan_merged_clips(
+            video_dir, camera, record_type=record_type, probe=False
+        )
+        if not clips:
+            return False, f"missing {record_type}/{camera} merges"
+        for clip in clips:
+            if not manifest_matches_merge(clip.path):
+                return (
+                    False,
+                    f"{clip.path.name} missing or stale timeline manifest",
+                )
+    return True, ""
