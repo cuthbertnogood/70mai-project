@@ -94,7 +94,8 @@ cd /Users/cuthbert/work_local/70mai_project
 ./scripts/publish_all_70mai.sh --types Parking --skip-import
 
 # Прогресс (отдельное окно): copy/merge/compose/upload; prefetch import следующего чанка — строка `prefetch` в этапах и `prefetch ch.N` в proc; compose % из autopilot_status.json
-# (не stale Encode из publish_all.log); все *.log в .publish_tmp; proc: publish_70mai = publish;
+# (не stale Encode из publish_all.log); шапка YouTube M/N = ~2h **ролики** (не поездки); в таблице `рM/N` — тот же счётчик; status.json сверяется с ffmpeg/publish CLI (автоисправление типа/chunk);
+# compose tmp: `.publish_tmp/{Normal|Event|Parking}/chunk_NN/trip_NN.mp4` (legacy `chunk_NN/` только чтение);
 # блок «Локальные файлы» — один путь (самая поздняя поездка, open до YouTube); внизу «Сбои»;
 # Parking: сейчас Xs / цель ~7309s; после 3× short — [i]gnore/[r]etry (parts keep).
 # Битый клип (moov/ffprobe) → quarantine `*.MP4.bad`, merge без него; счётчик в «Сбои»;

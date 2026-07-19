@@ -16,7 +16,8 @@ def render(dash: Any) -> None:
     if not dash.enabled or dash._tty is None:
         return
 
-    done = sum(1 for r in dash.rows if r.status == "done")
+    chunks_done, chunk_total, trips_done = d.chunk_summary_counts(dash.rows)
+    done = trips_done
     fail = sum(1 for r in dash.rows if r.status == "fail")
     total = len(dash.rows)
     free = d.free_disk_gb(dash.check_disk)
@@ -54,7 +55,7 @@ def render(dash: Any) -> None:
     trip_cols = 2 if two_col else 1
     trip_col_w = d._trip_list_col_width(term_cols)
 
-    st = d.resolve_live_status(dash.temp_dir)
+    st = d.resolve_live_status(dash.temp_dir, rows=dash.rows)
     procs = d.list_pipeline_processes(temp_dir=dash.temp_dir)
     prefetch = d.resolve_prefetch_import(dash.temp_dir, procs)
     # Age alone: old status.json must not drive ► markers (procs may be zombies).
@@ -69,18 +70,30 @@ def render(dash: Any) -> None:
         active_rows = []
     active_key = None if stale else d._status_active_key(dash.rows, st)
 
-    summary = f"YouTube {done}/{total}"
+    summary = f"YouTube {chunks_done}/{chunk_total}"
+    if chunk_total and chunks_done < chunk_total:
+        summary += f" ({done}/{total} поездок)"
     if fail:
         summary += f"  fail:{fail}"
-    pending = total - done - fail
-    if pending:
-        summary += f"  todo:{pending}"
+    pending_chunks = max(0, chunk_total - chunks_done)
+    if pending_chunks > 0:
+        summary += f"  todo:{pending_chunks}р"
     if active_rows:
         parts = []
-        for ar in active_rows[:2]:
+        seen_active_chunks: set[tuple[str, int]] = set()
+        for ar in active_rows:
+            ck = (ar.record_type, ar.chunk_index)
+            if ck in seen_active_chunks:
+                continue
+            seen_active_chunks.add(ck)
             pct = ar.percent
             if ar.status == "upload" and pct is None:
-                pct = d._read_upload_percent(dash.temp_dir, ar.trip_index)
+                pct = d._read_upload_percent(
+                    dash.temp_dir,
+                    ar.record_type,
+                    ar.chunk_index,
+                    ar.trip_index,
+                )
             stage = d._stage_label(
                 ar.status,
                 percent=pct,
@@ -93,7 +106,10 @@ def render(dash: Any) -> None:
                     else ""
                 ),
             )
-            parts.append(f"{stage} {d._trip_display(ar)}")
+            roll = d.chunk_display_num(ar)
+            parts.append(f"{stage} {roll} {d._trip_display(ar)}")
+            if len(parts) >= 2:
+                break
         summary += "  |  " + " · ".join(parts)
     elif prefetch and log_fallback:
         summary += "  |  " + d.format_prefetch_stage(prefetch, log_fallback)
@@ -201,11 +217,11 @@ def render(dash: Any) -> None:
                 )
             if stale and row.status in ("compose", "upload", "import", "stall"):
                 stage = "ожидание"
-        num = row.overall_index or i
+        num = d.chunk_display_num(row)
         trip_lines.append(
             d._trip_compact_line(
                 marker=marker,
-                num=f"{num}/{total}",
+                num=num,
                 trip=d._trip_display(row),
                 dur=d._fmt_dur_short(row.duration_sec),
                 stage=stage,
@@ -220,10 +236,10 @@ def render(dash: Any) -> None:
         lines.extend(d._wrap_line(leg, term_cols))
     for row in dash.rows:
         if row.status in ("fail", "stall", "oauth") and row.reason not in ("—", ""):
-            num = row.overall_index or 0
+            num = d.chunk_display_num(row)
             lines.extend(
                 d._wrap_line(
-                    f"⚠ {num}/{total} {d._trip_display(row)}: "
+                    f"⚠ {num} {d._trip_display(row)}: "
                     f"{d._short_reason(row.reason)}",
                     term_cols,
                 )

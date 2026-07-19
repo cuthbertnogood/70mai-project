@@ -11,8 +11,10 @@ from autopilot_dashboard import (
     TripRow,
     _resolve_local_path,
     _row_show_local_path,
+    chunk_display_num,
     format_local_files_block,
 )
+from publish_paths import compose_trip_path
 
 
 class AutopilotDashboardPathsTests(unittest.TestCase):
@@ -20,9 +22,8 @@ class AutopilotDashboardPathsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             temp_dir = root / "video/Output/.publish_tmp"
-            chunk = temp_dir / "chunk_01"
-            chunk.mkdir(parents=True)
-            mp4 = chunk / "trip_01.mp4"
+            mp4 = compose_trip_path(temp_dir, "Normal", 1, 1)
+            mp4.parent.mkdir(parents=True)
             mp4.write_bytes(b"x" * 1000)
             video_dir = root / "video/Output"
             p = _resolve_local_path(
@@ -36,7 +37,7 @@ class AutopilotDashboardPathsTests(unittest.TestCase):
                 merged_bytes=0,
                 base=root,
             )
-            self.assertTrue(p.endswith("chunk_01/trip_01.mp4"))
+            self.assertTrue(p.endswith("Normal/chunk_01/trip_01.mp4"))
 
     def test_format_local_files_block_skips_uploaded(self):
         rows = [
@@ -49,8 +50,10 @@ class AutopilotDashboardPathsTests(unittest.TestCase):
                 duration_sec=3600,
                 status="done",
                 youtube_url="https://youtu.be/abc",
-                local_path="video/Output/.publish_tmp/chunk_01/trip_01.mp4",
+                local_path="video/Output/.publish_tmp/Normal/chunk_01/trip_01.mp4",
                 overall_index=1,
+                chunk_display_index=1,
+                chunk_total=2,
             ),
             TripRow(
                 key="n:2:1",
@@ -60,8 +63,10 @@ class AutopilotDashboardPathsTests(unittest.TestCase):
                 label="trip 2 07-01 12:00",
                 duration_sec=3600,
                 status="pending",
-                local_path="video/Output/.publish_tmp/chunk_02/trip_01.mp4",
+                local_path="video/Output/.publish_tmp/Normal/chunk_02/trip_01.mp4",
                 overall_index=2,
+                chunk_display_index=2,
+                chunk_total=2,
             ),
         ]
         self.assertFalse(_row_show_local_path(rows[0]))
@@ -69,11 +74,24 @@ class AutopilotDashboardPathsTests(unittest.TestCase):
         lines = format_local_files_block(rows, term_cols=120)
         text = "\n".join(lines)
         self.assertIn("Локальные файлы", text)
-        self.assertIn("chunk_02/trip_01.mp4", text)
-        self.assertNotIn("chunk_01/trip_01.mp4", text)
+        self.assertIn("Normal/chunk_02/trip_01.mp4", text)
+        self.assertNotIn("Normal/chunk_01/trip_01.mp4", text)
+
+    def test_chunk_display_num(self) -> None:
+        row = TripRow(
+            key="n:1:1",
+            record_type="Normal",
+            chunk_index=1,
+            trip_index=1,
+            label="trip 1",
+            duration_sec=60,
+            chunk_display_index=3,
+            chunk_total=6,
+        )
+        self.assertEqual(chunk_display_num(row), "р3/6")
 
     def test_format_local_files_block_dedupes_same_path(self):
-        same = "video/Output/.publish_tmp/chunk_01/trip_01.mp4"
+        same = "video/Output/.publish_tmp/Normal/chunk_01/trip_01.mp4"
         rows = [
             TripRow(
                 key=f"n:{i}:1",
@@ -85,13 +103,15 @@ class AutopilotDashboardPathsTests(unittest.TestCase):
                 status="pending",
                 local_path=same,
                 overall_index=i,
+                chunk_display_index=1,
+                chunk_total=3,
                 trip_start=datetime(2026, 7, 14, 21, 54),
             )
             for i in range(1, 4)
         ]
         lines = format_local_files_block(rows, term_cols=120)
         text = "\n".join(lines)
-        self.assertEqual(text.count("chunk_01/trip_01.mp4"), 1)
+        self.assertEqual(text.count("Normal/chunk_01/trip_01.mp4"), 1)
         self.assertEqual(sum(1 for ln in lines if "chunk_01" in ln), 1)
 
     def test_format_local_files_block_shows_newest_trip_only(self):
@@ -116,14 +136,16 @@ class AutopilotDashboardPathsTests(unittest.TestCase):
                 label="trip 12 07-17 22:47",
                 duration_sec=600,
                 status="pending",
-                local_path="video/Output/.publish_tmp/chunk_02/trip_05.mp4",
+                local_path="video/Output/.publish_tmp/Normal/chunk_02/trip_05.mp4",
                 overall_index=12,
+                chunk_display_index=2,
+                chunk_total=4,
                 trip_start=datetime(2026, 7, 17, 22, 47),
             ),
         ]
         lines = format_local_files_block(rows, term_cols=120)
         text = "\n".join(lines)
-        self.assertIn("chunk_02/trip_05.mp4", text)
+        self.assertIn("Normal/chunk_02/trip_05.mp4", text)
         self.assertNotIn("Front+Back", text)
         self.assertEqual(len([ln for ln in lines if ".mp4" in ln or "Front+Back" in ln]), 1)
 

@@ -254,6 +254,28 @@ def _status_active_key(rows: list[TripRow], st: dict | None) -> str | None:
     )
 
 
+def _row_is_live_overlay(
+    row: TripRow,
+    st: dict | None,
+    active_key: str | None,
+) -> bool:
+    """True when this row should show live compose/upload (incl. whole chunk)."""
+    if not st:
+        return False
+    phase = str(st.get("phase") or "")
+    if phase not in LIVE_STATUS_PHASES:
+        return False
+    if phase == "import":
+        return active_key is not None and row.key == active_key
+    if active_key and row.key == active_key:
+        return True
+    return (
+        row.record_type == st.get("record_type")
+        and row.chunk_index == int(st.get("chunk_index") or 0)
+        and phase in ("compose", "upload", "stall", "oauth")
+    )
+
+
 def read_status(temp_dir: Path) -> dict | None:
     path = status_path(temp_dir)
     try:
@@ -882,9 +904,9 @@ def format_local_files_block(
             term_cols,
         )
     )
-    num = row.overall_index or 0
+    num = chunk_display_num(row)
     trip = _trip_display(row)
-    line = f"{num}/{total} {trip}  {path}"
+    line = f"{num} {trip}  {path}"
     out.extend(_wrap_line(line, term_cols))
     return out
 
@@ -1518,6 +1540,7 @@ def list_pipeline_processes(*, temp_dir: Path | None = None) -> list[PipelinePro
                         etime_sec=proc.etime_sec,
                         role="prefetch",
                         tip=f"chunk {prefetch.chunk_index}" if prefetch.chunk_index else proc.tip,
+                        command=proc.command,
                     )
                 )
             else:
@@ -3167,7 +3190,12 @@ def _format_pipeline_block(
         if active_row is not None and active_row.percent is not None:
             up_pct = float(active_row.percent)
         elif active_row is not None and temp_dir is not None:
-            got = _read_upload_percent(temp_dir, active_row.trip_index)
+            got = _read_upload_percent(
+                temp_dir,
+                active_row.record_type,
+                active_row.chunk_index,
+                active_row.trip_index,
+            )
             up_pct = float(got) if got is not None else None
         trip_lbl = _trip_display(active_row) if active_row is not None else ""
         log_ud = parse_upload_log_detail(temp_dir) if temp_dir else None
@@ -3550,7 +3578,18 @@ class Dashboard:
         from publish_state import youtube_watch_url
 
         rows: list[TripRow] = []
+        chunk_display: dict[str, int] = {}
+        chunk_trip_counts: dict[str, int] = {}
+        chunk_order: list[str] = []
         for chunk in chunks:
+            ck = f"{chunk.record_type}:{chunk.index}"
+            if ck not in chunk_display:
+                chunk_order.append(ck)
+                chunk_display[ck] = len(chunk_order)
+            chunk_trip_counts[ck] = len(chunk.trips)
+        chunk_total = len(chunk_order)
+        for chunk in chunks:
+            ck = f"{chunk.record_type}:{chunk.index}"
             for trip_idx, trip in enumerate(chunk.trips, start=1):
                 if chunk.record_type in SINGLE_VIDEO_TYPES:
                     label = (
@@ -3575,7 +3614,9 @@ class Dashboard:
                 merged = _merged_bytes_for_trip(
                     video_dir, chunk.record_type, trip.start, trip.end
                 )
-                composed = _compose_bytes(temp_dir, chunk.index, trip_idx)
+                composed = _compose_bytes(
+                    temp_dir, chunk.record_type, chunk.index, trip_idx
+                )
                 if uploaded:
                     disk = "pruned" if merged == 0 else f"merged {_fmt_gb(merged)}"
                     status = "done"
@@ -3615,6 +3656,9 @@ class Dashboard:
                         trip_end=trip.end,
                         detail=format_duration(trip.duration_sec),
                         overall_index=len(rows) + 1,
+                        chunk_display_index=chunk_display[ck],
+                        chunk_total=chunk_total,
+                        trips_in_chunk=chunk_trip_counts[ck],
                     )
                 )
         return cls(
@@ -3688,7 +3732,7 @@ class Dashboard:
         """
         if self.source is None:
             return
-        st = resolve_live_status(self.temp_dir)
+        st = resolve_live_status(self.temp_dir, rows=self.rows)
         # Stale status.json must not block marking uploaded trips as done.
         active_key = None if _status_is_stale(st) else _status_active_key(self.rows, st)
         active_phase = (
@@ -3714,7 +3758,7 @@ class Dashboard:
         for row in self.rows:
             # Live compose/upload/stall — keep overlay from autopilot_status.json
             if (
-                active_key == row.key
+                _row_is_live_overlay(row, st, active_key)
                 and active_phase in ("compose", "upload", "stall", "import", "oauth")
             ):
                 continue
@@ -3785,7 +3829,7 @@ class Dashboard:
         self._upload_health_detail = detail
 
     def _refresh_from_status(self) -> None:
-        st = resolve_live_status(self.temp_dir)
+        st = resolve_live_status(self.temp_dir, rows=self.rows)
         reasons = read_trip_reasons(self.temp_dir)
         # Ignore ghost compose/upload from an old status.json.
         active_key = None if _status_is_stale(st) else _status_active_key(self.rows, st)
@@ -3816,7 +3860,7 @@ class Dashboard:
             saved_reason = saved.get("reason", "") if isinstance(saved, dict) else ""
             saved_phase = saved.get("phase", "") if isinstance(saved, dict) else ""
 
-            if active_key and row.key == active_key and st:
+            if _row_is_live_overlay(row, st, active_key) and st:
                 phase = st.get("phase") or row.status
                 if phase not in LIVE_STATUS_PHASES:
                     continue
@@ -3830,7 +3874,12 @@ class Dashboard:
                 else:
                     pct_f = None
                 if phase == "upload" and pct_f is None:
-                    pct_f = _read_upload_percent(self.temp_dir, row.trip_index)
+                    pct_f = _read_upload_percent(
+                        self.temp_dir,
+                        row.record_type,
+                        row.chunk_index,
+                        row.trip_index,
+                    )
                 if phase == "import":
                     try:
                         row.progress = _import_row_progress(
@@ -3875,8 +3924,8 @@ class Dashboard:
                 row.stalled = False
                 row.reason = saved_reason or "ошибка"
             else:
-                # Import maps across trips as merge advances; clear stale overlay.
-                if row.status == "import":
+                # Clear stale live overlay when another chunk/type is active.
+                if row.status in ("compose", "upload", "stall", "oauth", "import"):
                     row.status = "pending"
                 row.progress = _stage_label(row.status)
                 row.percent = None
