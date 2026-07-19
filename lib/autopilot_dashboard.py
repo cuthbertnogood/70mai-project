@@ -3074,6 +3074,7 @@ class TripRow:
     trip_index: int
     label: str
     duration_sec: float
+    clip_count: int = 0
     status: str = "pending"
     youtube_url: str | None = None
     disk: str = "—"
@@ -3090,13 +3091,17 @@ class TripRow:
 
 def _trip_display(row: TripRow) -> str:
     if row.record_type == "Event":
-        return "все события"
-    if row.record_type == "Parking":
-        return "все parking"
-    parts = row.label.split()
-    if len(parts) >= 3 and parts[0] == "trip":
-        return " ".join(parts[2:])
-    return row.label
+        base = "все события"
+    elif row.record_type == "Parking":
+        base = "все parking"
+    else:
+        parts = row.label.split()
+        if len(parts) >= 3 and parts[0] == "trip":
+            return " ".join(parts[2:])
+        return row.label
+    if row.clip_count > 0:
+        return f"{base} · {row.clip_count} clips"
+    return base
 
 
 def _read_upload_percent(temp_dir: Path, trip_index: int) -> float | None:
@@ -3137,6 +3142,49 @@ class Dashboard:
     _upload_health: str = "unknown"
     _upload_health_detail: str = "no uploads yet"
     _upload_health_checked_at: float = 0.0
+    _plan_mtime: float | None = None
+
+    def reload_plan_if_changed(self) -> bool:
+        """Rebuild trip rows when autopilot_plan.json is updated on disk."""
+        from plan_estimate import load_autopilot_plan
+
+        path = self.temp_dir / "autopilot_plan.json"
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return False
+        if self._plan_mtime is not None and mtime == self._plan_mtime:
+            return False
+        chunks = load_autopilot_plan(self.temp_dir)
+        if not chunks:
+            return False
+        try:
+            from publish_all_70mai import load_merged_publish_state
+
+            state = load_merged_publish_state(
+                self.source or Path("."),
+                self.types,
+                self.temp_dir,
+                state_on_sd=False,
+                quiet=True,
+            )
+        except OSError:
+            state = {}
+        refreshed = Dashboard.from_plan(
+            chunks,
+            state,
+            temp_dir=self.temp_dir,
+            video_dir=self.video_dir,
+            check_disk=self.check_disk,
+            min_free_gb=self.min_free_gb,
+            enabled=self.enabled,
+            source=self.source,
+            types=self.types,
+            state_on_sd=self.state_on_sd,
+        )
+        self.rows = refreshed.rows
+        self._plan_mtime = mtime
+        return True
 
     @classmethod
     def from_plan(
@@ -3215,6 +3263,7 @@ class Dashboard:
                         trip_index=trip_idx,
                         label=label,
                         duration_sec=trip.duration_sec,
+                        clip_count=int(getattr(trip, "clip_count", 0) or 0),
                         status=status,
                         youtube_url=url,
                         disk=disk,
@@ -3235,7 +3284,16 @@ class Dashboard:
             types=list(types or ["Normal"]),
             state_on_sd=state_on_sd,
             enabled=enabled,
+            _plan_mtime=_plan_mtime_for(temp_dir),
         )
+
+
+def _plan_mtime_for(temp_dir: Path) -> float | None:
+    path = temp_dir / "autopilot_plan.json"
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
 
     def start(self) -> None:
         if not self.enabled:
@@ -3275,6 +3333,10 @@ class Dashboard:
         while not self._stop.wait(self.refresh_interval):
             try:
                 _backfill_status_from_import_log(self.temp_dir)
+            except Exception:
+                pass
+            try:
+                self.reload_plan_if_changed()
             except Exception:
                 pass
             self._refresh_youtube_reachability()

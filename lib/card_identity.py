@@ -226,7 +226,29 @@ def host_session_stale(source: Path, card_id: str | None, temp_dir: Path) -> boo
     return False
 
 
-def refresh_card_identity(source: Path, card_id: str | None) -> dict | None:
+def format_sd_clip_summary(source: Path) -> str:
+    """One line: per-type Front+Back counts from SD folders (no ffprobe)."""
+    sig = collect_clip_signature(source)
+    parts: list[str] = []
+    for record_type in VIDEO_RECORD_TYPES:
+        block = sig.get("types", {}).get(record_type, {})
+        total = int(block.get("total_files") or 0)
+        if total <= 0:
+            continue
+        front = int(block.get("cameras", {}).get("Front", {}).get("files") or 0)
+        back = int(block.get("cameras", {}).get("Back", {}).get("files") or 0)
+        parts.append(f"{record_type} {front}+{back}")
+    if not parts:
+        return ""
+    return "SD clips: " + " · ".join(parts)
+
+
+def refresh_card_identity(
+    source: Path,
+    card_id: str | None,
+    *,
+    local_dir: Path | None = None,
+) -> dict | None:
     """Update /.70mai/card_meta.json and log new-card vs same-card+new-clips."""
     if not card_id:
         return None
@@ -240,7 +262,7 @@ def refresh_card_identity(source: Path, card_id: str | None) -> dict | None:
                 f"SD card ID changed ({prev_id[:8]}… → {card_id[:8]}…) — "
                 "clearing publish/import state from previous card"
             )
-            reset_portable_sd_state(source, card_id)
+            reset_portable_sd_state(source, card_id, local_dir=local_dir)
 
         signature = collect_clip_signature(source)
         label = read_card_label(source)

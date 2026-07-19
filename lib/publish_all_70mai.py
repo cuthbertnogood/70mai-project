@@ -774,7 +774,9 @@ def main() -> int:
             from publish_state import get_or_create_card_id
 
             refresh_card_identity(
-                source, get_or_create_card_id(source, create=not args.dry_run)
+                source,
+                get_or_create_card_id(source, create=not args.dry_run),
+                local_dir=args.temp_dir,
             )
         except OSError as exc:
             log(f"Warning: card identity refresh failed ({exc})")
@@ -801,6 +803,17 @@ def main() -> int:
             chunk_minutes=args.chunk_minutes,
             session_gap=args.session_gap,
         )
+        if not args.dry_run:
+            from plan_estimate import save_autopilot_plan
+
+            save_autopilot_plan(
+                args.temp_dir,
+                source=source,
+                types=args.types,
+                chunks=chunks,
+                chunk_minutes=args.chunk_minutes,
+                session_gap=args.session_gap,
+            )
         if pending == 0:
             log("All trips/events already uploaded — nothing to do.")
             return 0

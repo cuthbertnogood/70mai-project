@@ -359,7 +359,8 @@ def event_trip_from_all_clips(
 
     start = sorted_front[0].timestamp
     end = start + timedelta(seconds=duration)
-    clip_count = len(sorted_front) + (len(back) if back else 0)
+    # One timeline slot per Front clip (Back is paired); do not double-count.
+    clip_count = len(sorted_front)
     return [
         Trip(
             record_type=record_type,

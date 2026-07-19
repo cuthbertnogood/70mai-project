@@ -118,4 +118,4 @@ tail -f video/Output/.publish_tmp/repair_log.jsonl
 tail -f video/Output/.publish_tmp/bad_clips.jsonl
 ```
 
-Статус на карте: `/.70mai/` (publish state, OAuth, inventory). При смене физической карты (новый `card_id.txt`) autopilot автоматически очищает publish/import state со старой карты; OAuth (`auth/`) сохраняется.
+Статус на карте: `/.70mai/` (publish state, OAuth, inventory). При смене физической карты (новый `card_id.txt`) autopilot очищает publish/import state на SD и локальный кэш (`autopilot_plan.json`, `import_*.state.json`); OAuth (`auth/`) сохраняется.

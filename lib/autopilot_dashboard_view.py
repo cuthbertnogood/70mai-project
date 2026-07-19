@@ -148,6 +148,16 @@ def render(dash: Any) -> None:
         lines.append(hl)
     for hl in d._wrap_line(disk_line, term_cols):
         lines.append(hl)
+    if dash.source is not None:
+        try:
+            from card_identity import format_sd_clip_summary
+
+            sd_line = format_sd_clip_summary(dash.source)
+            if sd_line:
+                for hl in d._wrap_line(sd_line, term_cols):
+                    lines.append(hl)
+        except OSError:
+            pass
 
     show_rows, collapse_note = d._visible_rows(
         dash.rows, term_rows=term_rows, total=total, columns=trip_cols

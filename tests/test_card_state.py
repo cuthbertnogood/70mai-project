@@ -211,8 +211,11 @@ class CardStateIsolationTests(unittest.TestCase):
 
     def test_reset_portable_sd_state_keeps_auth(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "card"
+            root = Path(tmp)
+            source = root / "card"
             source.mkdir()
+            temp = root / "tmp"
+            temp.mkdir()
             card_id = "test-card-id"
             auth = source / ".70mai/auth/youtube_token.json"
             auth.parent.mkdir(parents=True)
@@ -221,10 +224,18 @@ class CardStateIsolationTests(unittest.TestCase):
                 sd_state_path(source, "Normal"),
                 empty_publish_state(source, "Normal"),
             )
-            reset_portable_sd_state(source, card_id)
+            (temp / "autopilot_plan.json").write_text('{"chunks":[]}', encoding="utf-8")
+            save_state_file(
+                temp / "import_Parking.state.json",
+                {"source": str(source), "label": "Parking", "files": {"x": {}}},
+            )
+            reset_portable_sd_state(source, card_id, local_dir=temp)
             self.assertTrue(auth.is_file())
             sd = json.loads(sd_state_path(source, "Normal").read_text(encoding="utf-8"))
             self.assertEqual(sd.get("card_id"), card_id)
+            self.assertFalse((temp / "autopilot_plan.json").is_file())
+            imp = json.loads((temp / "import_Parking.state.json").read_text(encoding="utf-8"))
+            self.assertEqual(imp.get("files"), {})
 
 
 if __name__ == "__main__":

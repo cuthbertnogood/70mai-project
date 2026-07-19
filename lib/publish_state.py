@@ -239,6 +239,58 @@ def _sd_has_uploaded_trips(source: Path) -> bool:
 HOST_SESSION_CARD_ID = "session_card_id.txt"
 HOST_STATUS_FILENAME = "autopilot_status.json"
 HOST_REASONS_FILENAME = "autopilot_trip_reasons.json"
+HOST_PLAN_FILENAME = "autopilot_plan.json"
+
+
+def _state_label_from_filename(path: Path, prefix: str) -> str:
+    name = path.name
+    suffix = ".state.json"
+    if name.startswith(f"{prefix}_") and name.endswith(suffix):
+        return name[len(prefix) + 1 : -len(suffix)]
+    return "Normal"
+
+
+def clear_host_card_cache(
+    temp_dir: Path,
+    source: Path,
+    *,
+    card_id: str | None = None,
+) -> None:
+    """Drop host dashboard + publish/import cache from a previous SD card."""
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    source = source.resolve()
+    for name in (
+        HOST_STATUS_FILENAME,
+        HOST_REASONS_FILENAME,
+        HOST_PLAN_FILENAME,
+        HOST_SESSION_CARD_ID,
+    ):
+        path = temp_dir / name
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+    for path in temp_dir.glob("publish_*.state.json"):
+        label = _state_label_from_filename(path, "publish")
+        save_state_file(
+            path,
+            empty_publish_state(source, label, card_id=card_id),
+        )
+    for path in temp_dir.glob("import_*.state.json"):
+        data = load_state_file(path)
+        save_state_file(
+            path,
+            {
+                "source": str(source),
+                "label": data.get("label") or _state_label_from_filename(path, "import"),
+                "chunk_minutes": data.get("chunk_minutes", 10.0),
+                "gap_seconds": data.get("gap_seconds", 120.0),
+                "files": {},
+                "merge_stats": {},
+                **({"card_id": card_id} if card_id else {}),
+            },
+        )
 
 
 def clear_host_session(temp_dir: Path) -> None:
@@ -385,7 +437,12 @@ def _strip_sd_uploads(sd: dict, *, card_id: str | None) -> dict:
     return cleaned
 
 
-def reset_portable_sd_state(source: Path, card_id: str) -> None:
+def reset_portable_sd_state(
+    source: Path,
+    card_id: str,
+    *,
+    local_dir: Path | None = None,
+) -> None:
     """Wipe publish/import cache on SD (keep auth + card_id). Fresh card session."""
     source = source.resolve()
     pub = sd_publish_dir(source)
@@ -434,8 +491,8 @@ def reset_portable_sd_state(source: Path, card_id: str) -> None:
             except OSError:
                 pass
 
-
-def _credentials_search_paths() -> list[Path]:
+    if local_dir is not None:
+        clear_host_card_cache(local_dir, source, card_id=card_id)
     paths = [local_credentials_path(), *PROJECT_CREDENTIALS_CANDIDATES]
     seen: set[str] = set()
     unique: list[Path] = []
@@ -662,7 +719,9 @@ class StateStore:
             if current_card_id:
                 local["card_id"] = current_card_id
             save_state_file(self.local_path, local)
-            clear_host_session(self.temp_dir)
+            clear_host_card_cache(
+                self.temp_dir, self.source, card_id=current_card_id
+            )
 
         if _local_state_from_other_card(local, current_card_id, sd):
             if not quiet:
@@ -678,7 +737,9 @@ class StateStore:
             if current_card_id:
                 local["card_id"] = current_card_id
             save_state_file(self.local_path, local)
-            clear_host_session(self.temp_dir)
+            clear_host_card_cache(
+                self.temp_dir, self.source, card_id=current_card_id
+            )
 
         if sd and local:
             merged = merge_publish_state(sd, local)
