@@ -42,7 +42,8 @@
 - **`lib/plan_estimate.py`** — pre-flight: поездки, куски, `publish_plan.md`
 - **`lib/compose_2cam_70mai.py`** — Front↑ Back↓ vertical, wall-clock sync
 - **`lib/publish_70mai.py`** — trip chunks → compose → YouTube → delete; `--per-trip-upload`, `--upload-only`, `--resume-upload`, `--mark-uploaded`
-- **`lib/youtube_upload.py`** — OAuth + resumable upload (256 MB chunks по умолчанию, `--upload-chunk-mb 0` = один PUT, `.upload.json` resume) + playlist
+- **`lib/youtube_upload.py`** — OAuth + resumable upload (256 MB chunks по умолчанию, `--upload-chunk-mb 0` = один PUT, `.upload.json` resume) + playlist + update metadata / comment (`youtube.force-ssl`)
+- **`lib/youtube_metadata.py`** — title `70mai | {тип RU} | {начало — конец}`, description/comment со списком клипов; **`scripts/update_youtube_metadata.py`** — backfill уже залитых роликов
 - **`lib/youtube_upload_diagnostics.py`** + **`scripts/analyze_youtube_upload.py`** — JSONL diag log + failure analysis
 - По умолчанию загрузка **private** (не public/unlisted)
 

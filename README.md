@@ -32,6 +32,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | `./scripts/watch_publish_all_70mai.sh` | То же + авто-рестарт при падении |
 | `./scripts/autopilot_dashboard.sh` | Живой статус (второй терминал) |
 | `./scripts/generate_card_reports.sh` | Отчёт по карте (MD/CSV) |
+| `./run scripts/update_youtube_metadata.py` | Обновить title/description/comment у уже залитых роликов |
 
 Python — в `lib/`, тесты — в `tests/` (`./scripts/run-tests.sh`). Вручную: `./run publish_70mai.py …`.
 
@@ -72,6 +73,13 @@ cd /Users/cuthbert/work_local/70mai_project
 По умолчанию типы: **Normal Event Parking**.
 
 **Синхронизация камер:** import пишет рядом с каждым merge timeline-manifest (`<merge>.timeline.json`), а compose выравнивает Front/Back по общим слотам и заменяет пропавшую/короткую камеру чёрным экраном + тишиной — время Front и Back не расходится к концу ролика. Логи compose показывают `Slots/Black fill` и `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
+
+**YouTube — название и клипы:** при upload title = `70mai | {тип} | {начало} — {конец}` (тип: *простые записи* / *запись события* / *запись парковки*). В **описании и комментарии** — тот же список: `Клип N: дата время — дата время`. OAuth после обновления кода: удалить token и войти снова (нужен scope для comment + update). Уже залитое видео:
+
+```bash
+./run scripts/update_youtube_metadata.py --types Parking
+./run scripts/update_youtube_metadata.py --video-id VIDEO_ID --record-type Parking --apply
+```
 
 ---
 

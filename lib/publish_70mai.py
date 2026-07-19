@@ -33,6 +33,7 @@ from plan_estimate import (
 )
 from publish_state import AuthStore, StateStore, youtube_watch_url
 from project_env import cli_python
+from youtube_metadata import build_youtube_metadata
 from youtube_upload import (
     DEFAULT_CREDENTIALS,
     DEFAULT_TOKEN,
@@ -45,6 +46,7 @@ from youtube_upload import (
     format_file_size,
     log_oauth_reauth_help,
     oauth_needs_reauth,
+    post_video_comment,
     upload_session_path_for_file,
     upload_video,
 )
@@ -390,6 +392,8 @@ def upload_and_cleanup(
     path: Path,
     title: str,
     *,
+    description: str = "",
+    post_comment: bool = True,
     privacy: str,
     credentials: Path,
     token: Path,
@@ -420,6 +424,7 @@ def upload_and_cleanup(
     video_id = upload_video(
         path,
         title=title,
+        description=description,
         privacy=privacy,
         credentials_path=credentials,
         token_path=token,
@@ -431,6 +436,18 @@ def upload_and_cleanup(
     )
     reporter.finish()
     elapsed = time.monotonic() - started
+
+    if description and post_comment:
+        try:
+            post_video_comment(
+                video_id,
+                description,
+                credentials_path=credentials,
+                token_path=token,
+            )
+            log("  YouTube comment posted")
+        except YouTubeUploadError as exc:
+            log(f"  Warning: YouTube comment skipped ({exc})")
 
     current_playlist = playlist_id
     if current_playlist or playlist_title:
@@ -1051,28 +1068,25 @@ def publish_and_upload_trips(
             state_store.save(state)
             continue
 
-        if record_type in SINGLE_VIDEO_TYPES:
-            if record_type == "Event":
-                trip_title = (
-                    f"{base_title} Event — все события "
-                    f"({trip.clip_count} клипов, {trip.start:%Y-%m-%d})"
-                )
-            else:
-                trip_title = (
-                    f"{base_title} Parking — все записи "
-                    f"({trip.clip_count} клипов, {trip.start:%Y-%m-%d} → {trip.end:%Y-%m-%d})"
-                )
-        else:
-            trip_title = (
-                f"{base_title} {record_type} — поездка {trip.index} "
-                f"({trip.start:%m-%d %H:%M})"
-            )
+        trip_title, trip_description, clip_ranges = build_youtube_metadata(
+            base_title=base_title,
+            record_type=record_type,
+            video_dir=video_dir,
+            wall_start=trip.start,
+            wall_end=trip.end,
+            source=source,
+        )
+        log(
+            f"  YouTube: {trip_title} "
+            f"({len(clip_ranges)} clip(s) in description/comment)"
+        )
 
         def do_upload(
             part_path: Path = part_path,
             trip=trip,
             trip_idx: int = trip_idx,
             trip_title: str = trip_title,
+            trip_description: str = trip_description,
         ) -> None:
             nonlocal last_video_id
             write_status(
@@ -1117,6 +1131,7 @@ def publish_and_upload_trips(
                 video_id, new_playlist, freed, _elapsed = upload_and_cleanup(
                     part_path,
                     trip_title,
+                    description=trip_description,
                     privacy=privacy,
                     credentials=credentials,
                     token=token,
@@ -1710,19 +1725,32 @@ def main() -> None:
                     log(f"  Kept: {output}")
                 continue
 
-            part_title = f"{base_title} {record_type} — часть {chunk.index}/{total}"
+            part_title, part_description, clip_ranges = build_youtube_metadata(
+                base_title=base_title,
+                record_type=record_type,
+                video_dir=args.video_dir,
+                wall_start=chunk.start,
+                wall_end=chunk.end,
+                source=args.source,
+            )
+            log(
+                f"  YouTube: {part_title} "
+                f"({len(clip_ranges)} clip(s) in description/comment)"
+            )
 
             def do_upload_chunk(
                 chunk=chunk,
                 output=output,
                 record_type=record_type,
                 part_title=part_title,
+                part_description=part_description,
                 pl_title=pl_title,
             ) -> None:
                 try:
                     video_id, new_playlist, freed, _elapsed = upload_and_cleanup(
                         output,
                         part_title,
+                        description=part_description,
                         privacy=args.privacy,
                         credentials=args.credentials,
                         token=args.token,

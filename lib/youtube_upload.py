@@ -27,7 +27,10 @@ UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 
 DEFAULT_CREDENTIALS = Path.home() / ".config/70mai/youtube_credentials.json"
 DEFAULT_TOKEN = Path.home() / ".config/70mai/youtube_token.json"
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+]
 
 
 class YouTubeUploadError(RuntimeError):
@@ -849,6 +852,90 @@ def _upload_video_inner(
             raise YouTubeUploadError(msg)
 
     raise YouTubeUploadError("Upload finished without video ID")
+
+
+def update_video_metadata(
+    video_id: str,
+    *,
+    title: str,
+    description: str = "",
+    credentials_path: Path = DEFAULT_CREDENTIALS,
+    token_path: Path = DEFAULT_TOKEN,
+) -> None:
+    """Update title and description on an existing YouTube video."""
+    youtube = get_youtube_service(credentials_path, token_path)
+    response = (
+        youtube.videos()
+        .list(part="snippet", id=video_id)
+        .execute()
+    )
+    items = response.get("items") or []
+    if not items:
+        raise YouTubeUploadError(f"YouTube video not found: {video_id}")
+    snippet = items[0]["snippet"]
+    snippet["title"] = title
+    snippet["description"] = description
+    youtube.videos().update(
+        part="snippet",
+        body={"id": video_id, "snippet": snippet},
+    ).execute()
+
+
+def post_video_comment(
+    video_id: str,
+    text: str,
+    *,
+    credentials_path: Path = DEFAULT_CREDENTIALS,
+    token_path: Path = DEFAULT_TOKEN,
+) -> str:
+    """Post a top-level comment on a video. Returns comment thread id."""
+    if not text.strip():
+        raise YouTubeUploadError("Comment text is empty")
+    youtube = get_youtube_service(credentials_path, token_path)
+    body = {
+        "snippet": {
+            "videoId": video_id,
+            "topLevelComment": {"snippet": {"textOriginal": text}},
+        }
+    }
+    response = (
+        youtube.commentThreads()
+        .insert(part="snippet", body=body)
+        .execute()
+    )
+    return response["id"]
+
+
+def apply_youtube_metadata(
+    video_id: str,
+    *,
+    title: str,
+    description: str,
+    post_comment: bool = True,
+    credentials_path: Path = DEFAULT_CREDENTIALS,
+    token_path: Path = DEFAULT_TOKEN,
+) -> None:
+    """Update snippet and optionally duplicate description as a comment."""
+    update_video_metadata(
+        video_id,
+        title=title,
+        description=description,
+        credentials_path=credentials_path,
+        token_path=token_path,
+    )
+    log(f"  YouTube metadata updated: https://youtu.be/{video_id}")
+    if not post_comment:
+        return
+    try:
+        post_video_comment(
+            video_id,
+            description,
+            credentials_path=credentials_path,
+            token_path=token_path,
+        )
+        log("  YouTube comment posted")
+    except YouTubeUploadError as exc:
+        log(f"  Warning: YouTube comment skipped ({exc})")
 
 
 def ensure_playlist(
