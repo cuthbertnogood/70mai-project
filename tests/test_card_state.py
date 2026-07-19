@@ -4,10 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from card_identity import refresh_card_identity, sd_card_meta_path
+from import_state import sd_import_state_path
 from publish_state import (
     StateStore,
     empty_publish_state,
     get_or_create_card_id,
+    reset_portable_sd_state,
     save_state_file,
     sd_card_id_path,
     sd_state_path,
@@ -154,6 +157,74 @@ class CardStateIsolationTests(unittest.TestCase):
             card_id = get_or_create_card_id(source)
             self.assertTrue(sd_card_id_path(source).is_file())
             self.assertEqual(get_or_create_card_id(source), card_id)
+
+    def test_card_id_change_resets_sd_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "card"
+            source.mkdir()
+            (source / "Normal" / "Front").mkdir(parents=True)
+            old_id = "old-card-uuid-aaaa"
+            new_id = "new-card-uuid-bbbb"
+            sd_card_id_path(source).parent.mkdir(parents=True, exist_ok=True)
+            sd_card_id_path(source).write_text(old_id + "\n", encoding="utf-8")
+            sd_card_meta_path(source).write_text(
+                json.dumps({"card_id": old_id, "clip_signature": {}}) + "\n",
+                encoding="utf-8",
+            )
+            save_state_file(
+                sd_state_path(source, "Normal"),
+                {
+                    **empty_publish_state(source, "Normal", card_id=old_id),
+                    "trip_parts": [
+                        {
+                            "record_type": "Normal",
+                            "chunk_index": 1,
+                            "trip_index": 1,
+                            "video_id": "abc123",
+                            "uploaded": True,
+                        }
+                    ],
+                },
+            )
+            save_state_file(
+                sd_import_state_path(source, "Normal"),
+                {
+                    "source": str(source),
+                    "label": "Normal",
+                    "files": {"Normal/Front/foo.MP4": {"status": "merged"}},
+                },
+            )
+
+            sd_card_id_path(source).write_text(new_id + "\n", encoding="utf-8")
+            refresh_card_identity(source, new_id)
+
+            sd = json.loads(sd_state_path(source, "Normal").read_text(encoding="utf-8"))
+            self.assertEqual(sd.get("trip_parts"), [])
+            self.assertEqual(sd.get("card_id"), new_id)
+            imp = json.loads(
+                sd_import_state_path(source, "Normal").read_text(encoding="utf-8")
+            )
+            self.assertEqual(imp.get("files"), {})
+            meta = json.loads(sd_card_meta_path(source).read_text(encoding="utf-8"))
+            self.assertEqual(meta.get("card_id"), new_id)
+            self.assertEqual(meta.get("uploaded_trips"), 0)
+
+    def test_reset_portable_sd_state_keeps_auth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "card"
+            source.mkdir()
+            card_id = "test-card-id"
+            auth = source / ".70mai/auth/youtube_token.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text('{"token": "keep"}', encoding="utf-8")
+            save_state_file(
+                sd_state_path(source, "Normal"),
+                empty_publish_state(source, "Normal"),
+            )
+            reset_portable_sd_state(source, card_id)
+            self.assertTrue(auth.is_file())
+            sd = json.loads(sd_state_path(source, "Normal").read_text(encoding="utf-8"))
+            self.assertEqual(sd.get("card_id"), card_id)
 
 
 if __name__ == "__main__":

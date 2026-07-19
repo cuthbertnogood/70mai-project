@@ -361,6 +361,80 @@ def _strip_local_uploads(local: dict) -> dict:
     return cleaned
 
 
+def _sd_state_from_other_card(sd: dict, current_card_id: str | None) -> bool:
+    """True when SD publish state belongs to a different physical card."""
+    if not _state_has_uploads(sd):
+        return False
+    if not current_card_id:
+        return False
+    sd_id = sd.get("card_id")
+    if sd_id is None:
+        return False
+    return sd_id != current_card_id
+
+
+def _strip_sd_uploads(sd: dict, *, card_id: str | None) -> dict:
+    cleaned = empty_publish_state(
+        Path(sd.get("source") or "."),
+        (sd.get("types") or ["Unknown"])[0],
+        card_id=card_id,
+    )
+    for key in ("chunk_minutes", "chunk_mode"):
+        if sd.get(key) is not None:
+            cleaned[key] = sd[key]
+    return cleaned
+
+
+def reset_portable_sd_state(source: Path, card_id: str) -> None:
+    """Wipe publish/import cache on SD (keep auth + card_id). Fresh card session."""
+    source = source.resolve()
+    pub = sd_publish_dir(source)
+    if pub.is_dir():
+        for path in pub.glob("publish_*.state.json"):
+            data = load_state_file(path)
+            label = (data.get("types") or ["Unknown"])[0]
+            save_state_file(
+                path,
+                empty_publish_state(source, label, card_id=card_id),
+            )
+        sessions = sd_session_dir(source)
+        if sessions.is_dir():
+            for path in sessions.glob("*.upload.json"):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+    imp = source / ".70mai/import"
+    if imp.is_dir():
+        for path in imp.glob("import_*.state.json"):
+            data = load_state_file(path)
+            save_state_file(
+                path,
+                {
+                    "source": str(source),
+                    "label": data.get("label", "Normal"),
+                    "chunk_minutes": data.get("chunk_minutes", 10.0),
+                    "gap_seconds": data.get("gap_seconds", 120.0),
+                    "files": {},
+                    "merge_stats": {},
+                    "card_id": card_id,
+                },
+            )
+        for name in (
+            "card_inventory.json",
+            "CARD_SUMMARY.txt",
+            "CARD_STORAGE.txt",
+            "card_storage.json",
+        ):
+            path = imp / name
+            try:
+                if path.is_file():
+                    path.unlink()
+            except OSError:
+                pass
+
+
 def _credentials_search_paths() -> list[Path]:
     paths = [local_credentials_path(), *PROJECT_CREDENTIALS_CANDIDATES]
     seen: set[str] = set()
@@ -572,6 +646,23 @@ class StateStore:
         sd = load_state_file(self.sd_path)
         if sd and current_card_id and not sd.get("card_id"):
             sd["card_id"] = current_card_id
+
+        if _sd_state_from_other_card(sd, current_card_id):
+            if not quiet:
+                old = sd.get("card_id")
+                old_label = f"{old[:8]}…" if old else "?"
+                cur_label = f"{current_card_id[:8]}…" if current_card_id else "?"
+                log(
+                    f"SD publish state is from another card ({old_label}) — "
+                    f"resetting for card {cur_label}"
+                )
+            sd = _strip_sd_uploads(sd, card_id=current_card_id)
+            save_state_file(self.sd_path, sd)
+            local = _strip_local_uploads(local)
+            if current_card_id:
+                local["card_id"] = current_card_id
+            save_state_file(self.local_path, local)
+            clear_host_session(self.temp_dir)
 
         if _local_state_from_other_card(local, current_card_id, sd):
             if not quiet:

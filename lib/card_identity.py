@@ -232,6 +232,16 @@ def refresh_card_identity(source: Path, card_id: str | None) -> dict | None:
         return None
     try:
         previous = read_card_meta(source)
+        prev_id = previous.get("card_id") if previous else None
+        if prev_id and prev_id != card_id:
+            from publish_state import reset_portable_sd_state
+
+            log(
+                f"SD card ID changed ({prev_id[:8]}… → {card_id[:8]}…) — "
+                "clearing publish/import state from previous card"
+            )
+            reset_portable_sd_state(source, card_id)
+
         signature = collect_clip_signature(source)
         label = read_card_label(source)
         uploaded = count_uploaded_trips(source)
