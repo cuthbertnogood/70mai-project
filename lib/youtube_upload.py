@@ -911,11 +911,12 @@ def apply_youtube_metadata(
     *,
     title: str,
     description: str,
+    comment: str | None = None,
     post_comment: bool = True,
     credentials_path: Path = DEFAULT_CREDENTIALS,
     token_path: Path = DEFAULT_TOKEN,
 ) -> None:
-    """Update snippet and optionally duplicate description as a comment."""
+    """Update snippet and optionally post a comment (may differ from description)."""
     update_video_metadata(
         video_id,
         title=title,
@@ -926,10 +927,11 @@ def apply_youtube_metadata(
     log(f"  YouTube metadata updated: https://youtu.be/{video_id}")
     if not post_comment:
         return
+    comment_text = comment if comment is not None else description
     try:
         post_video_comment(
             video_id,
-            description,
+            comment_text,
             credentials_path=credentials_path,
             token_path=token_path,
         )

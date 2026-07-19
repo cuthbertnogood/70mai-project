@@ -282,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
                 job["video_id"],
                 title=title,
                 description=body,
+                comment=comment,
                 post_comment=not args.skip_comment,
                 credentials_path=args.credentials,
                 token_path=args.token,

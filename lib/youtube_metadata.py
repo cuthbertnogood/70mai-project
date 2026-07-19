@@ -16,7 +16,8 @@ RECORD_TYPE_RU: dict[str, str] = {
 }
 
 TITLE_MAX_LEN = 100
-BODY_MAX_LEN = 9500
+DESCRIPTION_MAX_LEN = 4900
+COMMENT_MAX_LEN = 9900
 DATETIME_FMT = "%d.%m.%Y %H:%M:%S"
 DATETIME_TITLE_FMT = "%d.%m.%Y %H:%M"
 TIME_ONLY_FMT = "%H:%M"
@@ -180,7 +181,7 @@ def build_youtube_body(
     record_type: str,
     ranges: list[tuple[datetime, datetime]],
     *,
-    max_len: int = BODY_MAX_LEN,
+    max_len: int = DESCRIPTION_MAX_LEN,
 ) -> str:
     type_ru = record_type_label(record_type)
     header = f"Тип: {type_ru}\n"
@@ -199,10 +200,17 @@ def build_youtube_body(
         used += len(line)
 
     if omitted:
-        lines.append(
+        footer = (
             f"… и ещё {omitted} клипов (список обрезан из‑за лимита YouTube)"
         )
-    return "\n".join(lines)
+        while lines and len("\n".join(lines + [footer])) > max_len:
+            lines.pop()
+            omitted += 1
+        lines.append(footer)
+    text = "\n".join(lines)
+    if len(text) > max_len:
+        return text[: max_len - 1] + "…"
+    return text
 
 
 def build_youtube_metadata(
@@ -214,8 +222,8 @@ def build_youtube_metadata(
     wall_end: datetime | None = None,
     source: Path | None = None,
     ffprobe: str = "ffprobe",
-) -> tuple[str, str, list[tuple[datetime, datetime]]]:
-    """Return (title, description/body, clip_ranges)."""
+) -> tuple[str, str, str, list[tuple[datetime, datetime]]]:
+    """Return (title, description, comment, clip_ranges)."""
     ranges = collect_clip_ranges(
         video_dir,
         record_type,
@@ -225,5 +233,6 @@ def build_youtube_metadata(
         ffprobe=ffprobe,
     )
     title = build_youtube_title(base_title, record_type, ranges)
-    body = build_youtube_body(record_type, ranges)
-    return title, body, ranges
+    description = build_youtube_body(record_type, ranges, max_len=DESCRIPTION_MAX_LEN)
+    comment = build_youtube_body(record_type, ranges, max_len=COMMENT_MAX_LEN)
+    return title, description, comment, ranges

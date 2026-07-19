@@ -40,3 +40,6 @@ youtube_token.json
 
 # Cursor hook runtime state (per-chat edit counters)
 .cursor/hooks/state/
+
+# Cursor chat history (may contain pasted secrets — never commit)
+.specstory/

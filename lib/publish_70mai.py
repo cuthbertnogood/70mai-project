@@ -438,17 +438,19 @@ def upload_and_cleanup(
     reporter.finish()
     elapsed = time.monotonic() - started
 
-    if description and post_comment:
-        try:
-            post_video_comment(
-                video_id,
-                description,
-                credentials_path=credentials,
-                token_path=token,
-            )
-            log("  YouTube comment posted")
-        except YouTubeUploadError as exc:
-            log(f"  Warning: YouTube comment skipped ({exc})")
+    if post_comment:
+        comment_text = comment if comment is not None else description
+        if comment_text:
+            try:
+                post_video_comment(
+                    video_id,
+                    comment_text,
+                    credentials_path=credentials,
+                    token_path=token,
+                )
+                log("  YouTube comment posted")
+            except YouTubeUploadError as exc:
+                log(f"  Warning: YouTube comment skipped ({exc})")
 
     current_playlist = playlist_id
     if current_playlist or playlist_title:
@@ -1069,7 +1071,7 @@ def publish_and_upload_trips(
             state_store.save(state)
             continue
 
-        trip_title, trip_description, clip_ranges = build_youtube_metadata(
+        trip_title, trip_description, trip_comment, clip_ranges = build_youtube_metadata(
             base_title=base_title,
             record_type=record_type,
             video_dir=video_dir,
@@ -1133,6 +1135,7 @@ def publish_and_upload_trips(
                     part_path,
                     trip_title,
                     description=trip_description,
+                    comment=trip_comment,
                     privacy=privacy,
                     credentials=credentials,
                     token=token,
@@ -1726,7 +1729,7 @@ def main() -> None:
                     log(f"  Kept: {output}")
                 continue
 
-            part_title, part_description, clip_ranges = build_youtube_metadata(
+            part_title, part_description, part_comment, clip_ranges = build_youtube_metadata(
                 base_title=base_title,
                 record_type=record_type,
                 video_dir=args.video_dir,
@@ -1752,6 +1755,7 @@ def main() -> None:
                         output,
                         part_title,
                         description=part_description,
+                        comment=part_comment,
                         privacy=args.privacy,
                         credentials=args.credentials,
                         token=args.token,
