@@ -57,8 +57,9 @@ cd /Users/cuthbert/work_local/70mai_project
 ./scripts/publish_all_70mai.sh --dry-run
 ./scripts/publish_all_70mai.sh --types Parking --skip-import
 
-# Прогресс (отдельное окно): copy/merge/compose/upload; блок «Локальные файлы»
-# (пути к MP4 на диске — open …/chunk_XX/trip_YY.mp4 до YouTube); внизу «Сбои»;
+# Прогресс (отдельное окно): copy/merge/compose/upload; compose % из autopilot_status.json
+# (не stale Encode из publish_all.log); все *.log в .publish_tmp; proc: publish_70mai = publish;
+# блок «Локальные файлы» (open …/chunk_XX/trip_YY.mp4 до YouTube); внизу «Сбои»;
 # Parking: сейчас Xs / цель ~7309s; после 3× short — [i]gnore/[r]etry (parts keep).
 # Битый клип (moov/ffprobe) → quarantine `*.MP4.bad`, merge без него; счётчик в «Сбои»;
 # история: host `video/Output/.publish_tmp/bad_clips.jsonl` + SD `/.70mai/import/bad_clips.jsonl`

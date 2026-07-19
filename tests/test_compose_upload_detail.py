@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from autopilot_dashboard import (
@@ -106,6 +107,7 @@ class ComposeUploadDetailTests(unittest.TestCase):
                 "speed": 1.94,
                 "speed_unit": "x",
                 "action": "encode Front↑+Back↓",
+                "log_ts": datetime(2026, 7, 15, 12, 0, 2),
             },
             trip_label="trip_01",
         )
@@ -114,6 +116,54 @@ class ComposeUploadDetailTests(unittest.TestCase):
         self.assertIn("1.94x", detail)
         self.assertIn("46m 07s/2h 01m 19s", detail)
         self.assertIn("ETA 38m 46s", detail)
+
+    def test_compose_live_status_beats_stale_log(self) -> None:
+        short, detail = format_compose_detail(
+            {
+                "phase": "compose",
+                "ts": "2026-07-19T12:43:26",
+                "record_type": "Parking",
+                "percent": 4.0,
+                "output_bytes": 180 * 1024 * 1024,
+                "speed": 1.67,
+                "speed_unit": "x",
+                "eta": "1h 10m",
+                "elapsed": "3m",
+            },
+            log_detail={
+                "percent": 100.0,
+                "position": "2h 01m 19s/2h 01m 19s",
+                "elapsed": "56m 28s",
+                "eta": "0s",
+                "speed": 2.15,
+                "speed_unit": "x",
+                "log_ts": datetime(2026, 7, 16, 0, 51, 50),
+            },
+            trip_label="все parking",
+        )
+        self.assertIn("4%", short)
+        self.assertNotIn("100%", short)
+        assert detail is not None
+        self.assertIn("4%", detail)
+        self.assertNotIn("100%", detail)
+
+    def test_parse_compose_log_scans_extra_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "publish_all.log").write_text(
+                "2026-07-16 00:51:50 Encode: [████] 2h 01m 19s/2h 01m 19s "
+                "(100.0%) | 56m 28s elapsed | ETA 0s | speed 2.15x\n",
+                encoding="utf-8",
+            )
+            (root / "parking_rebuild.log").write_text(
+                "2026-07-19 12:43:26 Encode: [█░░░] 4m 52s/2h 01m 54s "
+                "(4.0%) | 2m 59s elapsed | ETA 1h 10m | speed 1.67x\n",
+                encoding="utf-8",
+            )
+            d = parse_compose_log_detail(root)
+            assert d is not None
+            self.assertAlmostEqual(d["percent"], 4.0)
+            self.assertEqual(d["log_file"], "parking_rebuild.log")
 
 
 if __name__ == "__main__":

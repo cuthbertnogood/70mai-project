@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 STATUS_FILENAME = "autopilot_status.json"
@@ -1196,7 +1196,7 @@ _PROC_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("autopilot", re.compile(r"publish_all_70mai\.py", re.I)),
     ("import", re.compile(r"import_70mai\.py", re.I)),
     ("compose", re.compile(r"compose_(?:70mai|2cam_70mai)\.py", re.I)),
-    ("upload", re.compile(r"publish_70mai\.py", re.I)),
+    ("publish", re.compile(r"publish_70mai\.py", re.I)),
     ("ffmpeg", re.compile(r"(?:^|[/\s])ffmpeg(?:\s|$)", re.I)),
 )
 
@@ -1267,7 +1267,7 @@ def list_pipeline_processes() -> list[PipelineProc]:
         "autopilot": 0,
         "import": 1,
         "compose": 2,
-        "upload": 3,
+        "publish": 3,
         "ffmpeg": 4,
         "watchdog": 5,
     }
@@ -1816,48 +1816,113 @@ _ENCODING_HB_RE = re.compile(
 )
 
 
-def parse_compose_log_detail(temp_dir: Path | None) -> dict | None:
-    """Last Encode: / encoding heartbeat from publish_all.log."""
+def _parse_status_ts(st: dict | None) -> datetime | None:
+    if not isinstance(st, dict):
+        return None
+    raw = st.get("ts")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+
+
+def _compose_log_paths(temp_dir: Path) -> list[Path]:
+    """*.log under temp_dir — newest mtime first (publish_all, *_rebuild, …)."""
+    ranked: list[tuple[float, Path]] = []
+    try:
+        for path in temp_dir.glob("*.log"):
+            ranked.append((path.stat().st_mtime, path))
+    except OSError:
+        return []
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in ranked]
+
+
+def _compose_log_since(st: dict | None) -> datetime | None:
+    """Drop Encode lines from an earlier compose session."""
+    if not isinstance(st, dict):
+        return None
+    phase = str(st.get("phase") or "")
+    if phase not in ("compose", "upload", "stall"):
+        return None
+    ts = _parse_status_ts(st)
+    if ts is None:
+        return None
+    return ts - timedelta(minutes=45)
+
+
+def parse_compose_log_detail(
+    temp_dir: Path | None,
+    *,
+    since: datetime | None = None,
+) -> dict | None:
+    """Last Encode: / encoding heartbeat from temp_dir *.log files."""
     if temp_dir is None:
         return None
-    text = _tail_text(temp_dir / "publish_all.log", max_bytes=96_000)
-    if not text:
-        return None
-    found: dict | None = None
-    for line in text.splitlines():
-        m = _ENCODE_LOG_RE.search(line)
-        if m:
-            speed_raw = m.group("speed")
-            speed = None
-            if speed_raw.endswith("x") and speed_raw != "—":
-                try:
-                    speed = float(speed_raw[:-1])
-                except ValueError:
-                    speed = None
-            found = {
-                "percent": float(m.group("pct")),
-                "position": m.group("pos").strip(),
-                "elapsed": m.group("elapsed").strip(),
-                "eta": m.group("eta").strip(),
-                "speed": speed,
-                "speed_unit": "x",
-                "action": "encode Front↑+Back↓",
-            }
+    best: dict | None = None
+    best_ts: datetime | None = None
+    for path in _compose_log_paths(temp_dir):
+        text = _tail_text(path, max_bytes=96_000)
+        if not text:
             continue
-        m2 = _ENCODING_HB_RE.search(line)
-        if m2:
-            speed = float(m2.group(3)) if m2.group(3) else None
-            prev = found or {}
-            found = {
-                "percent": float(m2.group(2)),
-                "position": prev.get("position"),
-                "elapsed": m2.group(1).strip(),
-                "eta": prev.get("eta"),
-                "speed": speed if speed is not None else prev.get("speed"),
-                "speed_unit": "x",
-                "action": prev.get("action") or "encode Front↑+Back↓",
-            }
-    return found
+        encode_ctx: dict = {}
+        for line in text.splitlines():
+            match_ts = _LOG_TS_RE.match(line)
+            line_ts: datetime | None = None
+            if match_ts:
+                try:
+                    line_ts = datetime.strptime(
+                        match_ts.group(1), "%Y-%m-%d %H:%M:%S"
+                    )
+                except ValueError:
+                    line_ts = None
+            m = _ENCODE_LOG_RE.search(line)
+            if m and line_ts is not None:
+                speed_raw = m.group("speed")
+                speed = None
+                if speed_raw.endswith("x") and speed_raw != "—":
+                    try:
+                        speed = float(speed_raw[:-1])
+                    except ValueError:
+                        speed = None
+                encode_ctx = {
+                    "percent": float(m.group("pct")),
+                    "position": m.group("pos").strip(),
+                    "elapsed": m.group("elapsed").strip(),
+                    "eta": m.group("eta").strip(),
+                    "speed": speed,
+                    "speed_unit": "x",
+                    "action": "encode Front↑+Back↓",
+                }
+                if since is not None and line_ts < since:
+                    continue
+                entry = {**encode_ctx, "log_ts": line_ts, "log_file": path.name}
+                if best_ts is None or line_ts >= best_ts:
+                    best_ts = line_ts
+                    best = entry
+                continue
+            m2 = _ENCODING_HB_RE.search(line)
+            if m2 and line_ts is not None:
+                speed = float(m2.group(3)) if m2.group(3) else None
+                entry = {
+                    "percent": float(m2.group(2)),
+                    "position": encode_ctx.get("position"),
+                    "elapsed": m2.group(1).strip(),
+                    "eta": encode_ctx.get("eta"),
+                    "speed": speed if speed is not None else encode_ctx.get("speed"),
+                    "speed_unit": "x",
+                    "action": encode_ctx.get("action") or "encode Front↑+Back↓",
+                }
+                if since is not None and line_ts < since:
+                    continue
+                entry["log_ts"] = line_ts
+                entry["log_file"] = path.name
+                if best_ts is None or line_ts >= best_ts:
+                    best_ts = line_ts
+                    best = entry
+    return best
 
 
 def parse_upload_log_detail(temp_dir: Path | None) -> dict | None:
@@ -1886,6 +1951,17 @@ def parse_upload_log_detail(temp_dir: Path | None) -> dict | None:
     return found
 
 
+def _log_matches_live_compose(st: dict, log_detail: dict) -> bool:
+    """True when log telemetry belongs to the current compose session."""
+    log_ts = log_detail.get("log_ts")
+    if not isinstance(log_ts, datetime):
+        return False
+    st_ts = _parse_status_ts(st)
+    if st_ts is not None:
+        return log_ts >= st_ts - timedelta(minutes=2)
+    return (datetime.now() - log_ts).total_seconds() <= 300.0
+
+
 def format_compose_detail(
     st: dict | None,
     *,
@@ -1895,21 +1971,35 @@ def format_compose_detail(
     """Return (short lane text, optional second detail line) for compose."""
     st = st if isinstance(st, dict) else {}
     log_detail = log_detail or {}
-    # Prefer Encode: telemetry from the log — works even if an older
-    # compose process only writes bare "38% (1670M)" into status.json.
-    pct = log_detail.get("percent")
-    if not isinstance(pct, (int, float)):
-        pct = st.get("percent")
-    out_b = st.get("output_bytes")
-    speed = log_detail.get("speed")
-    if not isinstance(speed, (int, float)):
-        speed = st.get("speed")
-    unit = str(
-        log_detail.get("speed_unit") or st.get("speed_unit") or "x"
+    phase = str(st.get("phase") or "")
+    live_compose = phase == "compose" and isinstance(st.get("percent"), (int, float))
+    log_enrich = bool(log_detail) and (
+        _log_matches_live_compose(st, log_detail)
+        if live_compose
+        else True
     )
-    eta = str(log_detail.get("eta") or st.get("eta") or "").strip()
-    elapsed = str(log_detail.get("elapsed") or st.get("elapsed") or "").strip()
-    position = str(log_detail.get("position") or "").strip()
+
+    if live_compose:
+        pct = float(st["percent"])
+    elif isinstance(log_detail.get("percent"), (int, float)):
+        pct = float(log_detail["percent"])
+    elif isinstance(st.get("percent"), (int, float)):
+        pct = float(st["percent"])
+    else:
+        pct = None
+
+    out_b = st.get("output_bytes")
+    speed = st.get("speed") if isinstance(st.get("speed"), (int, float)) else None
+    if speed is None and log_enrich:
+        speed = log_detail.get("speed")
+    unit = str(
+        st.get("speed_unit") or log_detail.get("speed_unit") or "x"
+    )
+    eta = str(st.get("eta") or (log_detail.get("eta") if log_enrich else "") or "").strip()
+    elapsed = str(
+        st.get("elapsed") or (log_detail.get("elapsed") if log_enrich else "") or ""
+    ).strip()
+    position = str(log_detail.get("position") or "").strip() if log_enrich else ""
     action = str(log_detail.get("action") or "").strip()
     detail_raw = str(st.get("detail") or "").strip()
     if not action and "Front" in detail_raw and "Back" in detail_raw:
@@ -2749,7 +2839,13 @@ def _format_pipeline_block(
     compose_wait_lines: list[str] = []
     if compose_on:
         trip_lbl = _trip_display(active_row) if active_row is not None else ""
-        log_cd = parse_compose_log_detail(temp_dir) if temp_dir else None
+        log_cd = (
+            parse_compose_log_detail(
+                temp_dir, since=_compose_log_since(st)
+            )
+            if temp_dir
+            else None
+        )
         compose_short, compose_detail_line = format_compose_detail(
             st, log_detail=log_cd, trip_label=trip_lbl
         )
