@@ -23,6 +23,7 @@ from youtube_upload import (
     DEFAULT_TOKEN,
     YouTubeUploadError,
     apply_youtube_metadata,
+    ensure_youtube_oauth_for_upload,
 )
 
 
@@ -203,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         log("No uploaded videos found in publish state.")
         return 1
 
+    oauth_checked = False
     updated = 0
     for job in jobs:
         part = job["part"]
@@ -237,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         elif not base_title:
             base_title = f"70mai {datetime.now():%Y-%m-%d}"
 
-        title, body, clip_ranges = build_youtube_metadata(
+        title, body, comment, clip_ranges = build_youtube_metadata(
             base_title=base_title,
             record_type=job["record_type"],
             video_dir=args.video_dir,
@@ -259,6 +261,21 @@ def main(argv: list[str] | None = None) -> int:
 
         if not args.apply:
             continue
+
+        if not oauth_checked:
+            ok, detail = ensure_youtube_oauth_for_upload(
+                args.credentials,
+                args.token,
+                interactive=True,
+                auto_reauth=True,
+            )
+            oauth_checked = True
+            if not ok:
+                log(f"YouTube OAuth not ready: {detail}")
+                log(
+                    "  Запустите в интерактивном терминале — откроется браузер для входа."
+                )
+                return 1
 
         try:
             apply_youtube_metadata(

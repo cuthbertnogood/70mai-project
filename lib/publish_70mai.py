@@ -393,6 +393,7 @@ def upload_and_cleanup(
     title: str,
     *,
     description: str = "",
+    comment: str | None = None,
     post_comment: bool = True,
     privacy: str,
     credentials: Path,
@@ -1072,8 +1073,8 @@ def publish_and_upload_trips(
             base_title=base_title,
             record_type=record_type,
             video_dir=video_dir,
-            wall_start=trip.start,
-            wall_end=trip.end,
+            wall_start=None if record_type in SINGLE_VIDEO_TYPES else trip.start,
+            wall_end=None if record_type in SINGLE_VIDEO_TYPES else trip.end,
             source=source,
         )
         log(
@@ -1729,8 +1730,8 @@ def main() -> None:
                 base_title=base_title,
                 record_type=record_type,
                 video_dir=args.video_dir,
-                wall_start=chunk.start,
-                wall_end=chunk.end,
+                wall_start=None if record_type in SINGLE_VIDEO_TYPES else chunk.start,
+                wall_end=None if record_type in SINGLE_VIDEO_TYPES else chunk.end,
                 source=args.source,
             )
             log(
