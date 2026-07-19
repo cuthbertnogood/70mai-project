@@ -568,6 +568,23 @@ def try_start_prefetch_import(
         type_chunks, after_chunk, type_state, video_dir
     )
     if next_chunk is None:
+        for candidate in type_chunks:
+            if candidate.index <= after_chunk.index:
+                continue
+            if chunk_is_done(type_state, candidate):
+                log(
+                    f"  Prefetch chunk {candidate.index} skipped: "
+                    "already uploaded"
+                )
+                break
+            if chunk_merges_ready(video_dir, candidate):
+                log(
+                    f"  Prefetch chunk {candidate.index} skipped: "
+                    "SSD merges already cover window"
+                )
+            else:
+                log("  Prefetch: no pending chunk needs SD import")
+            break
         return None
     from publish_70mai import free_disk_gb
 
@@ -692,15 +709,13 @@ def chunk_merges_ready(
     )
     if not front or not back:
         return False
-    # Slot-aligned merges (every merge carries a timeline manifest) are ready
-    # by construction: compose black-fills any per-camera gap.
+    timeline_ok = False
     try:
         from clip_timeline import merges_timeline_ready
 
-        if merges_timeline_ready(video_dir, record_type)[0]:
-            return True
+        timeline_ok = merges_timeline_ready(video_dir, record_type)[0]
     except Exception:
-        pass
+        timeline_ok = False
     for trip in chunk.trips:
         try:
             fs = plan_segments(front, trip.start, trip.duration_sec, 0.0)
@@ -709,6 +724,9 @@ def chunk_merges_ready(
             return False
         if not fs or not bs:
             return False
+        if timeline_ok:
+            # Slot-aligned merges: compose black-fills short gaps; segments exist.
+            continue
         front_cov = sum(seg.duration for seg in fs)
         back_cov = sum(seg.duration for seg in bs)
         need = trip.duration_sec * min_coverage

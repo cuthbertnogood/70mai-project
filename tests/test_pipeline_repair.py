@@ -275,6 +275,42 @@ class PipelineRepairTests(unittest.TestCase):
         ):
             self.assertFalse(chunk_merges_ready(Path("video/Output"), chunk))
 
+    def test_chunk_merges_ready_not_fooled_by_timeline_manifests(self) -> None:
+        from publish_all_70mai import chunk_merges_ready
+
+        chunk = self._parking_chunk(7309.0)
+        start = chunk.start
+        front = [
+            _FakeClip(
+                path=Path("PA_front.mp4"),
+                start=start - timedelta(days=1),
+                end=start - timedelta(hours=1),
+                camera="Front",
+                duration=3600.0,
+            )
+        ]
+        back = [
+            _FakeClip(
+                path=Path("PA_back.mp4"),
+                start=start - timedelta(days=1),
+                end=start - timedelta(hours=1),
+                camera="Back",
+                duration=3600.0,
+            )
+        ]
+
+        def fake_scan(video_dir, camera, *, record_type="Normal", probe=True):
+            return front if camera == "Front" else back
+
+        with (
+            mock.patch("compose_70mai.scan_merged_clips", side_effect=fake_scan),
+            mock.patch(
+                "clip_timeline.merges_timeline_ready",
+                return_value=(True, ""),
+            ),
+        ):
+            self.assertFalse(chunk_merges_ready(Path("video/Output"), chunk))
+
 
 if __name__ == "__main__":
     unittest.main()
