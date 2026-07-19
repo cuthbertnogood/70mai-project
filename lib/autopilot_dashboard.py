@@ -688,7 +688,7 @@ def format_pipeline_legend(*, term_cols: int) -> list[str]:
     """What prefetch / copy / merge / compose / upload mean in the этапы block."""
     lines = [
         "── конвейер ──",
-        "prefetch — фоновый import **следующего** ~2h ролика (SD→SSD) параллельно compose/upload текущего",
+        "prefetch — фоновый import следующего ~2h ролика (SD→SSD) параллельно compose/upload текущего",
         "copy — копирование минутных клипов с SD на SSD; merge — склейка в ~10‑мин Front/Back MP4",
         "compose — сборка вертикального 2‑cam ~2h MP4; upload — resumable заливка на YouTube",
         "шапка YouTube M/N — ролики (~2h); (X/Y поездок) — сессии внутри; рM/N в таблице = тот же ролик M",
