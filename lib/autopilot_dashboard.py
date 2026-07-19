@@ -410,6 +410,9 @@ def resolve_live_status(
     if phase in ("compose", "upload", "stall", "oauth") and auto_fix:
         st = reconcile_status_with_processes(temp_dir, st, rows=rows)
         phase = str((st or {}).get("phase") or "")
+    if phase in ("compose", "stall") and auto_fix:
+        st = refresh_stale_compose_status(temp_dir, st)
+        phase = str((st or {}).get("phase") or "")
     if phase in ("compose", "upload", "stall", "oauth"):
         return st
     log_st = read_import_progress_from_log(temp_dir)
@@ -498,7 +501,7 @@ def reconcile_status_with_processes(
     """Auto-correct status.json when it points at the wrong trip/type."""
     inferred = infer_live_job_from_processes()
     if not inferred:
-        return st
+        return refresh_stale_compose_status(temp_dir, st)
     st = dict(st or {})
     phase = str(st.get("phase") or "")
     if phase not in ("compose", "upload", "stall"):
@@ -512,7 +515,7 @@ def reconcile_status_with_processes(
         or int(st.get("trip_index") or 0) != int(inferred.get("trip_index") or 0)
     )
     if not mismatch:
-        return st
+        return refresh_stale_compose_status(temp_dir, st)
     kept = {
         k: st[k]
         for k in (
@@ -556,6 +559,89 @@ def _maybe_write_reconciled_status(temp_dir: Path, st: dict) -> None:
         )
     except (OSError, TypeError, ValueError):
         pass
+
+
+def refresh_stale_compose_status(
+    temp_dir: Path,
+    st: dict | None,
+) -> dict | None:
+    """Backfill autopilot_status.json when ffmpeg runs but encode stopped writing it."""
+    if not _status_is_stale(st):
+        return st
+    inferred = infer_live_job_from_processes()
+    if not inferred or str(inferred.get("phase") or "") not in ("compose", "stall"):
+        return st
+    record_type = str(inferred.get("record_type") or "Normal")
+    chunk_index = int(inferred.get("chunk_index") or 0)
+    trip_index = int(inferred.get("trip_index") or 0)
+    if chunk_index <= 0 or trip_index <= 0:
+        return st
+
+    log_detail = parse_compose_log_detail(temp_dir, since=None)
+    log_fresh = False
+    if isinstance(log_detail, dict):
+        log_ts = log_detail.get("log_ts")
+        if isinstance(log_ts, datetime):
+            log_fresh = (datetime.now() - log_ts).total_seconds() <= 120.0
+
+    out_path = resolve_compose_trip_path(
+        temp_dir, record_type, chunk_index, trip_index
+    )
+    out_bytes = 0
+    if out_path.is_file():
+        try:
+            out_bytes = out_path.stat().st_size
+        except OSError:
+            pass
+
+    prior = dict(st or {})
+    pct = prior.get("percent")
+    speed = prior.get("speed")
+    speed_unit = prior.get("speed_unit")
+    eta = prior.get("eta")
+    elapsed = prior.get("elapsed")
+    stalled = bool(prior.get("stalled"))
+    reason = str(prior.get("reason") or "")
+
+    if log_fresh and isinstance(log_detail, dict):
+        if isinstance(log_detail.get("percent"), (int, float)):
+            pct = float(log_detail["percent"])
+        if isinstance(log_detail.get("speed"), (int, float)):
+            speed = float(log_detail["speed"])
+            speed_unit = str(log_detail.get("speed_unit") or "x")
+        if log_detail.get("eta"):
+            eta = str(log_detail["eta"])
+        if log_detail.get("elapsed"):
+            elapsed = str(log_detail["elapsed"])
+        stalled = False
+        reason = ""
+
+    out_mb = out_bytes // (1024 * 1024)
+    if isinstance(pct, (int, float)):
+        detail = f"{float(pct):.0f}% ({out_mb}M"
+    else:
+        detail = f"encode ({out_mb}M"
+    if isinstance(speed, (int, float)) and float(speed) > 0:
+        detail += f" {float(speed):.2f}x"
+    detail += ")"
+
+    write_status(
+        temp_dir,
+        record_type=record_type,
+        chunk_index=chunk_index,
+        trip_index=trip_index,
+        phase="stall" if stalled else "compose",
+        detail=detail,
+        percent=pct if isinstance(pct, (int, float)) else None,
+        output_bytes=out_bytes if out_bytes > 0 else None,
+        stalled=stalled,
+        reason=reason,
+        speed=speed if isinstance(speed, (int, float)) else None,
+        speed_unit=str(speed_unit) if speed_unit else None,
+        eta=str(eta) if eta else None,
+        elapsed=str(elapsed) if elapsed else None,
+    )
+    return read_status(temp_dir)
 
 
 def free_disk_gb(path: Path) -> float:

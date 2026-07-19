@@ -76,6 +76,16 @@ def iter_compose_video_roots(temp_dir: Path):
             yield root
 
 
+def publish_temp_dir(path: Path) -> Path | None:
+    """Return `.publish_tmp` directory containing a compose output path."""
+    parts = path.parts
+    try:
+        idx = parts.index(".publish_tmp")
+    except ValueError:
+        return None
+    return Path(*parts[: idx + 1])
+
+
 def parse_compose_output_path(path: Path) -> tuple[str | None, int, int] | None:
     """Parse record_type, chunk_index, trip_index from a compose output path."""
     parts = path.parts

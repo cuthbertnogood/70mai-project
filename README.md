@@ -93,8 +93,8 @@ cd /Users/cuthbert/work_local/70mai_project
 ./scripts/publish_all_70mai.sh --dry-run
 ./scripts/publish_all_70mai.sh --types Parking --skip-import
 
-# Прогресс (отдельное окно): copy/merge/compose/upload; prefetch import следующего чанка — строка `prefetch` в этапах и `prefetch ch.N` в proc; compose % из autopilot_status.json
-# (не stale Encode из publish_all.log); шапка YouTube M/N = ~2h **ролики** (не поездки); в таблице `рM/N` — тот же счётчик; status.json сверяется с ffmpeg/publish CLI (автоисправление типа/chunk);
+# Прогресс (отдельное окно): copy/merge/compose/upload; prefetch import следующего чанка — строка `prefetch` в этапах и `prefetch ch.N` в proc; compose % пишется в autopilot_status.json каждые ~1.5s (typed `.publish_tmp/Normal/chunk_NN/`); если файл >5 мин без обновления — дашборд подхватывает ffmpeg + heartbeat из log;
+# шапка YouTube M/N = ~2h **ролики** (не поездки); в таблице `рM/N` — тот же счётчик; status.json сверяется с ffmpeg/publish CLI (автоисправление типа/chunk);
 # compose tmp: `.publish_tmp/{Normal|Event|Parking}/chunk_NN/trip_NN.mp4` (legacy `chunk_NN/` только чтение);
 # блок «Локальные файлы» — один путь (самая поздняя поездка, open до YouTube); внизу «Сбои»;
 # Parking: сейчас Xs / цель ~7309s; после 3× short — [i]gnore/[r]etry (parts keep).

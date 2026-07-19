@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from import_70mai import log
+from import_70mai import format_duration, log
+from publish_paths import parse_compose_output_path, publish_temp_dir
 
 SCREEN_RE = re.compile(
     r"^ScreenRecording_(\d{2}-\d{2}-\d{4}) (\d{2}-\d{2}-\d{2})",
@@ -40,7 +41,6 @@ BAR_WIDTH = 36
 ENCODE_HEARTBEAT_SEC = 30.0
 ENCODE_STALL_WARN_SEC = 300.0  # 5 min without % or file growth → STALLED log
 ENCODE_STALL_ABORT_SEC = 600.0  # 10 min → kill ffmpeg
-TRIP_OUT_RE = re.compile(r"chunk_(\d+)/trip_(\d+)\.mp4$", re.IGNORECASE)
 FFMPEG_TIME_RE = re.compile(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})")
 FFMPEG_SPEED_RE = re.compile(r"speed=\s*([\d.]+)x")
 
@@ -195,15 +195,18 @@ def _update_encode_status(
 ) -> None:
     if output_path is None or ".publish_tmp" not in output_path.as_posix():
         return
-    match = TRIP_OUT_RE.search(output_path.as_posix())
-    if not match:
+    parsed = parse_compose_output_path(output_path)
+    if not parsed:
+        return
+    record_type, chunk_index, trip_index = parsed
+    temp_dir = publish_temp_dir(output_path)
+    if temp_dir is None:
         return
     from autopilot_dashboard import read_status, write_status
 
-    temp_dir = output_path.parent.parent
-    chunk_index, trip_index = int(match.group(1)), int(match.group(2))
-    prior = read_status(temp_dir) or {}
-    record_type = prior.get("record_type") or "Normal"
+    if not record_type:
+        prior = read_status(temp_dir) or {}
+        record_type = str(prior.get("record_type") or "Normal")
     out_mb = output_bytes // (1024 * 1024)
     if stalled:
         detail = f"STALLED {pct:.0f}% ({out_mb}M"

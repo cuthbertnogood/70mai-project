@@ -10,6 +10,7 @@ from publish_paths import (
     compose_trip_path,
     is_legacy_compose_path,
     parse_compose_output_path,
+    publish_temp_dir,
     resolve_compose_trip_path,
 )
 
@@ -43,6 +44,14 @@ class PublishPathsTests(unittest.TestCase):
         self.assertEqual(parse_compose_output_path(typed), ("Normal", 2, 3))
         legacy = Path("video/Output/.publish_tmp/chunk_01/trip_01.mp4")
         self.assertEqual(parse_compose_output_path(legacy), (None, 1, 1))
+
+    def test_publish_temp_dir(self) -> None:
+        typed = Path(
+            "video/Output/.publish_tmp/Normal/chunk_02/trip_03.mp4"
+        )
+        self.assertEqual(
+            publish_temp_dir(typed), Path("video/Output/.publish_tmp")
+        )
 
 
 if __name__ == "__main__":
