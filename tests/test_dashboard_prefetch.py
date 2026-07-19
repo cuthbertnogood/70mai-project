@@ -42,6 +42,44 @@ class DashboardPrefetchTests(unittest.TestCase):
             self.assertEqual(state.chunk_index, 2)
             self.assertEqual(state.record_type, "Normal")
             self.assertEqual(state.during_chunk, 1)
+            self.assertTrue(state.active)
+
+    def test_resolve_prefetch_skip_shown_while_compose(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            log = temp / "publish_all.log"
+            log.write_text(
+                "2026-07-19 23:18:53   Prefetch chunk 4 skipped: "
+                "disk 14.0 GB free < 40 GB reserve (compose + staging)\n",
+                encoding="utf-8",
+            )
+            procs = [
+                PipelineProc(
+                    1,
+                    3600,
+                    "publish",
+                    "python lib/publish_70mai.py --types Normal --chunk 1",
+                ),
+                PipelineProc(2, 1800, "ffmpeg", "ffmpeg encode"),
+            ]
+            state = resolve_prefetch_import(temp, procs)
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertFalse(state.active)
+            self.assertEqual(state.chunk_index, 4)
+            self.assertIn("disk", state.skip_reason)
+
+    def test_format_prefetch_pause(self) -> None:
+        pf = PrefetchImportState(
+            chunk_index=4,
+            record_type="Normal",
+            during_chunk=1,
+            active=False,
+            skip_reason="disk 14G free < 40G reserve",
+        )
+        text = format_prefetch_stage(pf)
+        self.assertIn("пауза", text)
+        self.assertIn("disk 14G", text)
 
     def test_resolve_prefetch_none_for_sync_import(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

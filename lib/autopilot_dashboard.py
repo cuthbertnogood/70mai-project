@@ -1526,6 +1526,8 @@ class PrefetchImportState:
     record_type: str
     during_chunk: int = 0
     pid: int | None = None
+    active: bool = True
+    skip_reason: str = ""
 
 
 _PREFETCH_SUMMARY_RE = re.compile(
@@ -1533,6 +1535,9 @@ _PREFETCH_SUMMARY_RE = re.compile(
 )
 _PREFETCH_BG_RE = re.compile(
     r"\[prefetch background\] chunk (\d+) \[(Normal|Event|Parking)\]"
+)
+_PREFETCH_SKIP_RE = re.compile(
+    r"Prefetch chunk (\d+) skipped: (.+)$"
 )
 
 
@@ -1542,9 +1547,6 @@ def resolve_prefetch_import(
 ) -> PrefetchImportState | None:
     """Background import of the next chunk while publish runs on the current one."""
     import_procs = [p for p in procs if p.role in ("import", "prefetch")]
-    if not import_procs:
-        return None
-
     text = _tail_text(temp_dir / "publish_all.log", max_bytes=256_000)
     prefetch_chunk: int | None = None
     record_type = "Normal"
@@ -1559,22 +1561,72 @@ def resolve_prefetch_import(
             prefetch_chunk = int(m.group(1))
             record_type = m.group(2)
 
-    publish_alive = any(p.role in ("publish", "compose") for p in procs)
+    publish_alive = any(
+        p.role in ("publish", "compose", "ffmpeg") for p in procs
+    )
+    for proc in procs:
+        if proc.role == "publish":
+            parsed = _parse_publish_cli(proc.command)
+            if parsed:
+                record_type, during_chunk = parsed
+        elif proc.role == "ffmpeg" and during_chunk <= 0:
+            inferred = _parse_ffmpeg_compose(proc.command)
+            if inferred:
+                record_type = str(inferred.get("record_type") or record_type)
+                during_chunk = int(inferred.get("chunk_index") or 0)
+
+    if import_procs:
+        last_prefetch_idx = max(
+            text.rfind("[prefetch background]"),
+            text.rfind("Prefetch import chunk"),
+        )
+        last_sync_idx = text.rfind("  Import: SD→SSD stage, then concat")
+        log_prefetch = last_prefetch_idx >= 0 and last_prefetch_idx >= last_sync_idx
+        if publish_alive or log_prefetch:
+            return PrefetchImportState(
+                chunk_index=prefetch_chunk or 0,
+                record_type=record_type,
+                during_chunk=during_chunk,
+                pid=import_procs[0].pid,
+                active=True,
+            )
+
+    if not publish_alive:
+        return None
+
+    skip_chunk: int | None = None
+    skip_reason = ""
+    for line in text.splitlines():
+        m = _PREFETCH_SKIP_RE.search(line)
+        if m:
+            skip_chunk = int(m.group(1))
+            skip_reason = m.group(2).strip()
+
+    if skip_chunk and skip_reason and (during_chunk <= 0 or skip_chunk > during_chunk):
+        return PrefetchImportState(
+            chunk_index=skip_chunk,
+            record_type=record_type,
+            during_chunk=during_chunk,
+            active=False,
+            skip_reason=skip_reason,
+        )
+
     last_prefetch_idx = max(
         text.rfind("[prefetch background]"),
         text.rfind("Prefetch import chunk"),
     )
     last_sync_idx = text.rfind("  Import: SD→SSD stage, then concat")
     log_prefetch = last_prefetch_idx >= 0 and last_prefetch_idx >= last_sync_idx
-
-    if not publish_alive and not log_prefetch:
+    if not log_prefetch:
         return None
 
     return PrefetchImportState(
         chunk_index=prefetch_chunk or 0,
         record_type=record_type,
         during_chunk=during_chunk,
-        pid=import_procs[0].pid,
+        pid=None,
+        active=False,
+        skip_reason="import завершён, следующий chunk ждёт compose/upload",
     )
 
 
@@ -1582,6 +1634,12 @@ def format_prefetch_stage(
     prefetch: PrefetchImportState,
     log_fallback: dict[str, str] | None = None,
 ) -> str:
+    if not prefetch.active and prefetch.skip_reason:
+        bits = [f"prefetch ch.{prefetch.chunk_index} пауза"]
+        if prefetch.during_chunk:
+            bits.append(f"∥ publish ch.{prefetch.during_chunk}")
+        bits.append(prefetch.skip_reason)
+        return " · ".join(bits)
     bits: list[str] = [f"prefetch ch.{prefetch.chunk_index}"]
     if prefetch.during_chunk:
         bits.append(f"∥ publish ch.{prefetch.during_chunk}")
@@ -3332,9 +3390,19 @@ def _format_pipeline_block(
         "этапы:",
     ]
     if prefetch_on:
-        lines.append(
-            _line("prefetch", on=True, done=False, extra=prefetch_extra)
-        )
+        if prefetch.active:
+            lines.append(
+                _line("prefetch", on=True, done=False, extra=prefetch_extra)
+            )
+        else:
+            pause_extra = (
+                f"ch.{prefetch.chunk_index} — {prefetch.skip_reason}"
+                if prefetch.skip_reason
+                else prefetch_extra
+            )
+            lines.append(
+                _line("prefetch", on=False, done=False, extra=pause_extra)
+            )
         if prefetch_detail:
             lines.append(f"         {prefetch_detail}")
     lines.append(_line("copy", on=copy_on, done=copy_done, extra=copy_extra))
