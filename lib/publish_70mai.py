@@ -20,6 +20,7 @@ from typing import Callable
 from compose_2cam_70mai import run_compose_2cam
 from compose_70mai import probe_duration
 from import_70mai import format_duration, log, parse_datetime
+from publish_paths import compose_chunk_dir, compose_part_path, compose_trip_path
 from plan_estimate import (
     DEFAULT_CHUNK_MINUTES,
     DEFAULT_PLAN_FILE,
@@ -752,7 +753,7 @@ def publish_chunk(
     source: Path | None = None,
 ) -> Path:
     trip_parts: list[Path] = []
-    chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
+    chunk_dir = compose_chunk_dir(temp_dir, chunk.record_type, chunk.index)
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
     if not dry_run:
@@ -767,7 +768,9 @@ def publish_chunk(
     for trip_idx, trip in enumerate(chunk.trips, start=1):
         if trip_only is not None and trip_idx != trip_only:
             continue
-        part_path = chunk_dir / f"trip_{trip_idx:02d}.mp4"
+        part_path = compose_trip_path(
+            temp_dir, chunk.record_type, chunk.index, trip_idx
+        )
         log(
             f"  Trip {trip.index}: {trip.start:%Y-%m-%d %H:%M:%S} "
             f"({format_duration(trip.duration_sec)})"
@@ -808,7 +811,7 @@ def publish_chunk(
             raise ValueError(f"Trip {trip_only} not in chunk {chunk.index}")
         return trip_parts[0]
 
-    output = temp_dir / f"part_{chunk.index:02d}.mp4"
+    output = compose_part_path(temp_dir, chunk.record_type, chunk.index)
     if dry_run:
         log(f"  Would concat {len(trip_parts)} trip(s) -> {output.name}")
         return output
@@ -918,7 +921,7 @@ def publish_and_upload_trips(
             repair=repair,
         )
 
-    chunk_dir = temp_dir / f"chunk_{chunk.index:02d}"
+    chunk_dir = compose_chunk_dir(temp_dir, record_type, chunk.index)
     chunk_dir.mkdir(parents=True, exist_ok=True)
     last_video_id = None
     if playlist_holder is None:
@@ -958,7 +961,7 @@ def publish_and_upload_trips(
             summary.skipped += 1
             continue
 
-        part_path = chunk_dir / f"trip_{trip_idx:02d}.mp4"
+        part_path = compose_trip_path(temp_dir, record_type, chunk.index, trip_idx)
         log(
             f"  Trip {trip.index}: {trip.start:%Y-%m-%d %H:%M:%S} "
             f"({format_duration(trip.duration_sec)})"

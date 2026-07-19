@@ -767,8 +767,10 @@ def autopilot_disk_usage(
             merged += video_files_size_bytes(video_dir / record_type / cam)
     composed = 0
     if temp_dir.is_dir():
-        for chunk_dir in temp_dir.glob("chunk_*"):
-            composed += video_files_size_bytes(chunk_dir)
+        from publish_paths import iter_compose_video_roots
+
+        for root in iter_compose_video_roots(temp_dir):
+            composed += video_files_size_bytes(root)
     return {
         "merged": merged,
         "composed": composed,

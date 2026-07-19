@@ -55,10 +55,11 @@ def render(dash: Any) -> None:
     trip_col_w = d._trip_list_col_width(term_cols)
 
     st = d.resolve_live_status(dash.temp_dir)
-    procs = d.list_pipeline_processes()
+    procs = d.list_pipeline_processes(temp_dir=dash.temp_dir)
+    prefetch = d.resolve_prefetch_import(dash.temp_dir, procs)
     # Age alone: old status.json must not drive ► markers (procs may be zombies).
     stale = d._status_is_stale(st)
-    import_alive = any(p.role == "import" for p in procs)
+    import_alive = any(p.role in ("import", "prefetch") for p in procs)
     log_fallback = None
     if import_alive:
         log_fallback = d._import_progress_from_log(
@@ -94,6 +95,10 @@ def render(dash: Any) -> None:
             )
             parts.append(f"{stage} {d._trip_display(ar)}")
         summary += "  |  " + " · ".join(parts)
+    elif prefetch and log_fallback:
+        summary += "  |  " + d.format_prefetch_stage(prefetch, log_fallback)
+    elif prefetch:
+        summary += "  |  " + d.format_prefetch_stage(prefetch)
     elif log_fallback:
         bits = []
         if log_fallback.get("copy"):
@@ -136,6 +141,7 @@ def render(dash: Any) -> None:
         log_fallback=log_fallback,
         import_alive=import_alive,
         procs=procs,
+        prefetch=prefetch,
     ):
         for hl in d._wrap_line(cl, term_cols):
             lines.append(hl)
@@ -143,7 +149,7 @@ def render(dash: Any) -> None:
     age = d._status_age_line(st)
     if age:
         meta_bits.append(age)
-    meta_bits.extend(d._format_pipeline_processes(procs))
+    meta_bits.extend(d._format_pipeline_processes(procs, prefetch=prefetch))
     for hl in d._wrap_line("  ·  ".join(meta_bits), term_cols):
         lines.append(hl)
     for hl in d._wrap_line(disk_line, term_cols):
@@ -170,20 +176,31 @@ def render(dash: Any) -> None:
         size_b = d._row_compose_bytes(
             dash.temp_dir, row, active_key=active_key
         )
-        stage = row.progress if row.progress != "—" else d._stage_label(row.status)
-        if (not stale) and row.status == "import":
-            stage = d._import_row_progress(
-                dash.temp_dir, record_type=row.record_type
-            )
-        if stale and row.status in ("compose", "upload", "import", "stall"):
-            stage = "ожидание"
+        is_prefetch_row = (
+            prefetch is not None
+            and prefetch.chunk_index > 0
+            and row.record_type == prefetch.record_type
+            and row.chunk_index == prefetch.chunk_index
+            and row.status == "pending"
+        )
         is_active = (not stale) and row.status in (
             "compose",
             "upload",
             "import",
             "stall",
         )
-        marker = "►" if is_active else " "
+        if is_prefetch_row:
+            marker = "►"
+            stage = d.format_prefetch_stage(prefetch, log_fallback)
+        else:
+            marker = "►" if is_active else " "
+            stage = row.progress if row.progress != "—" else d._stage_label(row.status)
+            if (not stale) and row.status == "import":
+                stage = d._import_row_progress(
+                    dash.temp_dir, record_type=row.record_type
+                )
+            if stale and row.status in ("compose", "upload", "import", "stall"):
+                stage = "ожидание"
         num = row.overall_index or i
         trip_lines.append(
             d._trip_compact_line(

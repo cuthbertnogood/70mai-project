@@ -14,6 +14,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from publish_paths import (
+    is_legacy_compose_path,
+    parse_compose_output_path,
+    resolve_compose_trip_path,
+)
+
 STATUS_FILENAME = "autopilot_status.json"
 REASONS_FILENAME = "autopilot_trip_reasons.json"
 LIVE_STATUS_PHASES = frozenset(
@@ -370,10 +376,18 @@ def read_import_progress_from_log(
     }
 
 
-def resolve_live_status(temp_dir: Path) -> dict | None:
-    """Prefer compose/upload status file; fall back to import heartbeats in the log."""
+def resolve_live_status(
+    temp_dir: Path,
+    *,
+    rows: list | None = None,
+    auto_fix: bool = True,
+) -> dict | None:
+    """Prefer compose/upload status; reconcile with live OS processes when wrong."""
     st = read_status(temp_dir)
     phase = str((st or {}).get("phase") or "")
+    if phase in ("compose", "upload", "stall", "oauth") and auto_fix:
+        st = reconcile_status_with_processes(temp_dir, st, rows=rows)
+        phase = str((st or {}).get("phase") or "")
     if phase in ("compose", "upload", "stall", "oauth"):
         return st
     log_st = read_import_progress_from_log(temp_dir)
@@ -387,6 +401,139 @@ def resolve_live_status(temp_dir: Path) -> dict | None:
     except ValueError:
         return log_st
     return log_st if log_ts >= st_ts else st
+
+
+_FFMPEG_RECORD_RE = re.compile(
+    r"video/Output/(Normal|Event|Parking)/(?:Front|Back)/"
+)
+
+
+def _parse_publish_cli(cmd: str) -> tuple[str, int] | None:
+    if "publish_70mai.py" not in cmd:
+        return None
+    m_type = re.search(r"--types?\s+(\S+)", cmd)
+    if not m_type:
+        return None
+    record_type = m_type.group(1).split(",")[0]
+    m_chunk = re.search(r"--chunk\s+(\d+)", cmd)
+    chunk_index = int(m_chunk.group(1)) if m_chunk else 1
+    return record_type, chunk_index
+
+
+def _parse_ffmpeg_compose(cmd: str) -> dict | None:
+    if "ffmpeg" not in cmd.lower() or "concat" in cmd.lower():
+        return None
+    m_rec = _FFMPEG_RECORD_RE.search(cmd)
+    if not m_rec:
+        return None
+    record_type = m_rec.group(1)
+    chunk_index = 1
+    trip_index = 1
+    m_out = re.search(r"(\S+\.publish_tmp/\S+\.mp4)\s*$", cmd)
+    if m_out:
+        parsed = parse_compose_output_path(Path(m_out.group(1)))
+        if parsed:
+            rt, ci, ti = parsed
+            if rt:
+                record_type = rt
+            chunk_index = ci
+            trip_index = ti
+    return {
+        "record_type": record_type,
+        "chunk_index": chunk_index,
+        "trip_index": trip_index,
+        "phase": "compose",
+    }
+
+
+def infer_live_job_from_processes() -> dict | None:
+    """Best-effort active compose/upload job from ps (fixes stale status.json)."""
+    for proc in list_pipeline_processes():
+        if proc.role == "ffmpeg" and "encode" in proc.tip:
+            inferred = _parse_ffmpeg_compose(proc.command)
+            if inferred:
+                return inferred
+    for proc in list_pipeline_processes():
+        if proc.role == "publish":
+            parsed = _parse_publish_cli(proc.command)
+            if parsed:
+                record_type, chunk_index = parsed
+                return {
+                    "record_type": record_type,
+                    "chunk_index": chunk_index,
+                    "trip_index": 1,
+                    "phase": "compose",
+                }
+    return None
+
+
+def reconcile_status_with_processes(
+    temp_dir: Path,
+    st: dict | None,
+    *,
+    rows: list | None = None,
+) -> dict | None:
+    """Auto-correct status.json when it points at the wrong trip/type."""
+    inferred = infer_live_job_from_processes()
+    if not inferred:
+        return st
+    st = dict(st or {})
+    phase = str(st.get("phase") or "")
+    if phase not in ("compose", "upload", "stall"):
+        st.update(inferred)
+        st["ts"] = datetime.now().isoformat(timespec="seconds")
+        _maybe_write_reconciled_status(temp_dir, st)
+        return st
+    mismatch = (
+        st.get("record_type") != inferred.get("record_type")
+        or int(st.get("chunk_index") or 0) != int(inferred.get("chunk_index") or 0)
+        or int(st.get("trip_index") or 0) != int(inferred.get("trip_index") or 0)
+    )
+    if not mismatch:
+        return st
+    kept = {
+        k: st[k]
+        for k in (
+            "percent",
+            "output_bytes",
+            "speed",
+            "speed_unit",
+            "eta",
+            "elapsed",
+            "detail",
+            "stalled",
+        )
+        if k in st
+    }
+    st.update(inferred)
+    st.update({k: v for k, v in kept.items() if v not in (None, "")})
+    st["ts"] = datetime.now().isoformat(timespec="seconds")
+    st["reason"] = ""
+    _maybe_write_reconciled_status(temp_dir, st)
+    return st
+
+
+def _maybe_write_reconciled_status(temp_dir: Path, st: dict) -> None:
+    try:
+        write_status(
+            temp_dir,
+            record_type=str(st.get("record_type") or ""),
+            chunk_index=int(st.get("chunk_index") or 0),
+            trip_index=int(st.get("trip_index") or 0),
+            phase=str(st.get("phase") or "compose"),
+            detail=str(st.get("detail") or ""),
+            youtube_url=st.get("youtube_url"),
+            percent=st.get("percent"),
+            output_bytes=st.get("output_bytes"),
+            stalled=bool(st.get("stalled")),
+            reason=str(st.get("reason") or ""),
+            speed=st.get("speed"),
+            speed_unit=st.get("speed_unit"),
+            eta=st.get("eta"),
+            elapsed=st.get("elapsed"),
+        )
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def free_disk_gb(path: Path) -> float:
@@ -419,8 +566,13 @@ def _merged_bytes_for_trip(video_dir: Path, record_type: str, start, end) -> int
     return total
 
 
-def _compose_trip_path(temp_dir: Path, chunk_index: int, trip_index: int) -> Path:
-    return temp_dir / f"chunk_{chunk_index:02d}" / f"trip_{trip_index:02d}.mp4"
+def _compose_trip_path(
+    temp_dir: Path,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+) -> Path:
+    return resolve_compose_trip_path(temp_dir, record_type, chunk_index, trip_index)
 
 
 def _rel_path(path: Path, base: Path | None = None) -> str:
@@ -444,7 +596,7 @@ def _resolve_local_path(
     base: Path | None = None,
 ) -> str:
     """Best local path for this trip row (composed MP4 or merged source dirs)."""
-    out = _compose_trip_path(temp_dir, chunk_index, trip_index)
+    out = _compose_trip_path(temp_dir, record_type, chunk_index, trip_index)
     if out.is_file():
         return _rel_path(out, base)
     if status in ("compose", "upload", "stall") or composed_bytes > 0:
@@ -457,8 +609,13 @@ def _resolve_local_path(
     return _rel_path(out, base)
 
 
-def _compose_bytes(temp_dir: Path, chunk_index: int, trip_index: int) -> int:
-    path = _compose_trip_path(temp_dir, chunk_index, trip_index)
+def _compose_bytes(
+    temp_dir: Path,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+) -> int:
+    path = _compose_trip_path(temp_dir, record_type, chunk_index, trip_index)
     try:
         return path.stat().st_size if path.is_file() else 0
     except OSError:
@@ -474,11 +631,13 @@ def _row_compose_bytes(
     """Composed MP4 size for this dashboard row (not a reused temp path)."""
     if row.status == "done":
         return 0
-    path = _compose_trip_path(temp_dir, row.chunk_index, row.trip_index)
+    path = _compose_trip_path(
+        temp_dir, row.record_type, row.chunk_index, row.trip_index
+    )
     if not path.is_file():
         return 0
-    # Normal and Event both use chunk_01/trip_01.mp4 — attribute file to active row only.
-    if active_key and row.key != active_key:
+    # Legacy flat chunk_NN/ path — attribute to the one active row only.
+    if is_legacy_compose_path(temp_dir, path) and active_key and row.key != active_key:
         return 0
     try:
         return path.stat().st_size
@@ -1235,9 +1394,83 @@ class PipelineProc:
     etime_sec: int
     role: str
     tip: str
+    command: str = ""
 
 
-def list_pipeline_processes() -> list[PipelineProc]:
+@dataclass(frozen=True)
+class PrefetchImportState:
+    chunk_index: int
+    record_type: str
+    during_chunk: int = 0
+    pid: int | None = None
+
+
+_PREFETCH_SUMMARY_RE = re.compile(
+    r"Prefetch import chunk (\d+) ∥ compose/upload chunk (\d+)"
+)
+_PREFETCH_BG_RE = re.compile(
+    r"\[prefetch background\] chunk (\d+) \[(Normal|Event|Parking)\]"
+)
+
+
+def resolve_prefetch_import(
+    temp_dir: Path,
+    procs: list[PipelineProc],
+) -> PrefetchImportState | None:
+    """Background import of the next chunk while publish runs on the current one."""
+    import_procs = [p for p in procs if p.role in ("import", "prefetch")]
+    if not import_procs:
+        return None
+
+    text = _tail_text(temp_dir / "publish_all.log", max_bytes=256_000)
+    prefetch_chunk: int | None = None
+    record_type = "Normal"
+    during_chunk = 0
+    for line in text.splitlines():
+        m = _PREFETCH_SUMMARY_RE.search(line)
+        if m:
+            prefetch_chunk = int(m.group(1))
+            during_chunk = int(m.group(2))
+        m = _PREFETCH_BG_RE.search(line)
+        if m:
+            prefetch_chunk = int(m.group(1))
+            record_type = m.group(2)
+
+    publish_alive = any(p.role in ("publish", "compose") for p in procs)
+    last_prefetch_idx = max(
+        text.rfind("[prefetch background]"),
+        text.rfind("Prefetch import chunk"),
+    )
+    last_sync_idx = text.rfind("  Import: SD→SSD stage, then concat")
+    log_prefetch = last_prefetch_idx >= 0 and last_prefetch_idx >= last_sync_idx
+
+    if not publish_alive and not log_prefetch:
+        return None
+
+    return PrefetchImportState(
+        chunk_index=prefetch_chunk or 0,
+        record_type=record_type,
+        during_chunk=during_chunk,
+        pid=import_procs[0].pid,
+    )
+
+
+def format_prefetch_stage(
+    prefetch: PrefetchImportState,
+    log_fallback: dict[str, str] | None = None,
+) -> str:
+    bits: list[str] = [f"prefetch ch.{prefetch.chunk_index}"]
+    if prefetch.during_chunk:
+        bits.append(f"∥ publish ch.{prefetch.during_chunk}")
+    if log_fallback:
+        if log_fallback.get("copy"):
+            bits.append(f"copy {log_fallback['copy']}")
+        elif log_fallback.get("merge"):
+            bits.append(f"merge {log_fallback['merge']}")
+    return " · ".join(bits)
+
+
+def list_pipeline_processes(*, temp_dir: Path | None = None) -> list[PipelineProc]:
     """Live OS processes related to autopilot (pid, runtime, role)."""
     try:
         out = subprocess.check_output(
@@ -1259,17 +1492,41 @@ def list_pipeline_processes() -> list[PipelineProc]:
         if not classified:
             continue
         role, tip = classified
+        cmd = m.group(3)
         found.append(
             PipelineProc(
                 pid=int(m.group(1)),
                 etime_sec=_parse_ps_etime(m.group(2)),
                 role=role,
                 tip=tip,
+                command=cmd,
             )
         )
+    prefetch: PrefetchImportState | None = None
+    if temp_dir is not None:
+        prefetch = resolve_prefetch_import(temp_dir, found)
+    elif any(p.role in ("publish", "compose") for p in found):
+        if any(p.role == "import" for p in found):
+            prefetch = PrefetchImportState(chunk_index=0, record_type="Normal")
+    if prefetch is not None:
+        relabeled: list[PipelineProc] = []
+        for proc in found:
+            if proc.role == "import":
+                relabeled.append(
+                    PipelineProc(
+                        pid=proc.pid,
+                        etime_sec=proc.etime_sec,
+                        role="prefetch",
+                        tip=f"chunk {prefetch.chunk_index}" if prefetch.chunk_index else proc.tip,
+                    )
+                )
+            else:
+                relabeled.append(proc)
+        found = relabeled
     order = {
         "autopilot": 0,
         "import": 1,
+        "prefetch": 1,
         "compose": 2,
         "publish": 3,
         "ffmpeg": 4,
@@ -1279,13 +1536,20 @@ def list_pipeline_processes() -> list[PipelineProc]:
     return found
 
 
-def _format_pipeline_processes(procs: list[PipelineProc], *, limit: int = 6) -> list[str]:
+def _format_pipeline_processes(
+    procs: list[PipelineProc],
+    *,
+    prefetch: PrefetchImportState | None = None,
+    limit: int = 6,
+) -> list[str]:
     if not procs:
         return ["proc: —"]
-    bits = [
-        f"{p.role}:{p.pid}/{_human_etime_seconds(p.etime_sec)}"
-        for p in procs[:limit]
-    ]
+    bits: list[str] = []
+    for p in procs[:limit]:
+        label = p.role
+        if p.role == "prefetch" and prefetch and prefetch.chunk_index:
+            label = f"prefetch ch.{prefetch.chunk_index}"
+        bits.append(f"{label}:{p.pid}/{_human_etime_seconds(p.etime_sec)}")
     line = "proc: " + " · ".join(bits)
     if len(procs) > limit:
         line += f" · +{len(procs) - limit}"
@@ -2660,6 +2924,8 @@ def _backfill_status_from_import_log(temp_dir: Path) -> bool:
     procs = list_pipeline_processes()
     if not any(p.role == "import" for p in procs):
         return False
+    if resolve_prefetch_import(temp_dir, procs):
+        return False
     st = resolve_live_status(temp_dir)
     if st and str(st.get("phase") or "") == "import" and not _status_is_stale(st):
         return False
@@ -2715,6 +2981,7 @@ def _format_pipeline_block(
     log_fallback: dict[str, str] | None = None,
     import_alive: bool = False,
     procs: list | None = None,
+    prefetch: PrefetchImportState | None = None,
 ) -> list[str]:
     """One line per pipeline step: copy / merge / compose / upload + status."""
     phase = str((st or {}).get("phase") or "").strip()
@@ -2802,8 +3069,30 @@ def _format_pipeline_block(
     elif pct_s and merge_on:
         merge_extra = f"{pct_s} {merge_extra}".strip()
 
-    # Import runs copy ∥ merge — always prefer fresh log lines for both lanes.
-    if log_fallback:
+    prefetch_on = prefetch is not None
+    prefetch_extra = ""
+    prefetch_detail: str | None = None
+    if prefetch_on and log_fallback:
+        bits = []
+        if log_fallback.get("copy"):
+            bits.append(log_fallback["copy"])
+        if log_fallback.get("merge"):
+            bits.append(log_fallback["merge"])
+        prefetch_extra = " · ".join(bits)
+        prefetch_detail = log_fallback.get("copy_detail") or log_fallback.get(
+            "merge_detail"
+        )
+    elif prefetch_on:
+        prefetch_extra = (
+            f"ch.{prefetch.chunk_index} [{prefetch.record_type}]"
+            if prefetch.chunk_index
+            else f"[{prefetch.record_type}]"
+        )
+        if prefetch.during_chunk:
+            prefetch_extra += f" ∥ publish ch.{prefetch.during_chunk}"
+
+    # Import runs copy ∥ merge — prefer fresh log lines for both lanes.
+    if log_fallback and not prefetch_on:
         copy_fb = log_fallback.get("copy") or ""
         if copy_fb:
             m = re.search(r"(\d+)/(\d+)", copy_fb)
@@ -2912,8 +3201,14 @@ def _format_pipeline_block(
 
     lines = [
         "этапы:",
-        _line("copy", on=copy_on, done=copy_done, extra=copy_extra),
     ]
+    if prefetch_on:
+        lines.append(
+            _line("prefetch", on=True, done=False, extra=prefetch_extra)
+        )
+        if prefetch_detail:
+            lines.append(f"         {prefetch_detail}")
+    lines.append(_line("copy", on=copy_on, done=copy_done, extra=copy_extra))
     if copy_on and copy_detail_line:
         lines.append(f"         {copy_detail_line}")
     lines.append(_line("merge", on=merge_on, done=merge_done, extra=merge_extra))
@@ -2936,8 +3231,10 @@ def _format_pipeline_block(
     )
     if upload_on and upload_detail_line:
         lines.append(f"         {upload_detail_line}")
-    if log_fallback and (copy_on or merge_on) and stale:
+    if log_fallback and (copy_on or merge_on) and stale and not prefetch_on:
         lines.append("источник: publish_all.log (status.json устарел)")
+    elif prefetch_on and log_fallback:
+        lines.append("prefetch: publish_all.log (фоновый import следующего чанка)")
     elif stale:
         lines.append("idle — status.json устарел (см. proc)")
     diag = diagnose_pipeline_bottleneck(
@@ -3091,6 +3388,32 @@ class TripRow:
     trip_start: datetime | None = None
     trip_end: datetime | None = None
     overall_index: int = 0
+    chunk_display_index: int = 0
+    chunk_total: int = 0
+    trips_in_chunk: int = 1
+
+
+def chunk_display_num(row: TripRow) -> str:
+    """YouTube roll counter (ролик M/N), not per-trip index."""
+    if row.chunk_display_index and row.chunk_total:
+        return f"р{row.chunk_display_index}/{row.chunk_total}"
+    if row.overall_index:
+        return f"{row.overall_index}"
+    return "?"
+
+
+def chunk_summary_counts(rows: list[TripRow]) -> tuple[int, int, int]:
+    """Return (chunks_done, chunk_total, trips_done)."""
+    by_chunk: dict[str, list[TripRow]] = {}
+    for row in rows:
+        key = f"{row.record_type}:{row.chunk_index}"
+        by_chunk.setdefault(key, []).append(row)
+    chunk_total = len(by_chunk)
+    chunks_done = sum(
+        1 for chunk_rows in by_chunk.values() if all(r.status == "done" for r in chunk_rows)
+    )
+    trips_done = sum(1 for r in rows if r.status == "done")
+    return chunks_done, chunk_total, trips_done
 
 
 def _trip_display(row: TripRow) -> str:
@@ -3108,11 +3431,19 @@ def _trip_display(row: TripRow) -> str:
     return base
 
 
-def _read_upload_percent(temp_dir: Path, trip_index: int) -> float | None:
+def _read_upload_percent(
+    temp_dir: Path,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+) -> float | None:
     """Best-effort upload % from resumable session file on disk."""
     from youtube_upload import load_upload_session
 
-    session_path = temp_dir / f"trip_{trip_index:02d}.upload.json"
+    part = resolve_compose_trip_path(temp_dir, record_type, chunk_index, trip_index)
+    session_path = temp_dir / f"{part.stem}.upload.json"
+    if not session_path.is_file():
+        session_path = temp_dir / f"trip_{trip_index:02d}.upload.json"
     saved = load_upload_session(session_path)
     if not saved:
         return None
