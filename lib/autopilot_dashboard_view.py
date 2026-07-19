@@ -188,6 +188,7 @@ def render(dash: Any) -> None:
             )
         )
     lines.extend(d._two_column_pack(trip_lines, term_cols=term_cols))
+    lines.extend(d.format_local_files_block(dash.rows, term_cols=term_cols))
     for leg in d._STATUS_LEGEND:
         lines.extend(d._wrap_line(leg, term_cols))
     for row in dash.rows:

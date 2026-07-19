@@ -452,7 +452,7 @@ def _resolve_local_path(
     if merged_bytes > 0:
         root = _rel_path(video_dir / record_type, base)
         return f"{root}/Front+Back"
-    if status == "done":
+    if status == "done" and not out.is_file():
         return "—"
     return _rel_path(out, base)
 
@@ -669,6 +669,61 @@ def _path_for_column(path: str, width: int) -> str:
     if len(compact) <= width:
         return compact
     return _fit_text(compact, width, tail=True)
+
+
+def _local_path_priority(row: TripRow) -> tuple[int, int]:
+    phase_rank = {
+        "upload": 0,
+        "compose": 1,
+        "stall": 2,
+        "import": 3,
+        "pending": 4,
+        "fail": 5,
+        "oauth": 6,
+    }
+    return (phase_rank.get(row.status, 50), row.overall_index or 0)
+
+
+def _row_show_local_path(row: TripRow) -> bool:
+    path = (row.local_path or "").strip()
+    if path in ("—", "-", ""):
+        return False
+    if row.status == "done" and row.youtube_url:
+        return False
+    return True
+
+
+def format_local_files_block(
+    rows: list[TripRow],
+    *,
+    term_cols: int,
+    limit: int = 8,
+) -> list[str]:
+    """Paths to composed MP4 / merged sources for trips not yet on YouTube."""
+    picked = sorted(
+        (r for r in rows if _row_show_local_path(r)),
+        key=_local_path_priority,
+    )[:limit]
+    if not picked:
+        return []
+    total = len(rows)
+    out: list[str] = []
+    out.extend(
+        _wrap_line(
+            "── Локальные файлы ──  open путь  (до загрузки на YouTube)",
+            term_cols,
+        )
+    )
+    for row in picked:
+        num = row.overall_index or 0
+        trip = _trip_display(row)
+        path = row.local_path
+        line = f"{num}/{total} {trip}  {path}"
+        out.extend(_wrap_line(line, term_cols))
+    hidden = sum(1 for r in rows if _row_show_local_path(r)) - len(picked)
+    if hidden > 0:
+        out.extend(_wrap_line(f"… ещё {hidden} (сузьте список поездок)", term_cols))
+    return out
 
 
 def _youtube_display(url: str | None) -> str:
