@@ -683,6 +683,21 @@ _STATUS_LEGEND = (
     "► активно  ·  ✓ готово  ·  · ждёт",
 )
 
+
+def format_pipeline_legend(*, term_cols: int) -> list[str]:
+    """What prefetch / copy / merge / compose / upload mean in the этапы block."""
+    lines = [
+        "── конвейер ──",
+        "prefetch — фоновый import **следующего** ~2h ролика (SD→SSD) параллельно compose/upload текущего",
+        "copy — копирование минутных клипов с SD на SSD; merge — склейка в ~10‑мин Front/Back MP4",
+        "compose — сборка вертикального 2‑cam ~2h MP4; upload — resumable заливка на YouTube",
+        "шапка YouTube M/N — ролики (~2h); (X/Y поездок) — сессии внутри; рM/N в таблице = тот же ролик M",
+    ]
+    out: list[str] = []
+    for line in lines:
+        out.extend(_wrap_line(line, term_cols))
+    return out
+
 # status.json older than this → idle (no ghost ►), even if procs still listed.
 _STALE_STATUS_SEC = 300
 

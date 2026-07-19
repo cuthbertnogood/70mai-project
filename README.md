@@ -106,6 +106,24 @@ cd /Users/cuthbert/work_local/70mai_project
 ./scripts/autopilot_dashboard.sh
 ```
 
+### Этапы в дашборде (конвейер)
+
+Один **ролик** (~2h, `рM/N`) проходит цепочку. Пока текущий ролик на **compose/upload**, следующий может **prefetch**-иться в фоне.
+
+| Этап | Что делает | Когда «► активно» |
+|------|------------|-------------------|
+| **prefetch** | Фоновый `import_70mai` **следующего** chunk (copy+merge на SD→SSD), параллельно publish текущего | `proc: prefetch ch.N` + строка в `publish_all.log` `[prefetch background]` |
+| **copy** | Копирование минутных `.MP4` с флешки на SSD | Основной import (не prefetch) или тот же copy внутри prefetch |
+| **merge** | Concat ~10‑мин `NO_*.mp4` Front/Back на SSD | После copy в том же import-окне |
+| **compose** | 2‑cam vertical MP4 (~2h) из merged + black/silence sync | `publish_70mai` / ffmpeg encode |
+| **upload** | Resumable PUT на YouTube | После compose, до `upload OK` в state |
+
+**Маркеры:** `► активно` · `✓ гotово` · `· ждёт`
+
+**Шапка:** `YouTube 0/6 (0/18 поездок)` — 6 роликов на выгрузку, 18 строк- поездок в плане; `todo:6р` — роликов осталось. В таблице `р1/6` = ролик 1 из 6 (не «клип 1 из 18»).
+
+**Параллель (ваш пример):** compose **р1/6** (chunk 1) + prefetch **chunk 2** → в «этапах» prefetch ►, copy/merge ✓ (для chunk 1 уже сделаны), compose ►; copy/merge в prefetch идут в **строке prefetch**, не в основных copy/merge.
+
 По умолчанию типы: **Normal Event Parking**.
 
 **Синхронизация камер (Normal, Event, Parking):** import пишет рядом с **каждым** merge timeline-manifest (`<merge>.timeline.json`); compose **всегда** выравнивает Front/Back по общим слотам (Event/Parking — slot, Normal — wall-clock) и заменяет пропавшую/короткую камеру чёрным + тишиной. Без manifest compose не стартует — нужен re-import. Логи: `Slots/Black fill`, `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
