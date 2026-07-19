@@ -71,6 +71,26 @@ class AutopilotDashboardPathsTests(unittest.TestCase):
         self.assertIn("chunk_02/trip_01.mp4", text)
         self.assertNotIn("chunk_01/trip_01.mp4", text)
 
+    def test_format_local_files_block_dedupes_same_path(self):
+        same = "video/Output/.publish_tmp/chunk_01/trip_01.mp4"
+        rows = [
+            TripRow(
+                key=f"n:{i}:1",
+                record_type="Normal",
+                chunk_index=i,
+                trip_index=1,
+                label=f"trip {i}",
+                duration_sec=600,
+                status="pending",
+                local_path=same,
+                overall_index=i,
+            )
+            for i in range(1, 4)
+        ]
+        lines = format_local_files_block(rows, term_cols=120)
+        text = "\n".join(lines)
+        self.assertEqual(text.count("chunk_01/trip_01.mp4"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

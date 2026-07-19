@@ -700,10 +700,22 @@ def format_local_files_block(
     limit: int = 8,
 ) -> list[str]:
     """Paths to composed MP4 / merged sources for trips not yet on YouTube."""
-    picked = sorted(
+    candidates = sorted(
         (r for r in rows if _row_show_local_path(r)),
         key=_local_path_priority,
-    )[:limit]
+    )
+    picked: list[TripRow] = []
+    seen_paths: set[str] = set()
+    for row in candidates:
+        path = (row.local_path or "").strip()
+        if path in ("—", "-", ""):
+            continue
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        picked.append(row)
+        if len(picked) >= limit:
+            break
     if not picked:
         return []
     total = len(rows)
@@ -720,9 +732,9 @@ def format_local_files_block(
         path = row.local_path
         line = f"{num}/{total} {trip}  {path}"
         out.extend(_wrap_line(line, term_cols))
-    hidden = sum(1 for r in rows if _row_show_local_path(r)) - len(picked)
+    hidden = len(candidates) - len(picked)
     if hidden > 0:
-        out.extend(_wrap_line(f"… ещё {hidden} (сузьте список поездок)", term_cols))
+        out.extend(_wrap_line(f"… ещё {hidden} поездок с тем же путём", term_cols))
     return out
 
 
