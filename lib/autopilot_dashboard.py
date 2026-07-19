@@ -3119,6 +3119,14 @@ def _read_upload_percent(temp_dir: Path, trip_index: int) -> float | None:
     return min(99.0, float(offset) * 100.0 / float(size))
 
 
+def _plan_mtime_for(temp_dir: Path) -> float | None:
+    path = temp_dir / "autopilot_plan.json"
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
 @dataclass
 class Dashboard:
     rows: list[TripRow] = field(default_factory=list)
@@ -3286,14 +3294,6 @@ class Dashboard:
             enabled=enabled,
             _plan_mtime=_plan_mtime_for(temp_dir),
         )
-
-
-def _plan_mtime_for(temp_dir: Path) -> float | None:
-    path = temp_dir / "autopilot_plan.json"
-    try:
-        return path.stat().st_mtime
-    except OSError:
-        return None
 
     def start(self) -> None:
         if not self.enabled:
