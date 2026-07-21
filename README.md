@@ -1,6 +1,6 @@
 # 70mai — SD → YouTube
 
-Автопилот: карта 70mai → склейка → 2-cam MP4 → YouTube. Пока текущий ~2h чанк кодируется и заливается, следующий чанк может импортироваться с SD в фоне (prefetch import).
+Автопилот: карта 70mai → склейка → 2-cam MP4 → YouTube. **Последовательно** по каждому ~2h ролику: import (copy+merge) → compose → upload → следующий ролик.
 
 Детали, OAuth, тюнинг: [детальное_описание.md](детальное_описание.md) · цели: [GOALS.md](GOALS.md).
 
@@ -29,7 +29,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | Скрипт | Зачем |
 |--------|--------|
 | `./scripts/publish_all_70mai.sh` | **Автопилот** — import → compose → YouTube |
-| `./scripts/watch_publish_all_70mai.sh` | То же + авто-рестарт при падении |
+| `./scripts/watch_publish_all_70mai.sh` | То же + авто-рестарт при падении (stall: import/compose/upload activity, не только `trip_*.mp4`) |
 | `./scripts/autopilot_dashboard.sh` | Живой статус (второй терминал) |
 | `./scripts/generate_card_reports.sh` | Отчёт по карте (MD/CSV) |
 | `./scripts/run-tests.sh` | Unit-тесты (`tests/`) |
@@ -93,7 +93,7 @@ cd /Users/cuthbert/work_local/70mai_project
 ./scripts/publish_all_70mai.sh --dry-run
 ./scripts/publish_all_70mai.sh --types Parking --skip-import
 
-# Прогресс (отдельное окно): copy/merge/compose/upload; prefetch — строка в «этапах» (► пока import жив; · ждёт — ch.N + причина если пауза, напр. disk < reserve); prefetch import следующего чанка параллельно compose;
+# Прогресс (отдельное окно): copy/merge/compose/upload; строка prefetch в дашборде — только если в логе/proc ещё виден старый фоновый import (автопилот больше не запускает prefetch);
 # шапка YouTube M/N = ~2h **ролики** (не поездки); в таблице `рM/N` — тот же счётчик; status.json сверяется с ffmpeg/publish CLI (автоисправление типа/chunk);
 # compose tmp: `.publish_tmp/{Normal|Event|Parking}/chunk_NN/trip_NN.mp4` (legacy `chunk_NN/` только чтение);
 # блок «Локальные файлы» — один путь (самая поздняя поездка, open до YouTube); внизу «Сбои»;
@@ -108,25 +108,24 @@ cd /Users/cuthbert/work_local/70mai_project
 
 ### Этапы в дашборде (конвейер)
 
-Один **ролик** (~2h, `рM/N`) проходит цепочку. Пока текущий ролик на **compose/upload**, следующий может **prefetch**-иться в фоне.
+Один **ролик** (~2h, `рM/N`) проходит цепочку **по порядку**: import → compose → upload → следующий ролик.
 
 | Этап | Что делает | Когда «► активно» |
 |------|------------|-------------------|
-| **prefetch** | Фоновый `import_70mai` **следующего** chunk (copy+merge на SD→SSD), параллельно publish текущего | `proc: prefetch ch.N` + строка в `publish_all.log` `[prefetch background]` |
-| **copy** | Копирование минутных `.MP4` с флешки на SSD | Основной import (не prefetch) или тот же copy внутри prefetch |
+| **copy** | Копирование минутных `.MP4` с флешки на SSD | `import_70mai` для текущего chunk |
 | **merge** | Concat ~10‑мин `NO_*.mp4` Front/Back на SSD | После copy в том же import-окне |
 | **compose** | 2‑cam vertical MP4 (~2h) из merged + black/silence sync | `publish_70mai` / ffmpeg encode |
 | **upload** | Resumable PUT на YouTube | После compose, до `upload OK` в state |
 
-**Маркеры:** `► активно` · `✓ гotово` · `· ждёт`
+**Маркеры:** `► активно` · `✓ готово` · `· ждёт`
 
-**Шапка:** `YouTube 0/6 (0/18 поездок)` — 6 роликов на выгрузку, 18 строк- поездок в плане; `todo:6р` — роликов осталось. В таблице `р1/6` = ролик 1 из 6 (не «клип 1 из 18»).
+**Шапка:** `YouTube 0/6 (0/18 поездок)` — 6 роликов на выгрузку, 18 строк-поездок в плане; `todo:6р` — роликов осталось. В таблице `р1/6` = ролик 1 из 6 (не «клип 1 из 18»).
 
-**Параллель (ваш пример):** compose **р1/6** (chunk 1) + prefetch **chunk 2** → в «этапах» prefetch ►, copy/merge ✓ (для chunk 1 уже сделаны), compose ►; copy/merge в prefetch идут в **строке prefetch**, не в основных copy/merge.
+**prefetch (legacy в UI):** дашборд может показать строку prefetch, если в `publish_all.log` или `proc` ещё висит старый `[prefetch background]` от предыдущих запусков; новый автопилот prefetch **не** запускает.
 
 По умолчанию типы: **Normal Event Parking**.
 
-**Синхронизация камер (Normal, Event, Parking):** import пишет рядом с **каждым** merge timeline-manifest (`<merge>.timeline.json`); compose **всегда** выравнивает Front/Back по общим слотам (Event/Parking — slot, Normal — wall-clock внутри окна поездки) и заменяет пропавшую/короткую камеру чёрным + тишиной. Клипы из prefetch других chunk'ов **не** попадают в timeline текущей поездки. Без manifest compose не стартует — нужен re-import. Логи: `Slots/Black fill`, `Window clips`, `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
+**Синхронизация камер (Normal, Event, Parking):** import пишет рядом с **каждым** merge timeline-manifest (`<merge>.timeline.json`); compose **всегда** выравнивает Front/Back по общим слотам (Event/Parking — slot, Normal — wall-clock внутри окна поездки) и заменяет пропавшую/короткую камеру чёрным + тишиной. Compose берёт только клипы **окна текущей поездки**. Без manifest compose не стартует — нужен re-import. Логи: `Slots/Black fill`, `Window clips`, `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
 
 **YouTube — название и клипы:** при upload title = `70mai | {тип} | {начало} — {конец}` (тип: *простые записи* / *запись события* / *запись парковки*). В **описании и комментарии** — тот же список: `Клип N: дата время — дата время`. OAuth после обновления кода: удалить token и войти снова (нужен scope для comment + update). Уже залитое видео:
 
@@ -150,7 +149,6 @@ cd /Users/cuthbert/work_local/70mai_project
 | `--prune-merged` | `after-compose` | Удалять 10‑мин склейки: `after-compose` / `after-upload` / `off` |
 | `--repair` | `auto` | Чинить короткий Parking/Event merge: `auto` / `diagnose` / `off` |
 | `--skip-import` | off | Только compose+upload (merge уже на диске) |
-| `--no-prefetch-import` | off | Не запускать import следующего ~2h чанка параллельно compose/upload текущего |
 | `--no-overlap` | off | Отключить overlap compose∥upload внутри `publish_70mai` |
 | `--dry-run` | off | План без работы |
 | `--no-dashboard` | off | Без таблицы в том же терминале (удобно с `autopilot_dashboard.sh`) |
@@ -173,5 +171,7 @@ tail -f video/Output/.publish_tmp/publish_all_watchdog.log
 tail -f video/Output/.publish_tmp/repair_log.jsonl
 tail -f video/Output/.publish_tmp/bad_clips.jsonl
 ```
+
+Watchdog (`watch_publish_all_70mai.sh`) считает автопилот живым, пока растут `Normal/chunk_*/trip_*.mp4` / `part_*.mp4`, обновляется `publish_all.log` / `autopilot_status.json`, или работает `import_70mai` / `publish_70mai`. Раньше смотрел только legacy `chunk_*/trip_*.mp4` и убивал import/encode каждые 2 ч. Env: `WATCH_STALL_SEC`, `WATCH_LOG_ACTIVE_SEC` (см. header скрипта).
 
 Статус на карте: `/.70mai/` (publish state, OAuth, inventory). При смене физической карты (новый `card_id.txt`) autopilot очищает publish/import state на SD и локальный кэш (`autopilot_plan.json`, `import_*.state.json`); OAuth (`auth/`) сохраняется.

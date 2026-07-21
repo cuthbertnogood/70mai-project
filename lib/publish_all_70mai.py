@@ -7,8 +7,6 @@ For each pending chunk (~120 min of trips, or one Event/Parking mega-file):
   3. compose 2-cam ~2h MP4; delete 10-min merges (after-compose)
   4. upload to YouTube; delete composed MP4
 
-While chunk N composes/uploads, optionally prefetch-import chunk N+1 (SD→SSD merge).
-
 Run: ./scripts/publish_all_70mai.sh --wait
 """
 
@@ -23,10 +21,8 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import IO, TextIO
 
 from import_70mai import format_duration, format_log_line, log as _console_log
 from import_70mai import EXIT_MERGE_NEEDS_USER
@@ -357,56 +353,6 @@ def run_step(
     return proc.returncode
 
 
-def _step_env() -> dict[str, str]:
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    lib_dir = str(Path(__file__).resolve().parent)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = lib_dir if not existing else f"{lib_dir}:{existing}"
-    return env
-
-
-@dataclass
-class BackgroundStep:
-    proc: subprocess.Popen
-    log_handle: TextIO
-    chunk_index: int
-    record_type: str
-
-
-def start_step_background(
-    cmd: list[str],
-    *,
-    log_path: Path,
-    record_type: str,
-    chunk_index: int,
-) -> BackgroundStep:
-    append_log(log_path, " ".join(cmd) + " [prefetch background]")
-    log(
-        f"\n>>> [prefetch background] chunk {chunk_index} [{record_type}]: "
-        f"{' '.join(cmd)}"
-    )
-    handle = log_path.open("a", encoding="utf-8")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=handle,
-        stderr=subprocess.STDOUT,
-        env=_step_env(),
-    )
-    return BackgroundStep(
-        proc=proc,
-        log_handle=handle,
-        chunk_index=chunk_index,
-        record_type=record_type,
-    )
-
-
-def finish_step_background(bg: BackgroundStep) -> int:
-    try:
-        return int(bg.proc.wait())
-    finally:
-        bg.log_handle.close()
-
-
 def build_import_cmd(
     python: str,
     source: Path,
@@ -417,7 +363,6 @@ def build_import_cmd(
     session_gap: float,
     state_on_sd: bool,
     temp_dir: Path,
-    live_status: bool,
 ) -> list[str]:
     from runtime_config import import_settings
 
@@ -454,26 +399,8 @@ def build_import_cmd(
         )
     if state_on_sd:
         cmd.extend(["--state-on-sd", "--skip-inventory-refresh"])
-    if live_status:
-        cmd.extend(["--status-dir", str(temp_dir)])
+    cmd.extend(["--status-dir", str(temp_dir)])
     return cmd
-
-
-def next_chunk_needing_import(
-    chunks: list,
-    after_chunk,
-    state: dict,
-    video_dir: Path,
-) -> object | None:
-    for candidate in chunks:
-        if candidate.index <= after_chunk.index:
-            continue
-        if chunk_is_done(state, candidate):
-            continue
-        if chunk_merges_ready(video_dir, candidate):
-            continue
-        return candidate
-    return None
 
 
 def run_import_with_retries(
@@ -501,7 +428,6 @@ def run_import_with_retries(
         session_gap=session_gap,
         state_on_sd=state_on_sd,
         temp_dir=temp_dir,
-        live_status=True,
     )
     log(
         "  Import: SD→SSD stage, then concat "
@@ -546,79 +472,6 @@ def run_import_with_retries(
             )
             time.sleep(IMPORT_MERGE_RETRY_DELAY_SEC)
     return ec
-
-
-def try_start_prefetch_import(
-    after_chunk,
-    *,
-    type_chunks: list,
-    type_state: dict,
-    python: str,
-    source: Path,
-    record_type: str,
-    video_dir: Path,
-    session_gap: float,
-    state_on_sd: bool,
-    temp_dir: Path,
-    log_path: Path,
-    min_free_gb: float,
-    check_disk: Path,
-) -> BackgroundStep | None:
-    next_chunk = next_chunk_needing_import(
-        type_chunks, after_chunk, type_state, video_dir
-    )
-    if next_chunk is None:
-        for candidate in type_chunks:
-            if candidate.index <= after_chunk.index:
-                continue
-            if chunk_is_done(type_state, candidate):
-                log(
-                    f"  Prefetch chunk {candidate.index} skipped: "
-                    "already uploaded"
-                )
-                break
-            if chunk_merges_ready(video_dir, candidate):
-                log(
-                    f"  Prefetch chunk {candidate.index} skipped: "
-                    "SSD merges already cover window"
-                )
-            else:
-                log("  Prefetch: no pending chunk needs SD import")
-            break
-        return None
-    from publish_70mai import free_disk_gb
-
-    free = free_disk_gb(check_disk)
-    reserve = max(min_free_gb * 2.0, min_free_gb + 10.0)
-    if free < reserve:
-        log(
-            f"  Prefetch chunk {next_chunk.index} skipped: "
-            f"disk {free:.1f} GB free < {reserve:.0f} GB reserve "
-            f"(compose + staging)"
-        )
-        return None
-    cmd = build_import_cmd(
-        python,
-        source,
-        record_type,
-        video_dir,
-        next_chunk,
-        session_gap=session_gap,
-        state_on_sd=state_on_sd,
-        temp_dir=temp_dir,
-        live_status=False,
-    )
-    log(
-        f"  Prefetch import chunk {next_chunk.index} "
-        f"∥ compose/upload chunk {after_chunk.index} "
-        f"(copy/merge in background; log → {log_path.name})"
-    )
-    return start_step_background(
-        cmd,
-        log_path=log_path,
-        record_type=record_type,
-        chunk_index=next_chunk.index,
-    )
 
 
 def load_merged_publish_state(
@@ -991,14 +844,6 @@ def main() -> int:
         help="Disable compose/upload overlap in publish",
     )
     parser.add_argument(
-        "--no-prefetch-import",
-        action="store_true",
-        help=(
-            "Disable background import of the next chunk while the current "
-            "chunk composes/uploads (default: prefetch on when import enabled)"
-        ),
-    )
-    parser.add_argument(
         "--repair",
         choices=("auto", "diagnose", "off"),
         default="auto",
@@ -1244,45 +1089,8 @@ def main() -> int:
                     f"~{args.chunk_minutes:g} min video(s)"
                 )
 
-                prefetch_bg: BackgroundStep | None = None
                 for chunk in type_chunks:
                     type_state = type_store.load(resume=True, quiet=True)
-
-                    if prefetch_bg is not None:
-                        if (
-                            prefetch_bg.record_type == record_type
-                            and prefetch_bg.chunk_index == chunk.index
-                        ):
-                            log(
-                                "  Prefetch import finished "
-                                "(ran during previous compose/upload)"
-                            )
-                            ec = finish_step_background(prefetch_bg)
-                            prefetch_bg = None
-                            if ec == EXIT_MERGE_NEEDS_USER:
-                                log(
-                                    "Prefetch import stopped: merge short ×3 — "
-                                    "нужен выбор пользователя "
-                                    "[i]=ignore / [r]=retry. "
-                                    "Запусти в интерактивном терминале."
-                                )
-                                return ec
-                            if ec != 0:
-                                log(
-                                    f"Prefetch import failed for chunk "
-                                    f"{chunk.index} (exit {ec}) — see {args.log}"
-                                )
-                                return ec
-                        elif prefetch_bg.record_type != record_type:
-                            log(
-                                f"  Waiting for prefetch import chunk "
-                                f"{prefetch_bg.chunk_index} "
-                                f"[{prefetch_bg.record_type}] before {record_type}"
-                            )
-                            ec = finish_step_background(prefetch_bg)
-                            prefetch_bg = None
-                            if ec != 0:
-                                return ec
 
                     if chunk_is_done(type_state, chunk):
                         log(
@@ -1387,29 +1195,6 @@ def main() -> int:
                                 )
                                 return ec
 
-                    prefetch_enabled = (
-                        not args.no_prefetch_import
-                        and not args.skip_import
-                        and not args.dry_run
-                        and prefetch_bg is None
-                    )
-                    if prefetch_enabled:
-                        prefetch_bg = try_start_prefetch_import(
-                            chunk,
-                            type_chunks=type_chunks,
-                            type_state=type_state,
-                            python=python,
-                            source=source,
-                            record_type=record_type,
-                            video_dir=args.video_dir,
-                            session_gap=args.session_gap,
-                            state_on_sd=state_on_sd,
-                            temp_dir=args.temp_dir,
-                            log_path=args.log,
-                            min_free_gb=args.min_free_gb,
-                            check_disk=Path("."),
-                        )
-
                     # One YouTube video ≈ this chunk (trips concat if several short ones).
                     publish_cmd = [
                         python,
@@ -1463,16 +1248,6 @@ def main() -> int:
                             f"Publish [{record_type}] chunk {chunk.index} "
                             f"finished with errors (exit {ec}) — see {args.log}"
                         )
-
-                if prefetch_bg is not None:
-                    log(
-                        f"  Waiting for prefetch import chunk "
-                        f"{prefetch_bg.chunk_index} [{prefetch_bg.record_type}]…"
-                    )
-                    ec = finish_step_background(prefetch_bg)
-                    prefetch_bg = None
-                    if ec != 0:
-                        return ec
 
             log("")
             from publish_70mai import free_disk_gb

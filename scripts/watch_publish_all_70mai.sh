@@ -8,7 +8,8 @@
 #   WATCH_RESTART_SEC=60       sleep before restart after failure
 #   WATCH_STOP_ON_SUCCESS=1    exit watchdog when autopilot returns 0 (default)
 #   WATCH_ONCE=1               single run, no restart loop
-#   WATCH_STALL_SEC=7200       kill if trip_*.mp4 total size unchanged (default 2h; log heartbeats ignored)
+#   WATCH_STALL_SEC=7200       kill if no import/compose/upload activity (default 2h)
+#   WATCH_LOG_ACTIVE_SEC=600   log/status/pipeline child resets stall timer (default 10m)
 #   WATCH_AWAKE=1              lid-close awake via pmset+caffeinate (default on)
 #
 # Logs:
@@ -37,6 +38,7 @@ RESTART_SEC="${WATCH_RESTART_SEC:-60}"
 STOP_ON_SUCCESS="${WATCH_STOP_ON_SUCCESS:-1}"
 WATCH_ONCE="${WATCH_ONCE:-0}"
 STALL_SEC="${WATCH_STALL_SEC:-7200}"
+LOG_ACTIVE_SEC="${WATCH_LOG_ACTIVE_SEC:-600}"
 
 mkdir -p "$LOG_DIR"
 
@@ -197,6 +199,54 @@ on_exit() {
 trap on_exit EXIT
 trap on_signal INT TERM
 
+compose_progress_bytes() {
+  local total=0 sz f
+  for f in \
+    "$LOG_DIR"/chunk_*/trip_*.mp4 \
+    "$LOG_DIR"/*/chunk_*/trip_*.mp4 \
+    "$LOG_DIR"/*/part_*.mp4
+  do
+    [[ -f "$f" ]] || continue
+    sz=$(stat -f%z "$f" 2>/dev/null || echo 0)
+    total=$(( total + sz ))
+  done
+  echo "$total"
+}
+
+autopilot_log_recent() {
+  [[ -f "$AUTOPILOT_LOG" ]] || return 1
+  local now mtime
+  now="$(date +%s)"
+  mtime=$(stat -f%m "$AUTOPILOT_LOG" 2>/dev/null || echo 0)
+  (( now - mtime <= LOG_ACTIVE_SEC ))
+}
+
+status_file_recent() {
+  local status="$LOG_DIR/autopilot_status.json"
+  [[ -f "$status" ]] || return 1
+  local now mtime
+  now="$(date +%s)"
+  mtime=$(stat -f%m "$status" 2>/dev/null || echo 0)
+  (( now - mtime <= LOG_ACTIVE_SEC ))
+}
+
+pipeline_children_active() {
+  local pid cmd
+  while read -r pid cmd; do
+    [[ -z "$pid" ]] && continue
+    if [[ "$cmd" == *import_70mai.py* || "$cmd" == *publish_70mai.py* ]]; then
+      if [[ "$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')" == *python* ]]; then
+        return 0
+      fi
+    fi
+  done < <(ps ax -o pid=,command= 2>/dev/null || true)
+  return 1
+}
+
+autopilot_has_recent_activity() {
+  autopilot_log_recent || status_file_recent || pipeline_children_active
+}
+
 run_autopilot() {
   cleanup_before_autopilot
   log "Starting: $AUTOPILOT --force-restart $*"
@@ -204,29 +254,23 @@ run_autopilot() {
   "$AUTOPILOT" --force-restart "$@" >>"$AUTOPILOT_LOG" 2>&1 &
   CHILD_PID=$!
   local child=$CHILD_PID
-  local last_trip_sz last_change now trip_sz
-  last_trip_sz=0
-  for f in "$LOG_DIR"/chunk_*/trip_*.mp4; do
-    [[ -f "$f" ]] || continue
-    last_trip_sz=$(( last_trip_sz + $(stat -f%z "$f" 2>/dev/null || echo 0) ))
-  done
+  local last_progress_sz last_change now progress_sz
+  last_progress_sz="$(compose_progress_bytes)"
   last_change="$(date +%s)"
 
   while pid_alive "$child"; do
     sleep 30
-    # Progress = trip_*.mp4 growth only (encode heartbeats must not reset stall)
-    trip_sz=0
-    for f in "$LOG_DIR"/chunk_*/trip_*.mp4; do
-      [[ -f "$f" ]] || continue
-      trip_sz=$(( trip_sz + $(stat -f%z "$f" 2>/dev/null || echo 0) ))
-    done
-    if [[ "$trip_sz" != "$last_trip_sz" ]]; then
-      last_trip_sz="$trip_sz"
+    progress_sz="$(compose_progress_bytes)"
+    if [[ "$progress_sz" != "$last_progress_sz" ]]; then
+      last_progress_sz="$progress_sz"
+      last_change="$(date +%s)"
+    fi
+    if autopilot_has_recent_activity; then
       last_change="$(date +%s)"
     fi
     now="$(date +%s)"
     if (( now - last_change > STALL_SEC )); then
-      log "Autopilot stalled (trip_*.mp4 unchanged ${STALL_SEC}s, total ${trip_sz} bytes) — killing pid $child"
+      log "Autopilot stalled (no compose/import/upload activity ${STALL_SEC}s; progress ${progress_sz} bytes) — killing pid $child"
       kill -TERM "$child" 2>/dev/null || true
       sleep 5
       pid_alive "$child" && kill -KILL "$child" 2>/dev/null || true
@@ -293,4 +337,6 @@ main() {
   done
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
