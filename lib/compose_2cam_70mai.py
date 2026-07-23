@@ -635,7 +635,13 @@ def run_compose_2cam(
         sync_offset_back=sync_offset_back,
     )
     if aligned is None:
-        _, detail = merges_timeline_ready(video_dir, record_type)
+        ready, detail = merges_timeline_ready(video_dir, record_type)
+        if ready:
+            raise SystemExit(
+                f"Cannot compose {record_type}: no timeline clips in trip window "
+                f"{wall_start:%Y-%m-%d %H:%M:%S}–{wall_end:%Y-%m-%d %H:%M:%S}. "
+                "Re-import merges for this trip/chunk."
+            )
         raise SystemExit(
             f"Cannot compose {record_type}: Front/Back timeline manifests are "
             f"required for slot-synced 2-cam output ({detail}). Re-import merges "

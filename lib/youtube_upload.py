@@ -936,7 +936,7 @@ def apply_youtube_metadata(
             token_path=token_path,
         )
         log("  YouTube comment posted")
-    except YouTubeUploadError as exc:
+    except Exception as exc:
         log(f"  Warning: YouTube comment skipped ({exc})")
 
 

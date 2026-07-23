@@ -2547,7 +2547,11 @@ def format_compose_detail(
     chunk = st.get("chunk_index")
     trip = st.get("trip_index")
     trip_pct = st.get("trip_percent")
-    if trip_pct is None and isinstance(log_detail.get("percent"), (int, float)):
+    if (
+        trip_pct is None
+        and log_enrich
+        and isinstance(log_detail.get("percent"), (int, float))
+    ):
         trip_pct = float(log_detail["percent"])
 
     short_bits: list[str] = []

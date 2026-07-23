@@ -150,6 +150,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | `--repair` | `auto` | Чинить короткий Parking/Event merge: `auto` / `diagnose` / `off` |
 | `--skip-import` | off | Только compose+upload (merge уже на диске) |
 | `--no-overlap` | off | Отключить overlap compose∥upload внутри `publish_70mai` |
+| `--no-prefetch-import` | off | Legacy no-op (фоновый prefetch import снят; import синхронный по чанку) |
 | `--dry-run` | off | План без работы |
 | `--no-dashboard` | off | Без таблицы в том же терминале (удобно с `autopilot_dashboard.sh`) |
 
@@ -162,7 +163,17 @@ cd /Users/cuthbert/work_local/70mai_project
 
 ---
 
-## Логи
+## Auto-recovery (автопилот)
+
+| Проблема | Поведение |
+|----------|-----------|
+| **Watchdog stall (2 ч)** | Считает прогресс по росту `trip_*.mp4` / `part_*.mp4`, свежести `publish_all.log` / `autopilot_status.json`, процессам `import_70mai` / `publish_70mai`. Не убивает длинный import/encode без реального простоя. Env: `WATCH_STALL_SEC`, `WATCH_LOG_ACTIVE_SEC`. |
+| **Мало места перед compose** | `guard_free_disk`: ждёт фоновый upload → prune merged + composed для уже залитых trips → retry до 4× (30 с). В **chunk mode** prune только после `chunk_uploaded` (не по trip_parts внутри незалитого чанка). При неудаче chunk помечается failed, автопилот идёт дальше (`--continue-on-error`). |
+| **Kill import / watchdog restart** | Import resume: готовые SSD merges + `chunk_merges_ready` (проверка timeline clips в окне каждой поездки) → пропускает re-copy; иначе import с `--from`/`--to` по окну чанка. |
+| **Upload OK, state не успел** | После `video_id` от YouTube state пишется на SD+host **до** удаления composed mp4 (`on_video_id` checkpoint). Comment 403 не откатывает upload. |
+| **Prefetch / BackgroundStep** | Фоновый prefetch import **снят**; `--no-prefetch-import` — no-op для совместимости со старыми watchdog-командами. |
+
+---
 
 ```bash
 cd /Users/cuthbert/work_local/70mai_project
@@ -172,6 +183,8 @@ tail -f video/Output/.publish_tmp/repair_log.jsonl
 tail -f video/Output/.publish_tmp/bad_clips.jsonl
 ```
 
-Watchdog (`watch_publish_all_70mai.sh`) считает автопилот живым, пока растут `Normal/chunk_*/trip_*.mp4` / `part_*.mp4`, обновляется `publish_all.log` / `autopilot_status.json`, или работает `import_70mai` / `publish_70mai`. Раньше смотрел только legacy `chunk_*/trip_*.mp4` и убивал import/encode каждые 2 ч. Env: `WATCH_STALL_SEC`, `WATCH_LOG_ACTIVE_SEC` (см. header скрипта).
+Watchdog (`watch_publish_all_70mai.sh`) — см. **Auto-recovery** выше. Кратко: import/compose/upload activity, не только legacy `chunk_*/trip_*.mp4`.
+
+Upload считается успешным даже если YouTube comment (403 OAuth scope) не прошёл — state сохраняется, ролик не перезаливается.
 
 Статус на карте: `/.70mai/` (publish state, OAuth, inventory). При смене физической карты (новый `card_id.txt`) autopilot очищает publish/import state на SD и локальный кэш (`autopilot_plan.json`, `import_*.state.json`); OAuth (`auth/`) сохраняется.

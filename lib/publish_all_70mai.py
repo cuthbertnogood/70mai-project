@@ -563,13 +563,33 @@ def chunk_merges_ready(
     if not front or not back:
         return False
     timeline_ok = False
+    front_entries: list | None = None
+    back_entries: list | None = None
     try:
+        from clip_timeline import filter_entries_to_window, load_manifest
         from clip_timeline import merges_timeline_ready
 
         timeline_ok = merges_timeline_ready(video_dir, record_type)[0]
+        if timeline_ok:
+            front_entries = []
+            back_entries = []
+            for clip in front:
+                manifest = load_manifest(clip.path)
+                if manifest is not None:
+                    front_entries.extend(manifest.clips)
+            for clip in back:
+                manifest = load_manifest(clip.path)
+                if manifest is not None:
+                    back_entries.extend(manifest.clips)
     except Exception:
         timeline_ok = False
     for trip in chunk.trips:
+        if timeline_ok and front_entries is not None and back_entries is not None:
+            ff = filter_entries_to_window(front_entries, trip.start, trip.end)
+            bf = filter_entries_to_window(back_entries, trip.start, trip.end)
+            if not ff or not bf:
+                return False
+            continue
         try:
             fs = plan_segments(front, trip.start, trip.duration_sec, 0.0)
             bs = plan_segments(back, trip.start, trip.duration_sec, 0.0)
@@ -577,9 +597,6 @@ def chunk_merges_ready(
             return False
         if not fs or not bs:
             return False
-        if timeline_ok:
-            # Slot-aligned merges: compose black-fills short gaps; segments exist.
-            continue
         front_cov = sum(seg.duration for seg in fs)
         back_cov = sum(seg.duration for seg in bs)
         need = trip.duration_sec * min_coverage
@@ -851,6 +868,11 @@ def main() -> int:
             "Self-heal short/stale Parking/Event merges before compose "
             "(default: auto; diagnose = log only; off = legacy)"
         ),
+    )
+    parser.add_argument(
+        "--no-prefetch-import",
+        action="store_true",
+        help="Legacy no-op (background prefetch import removed; sync import per chunk)",
     )
     args = parser.parse_args()
 

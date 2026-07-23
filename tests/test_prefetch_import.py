@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +77,35 @@ class BuildImportCmdTests(unittest.TestCase):
         self.assertIn("--types", cmd)
         idx = cmd.index("--types")
         self.assertEqual(cmd[idx + 1], "Event")
+
+
+    def test_no_prefetch_import_flag_in_help(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(LIB / "publish_all_70mai.py"), "--help"],
+            capture_output=True,
+            text=True,
+            env={**__import__("os").environ, "PYTHONPATH": str(LIB)},
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("--no-prefetch-import", proc.stdout)
+
+    @patch("runtime_config.import_settings", return_value={})
+    def test_import_resume_skips_when_merges_ready(self, _imp) -> None:
+        from publish_all_70mai import chunk_merges_ready
+
+        with tempfile.TemporaryDirectory() as tmp:
+            video_dir = Path(tmp) / "video"
+            chunk = _chunk("Normal", 1, 10)
+            with patch(
+                "compose_70mai.scan_merged_clips",
+                side_effect=lambda _vd, cam, **kw: [object()] if cam else [],
+            ):
+                with patch("compose_70mai.plan_segments", return_value=[object()]):
+                    with patch(
+                        "clip_timeline.merges_timeline_ready",
+                        return_value=(True, ""),
+                    ):
+                        self.assertTrue(chunk_merges_ready(video_dir, chunk))
 
 
 if __name__ == "__main__":
