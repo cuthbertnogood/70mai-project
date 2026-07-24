@@ -239,5 +239,43 @@ class OAuthHelpTests(unittest.TestCase):
         self.assertIn("invalid_grant", detail)
 
 
+class YouTubeDurationTests(unittest.TestCase):
+    def test_parse_youtube_duration(self) -> None:
+        self.assertAlmostEqual(youtube_upload.parse_youtube_duration("PT30S"), 30.0)
+        self.assertAlmostEqual(
+            youtube_upload.parse_youtube_duration("PT1H2M3.5S"), 3723.5
+        )
+
+    def test_verify_youtube_video_duration_rejects_short(self) -> None:
+        with patch.object(
+            youtube_upload,
+            "fetch_youtube_duration_sec",
+            return_value=30.0,
+        ):
+            with self.assertRaises(youtube_upload.YouTubeUploadError) as ctx:
+                youtube_upload.verify_youtube_video_duration(
+                    "abc123",
+                    7321.0,
+                    credentials_path=Path("c.json"),
+                    token_path=Path("t.json"),
+                )
+            self.assertIn("30.0s", str(ctx.exception))
+            self.assertIn("abc123", str(ctx.exception))
+
+    def test_verify_youtube_video_duration_accepts_ok(self) -> None:
+        with patch.object(
+            youtube_upload,
+            "fetch_youtube_duration_sec",
+            return_value=7200.0,
+        ):
+            actual = youtube_upload.verify_youtube_video_duration(
+                "abc123",
+                7321.0,
+                credentials_path=Path("c.json"),
+                token_path=Path("t.json"),
+            )
+            self.assertEqual(actual, 7200.0)
+
+
 if __name__ == "__main__":
     unittest.main()

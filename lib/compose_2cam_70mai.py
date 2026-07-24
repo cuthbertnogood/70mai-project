@@ -648,6 +648,16 @@ def run_compose_2cam(
             f"(import writes <merge>.timeline.json sidecars)."
         )
 
+    _lane_front, _lane_back, aligned_total, *_rest = aligned
+    min_total = duration * 0.98
+    if aligned_total + 0.5 < min_total:
+        raise SystemExit(
+            f"Cannot compose {record_type}: timeline covers only "
+            f"{aligned_total:.0f}s of {duration:.0f}s planned "
+            f"({wall_start:%Y-%m-%d %H:%M:%S}–{wall_end:%Y-%m-%d %H:%M:%S}). "
+            "Re-import full merges before compose."
+        )
+
     _run_aligned_compose(
         aligned,
         output,

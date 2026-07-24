@@ -213,7 +213,12 @@ def diagnose_chunk(
     # (warn), not blockers. A missing/stale manifest stays a blocker so import
     # rebuilds it.
     aligned = _aligned_ready(video_dir, record_type)
-    cov_sev = "warn" if aligned else "blocker"
+    # Event/Parking slot-compose uses only manifest slots — partial merges
+    # produce a short video instead of black-filling to trip length.
+    if record_type in SINGLE_VIDEO_TYPES:
+        cov_sev = "blocker"
+    else:
+        cov_sev = "warn" if aligned else "blocker"
     if not aligned:
         from compose_70mai import scan_merged_clips
 

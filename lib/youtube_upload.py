@@ -854,6 +854,81 @@ def _upload_video_inner(
     raise YouTubeUploadError("Upload finished without video ID")
 
 
+YOUTUBE_DURATION_MIN_RATIO = 0.98
+
+
+def parse_youtube_duration(iso: str) -> float:
+    """Parse YouTube ISO8601 duration (e.g. PT1H2M3.5S) to seconds."""
+    import re
+
+    if not iso or not iso.startswith("PT"):
+        raise ValueError(f"invalid ISO8601 duration: {iso!r}")
+    hours = minutes = seconds = 0.0
+    for val, unit in re.findall(r"(\d+(?:\.\d+)?)([HMS])", iso):
+        v = float(val)
+        if unit == "H":
+            hours = v
+        elif unit == "M":
+            minutes = v
+        else:
+            seconds = v
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def fetch_youtube_duration_sec(
+    video_id: str,
+    *,
+    credentials_path: Path = DEFAULT_CREDENTIALS,
+    token_path: Path = DEFAULT_TOKEN,
+) -> float:
+    """Return processed video duration from YouTube contentDetails."""
+    youtube = get_youtube_service(credentials_path, token_path)
+    response = (
+        youtube.videos()
+        .list(part="contentDetails", id=video_id)
+        .execute()
+    )
+    items = response.get("items") or []
+    if not items:
+        raise YouTubeUploadError(f"YouTube video not found: {video_id}")
+    iso = (items[0].get("contentDetails") or {}).get("duration")
+    if not iso:
+        raise YouTubeUploadError(f"YouTube duration missing for {video_id}")
+    return parse_youtube_duration(iso)
+
+
+def verify_youtube_video_duration(
+    video_id: str,
+    expected_sec: float,
+    *,
+    min_ratio: float = YOUTUBE_DURATION_MIN_RATIO,
+    credentials_path: Path = DEFAULT_CREDENTIALS,
+    token_path: Path = DEFAULT_TOKEN,
+) -> float:
+    """Fail upload if YouTube duration is shorter than expected (post-upload QA)."""
+    if expected_sec <= 0:
+        raise YouTubeUploadError(
+            f"Cannot verify YouTube duration: invalid expected {expected_sec}s"
+        )
+    actual = fetch_youtube_duration_sec(
+        video_id,
+        credentials_path=credentials_path,
+        token_path=token_path,
+    )
+    need = expected_sec * min_ratio
+    if actual + 0.5 < need:
+        raise YouTubeUploadError(
+            f"YouTube duration {actual:.1f}s < {need:.1f}s expected "
+            f"({min_ratio:.0%} of local {expected_sec:.1f}s) — "
+            f"https://youtu.be/{video_id}"
+        )
+    log(
+        f"  YouTube duration OK: {actual:.1f}s "
+        f"(local {expected_sec:.1f}s, min {min_ratio:.0%})"
+    )
+    return actual
+
+
 def update_video_metadata(
     video_id: str,
     *,

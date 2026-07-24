@@ -89,7 +89,7 @@ class PipelineRepairTests(unittest.TestCase):
         self.assertIn("merge_short", codes)
         self.assertTrue(any(i.camera == "Front" for i in issues if i.code == "merge_short"))
 
-    def test_merge_short_is_warn_when_aligned(self) -> None:
+    def test_merge_short_stays_blocker_for_single_video_when_aligned(self) -> None:
         chunk = self._parking_chunk(7309.0)
         start = chunk.start
         front = [
@@ -127,11 +127,8 @@ class PipelineRepairTests(unittest.TestCase):
             mock.patch("pipeline_repair._manifest_matches_file", return_value=True),
         ):
             issues = diagnose_chunk(None, Path("video/Output"), chunk)
-        # With slot-aligned manifests, coverage shortfalls are warnings, not
-        # blockers — nothing forces a rebuild.
         blockers = [i for i in issues if i.severity == "blocker"]
-        self.assertEqual(blockers, [])
-        self.assertTrue(any(i.code == "merge_short" for i in issues))
+        self.assertTrue(any(i.code == "merge_short" for i in blockers))
 
     def test_manifest_missing_blocks_when_not_aligned(self) -> None:
         chunk = self._parking_chunk(7309.0)

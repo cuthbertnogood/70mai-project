@@ -169,8 +169,9 @@ cd /Users/cuthbert/work_local/70mai_project
 |----------|-----------|
 | **Watchdog stall (2 ч)** | Считает прогресс по росту `trip_*.mp4` / `part_*.mp4`, свежести `publish_all.log` / `autopilot_status.json`, процессам `import_70mai` / `publish_70mai`. Не убивает длинный import/encode без реального простоя. Env: `WATCH_STALL_SEC`, `WATCH_LOG_ACTIVE_SEC`. |
 | **Мало места перед compose** | `guard_free_disk`: ждёт фоновый upload → prune merged + composed для уже залитых trips → retry до 4× (30 с). В **chunk mode** prune только после `chunk_uploaded` (не по trip_parts внутри незалитого чанка). При неудаче chunk помечается failed, автопилот идёт дальше (`--continue-on-error`). |
-| **Kill import / watchdog restart** | Import resume: готовые SSD merges + `chunk_merges_ready` (проверка timeline clips в окне каждой поездки) → пропускает re-copy; иначе import с `--from`/`--to` по окну чанка. |
+| **Kill import / watchdog restart** | Import resume: готовые SSD merges + `chunk_merges_ready` (проверка timeline clips в окне каждой поездки) → пропускает re-copy; иначе import с `--from`/`--to` по окну чанка. Event/Parking: короткий merge при slot-timeline — **blocker** (не 30s upload). |
 | **Upload OK, state не успел** | После `video_id` от YouTube state пишется на SD+host **до** удаления composed mp4 (`on_video_id` checkpoint). Comment 403 не откатывает upload. |
+| **Проверка длины на YouTube** | После upload: `videos.list(contentDetails)` vs ffprobe локального mp4 (≥98%). Короткий ролик → upload failed, state не помечается uploaded, локальный файл не удаляется. |
 | **Prefetch / BackgroundStep** | Фоновый prefetch import **снят**; `--no-prefetch-import` — no-op для совместимости со старыми watchdog-командами. |
 
 ---

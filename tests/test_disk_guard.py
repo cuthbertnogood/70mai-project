@@ -111,24 +111,26 @@ class DiskGuardTests(unittest.TestCase):
             path.write_bytes(b"video")
             session_dir = Path(tmp)
             with patch("publish_70mai.upload_video", return_value="vid123"):
-                with patch("publish_70mai.post_video_comment"):
-                    with patch("publish_70mai.cleanup_uploaded_file") as mock_clean:
-                        upload_and_cleanup(
-                            path,
-                            "title",
-                            privacy="private",
-                            credentials=Path(tmp) / "c.json",
-                            token=Path(tmp) / "t.json",
-                            session_dir=session_dir,
-                            resume_upload=False,
-                            diag_log=None,
-                            keep=False,
-                            playlist_id=None,
-                            playlist_title="",
-                            on_video_id=saved.append,
-                        )
-                        self.assertEqual(saved, ["vid123"])
-                        mock_clean.assert_called_once()
+                with patch("publish_70mai.probe_duration", return_value=60.0):
+                    with patch("publish_70mai.verify_youtube_video_duration"):
+                        with patch("publish_70mai.post_video_comment"):
+                            with patch("publish_70mai.cleanup_uploaded_file") as mock_clean:
+                                upload_and_cleanup(
+                                    path,
+                                    "title",
+                                    privacy="private",
+                                    credentials=Path(tmp) / "c.json",
+                                    token=Path(tmp) / "t.json",
+                                    session_dir=session_dir,
+                                    resume_upload=False,
+                                    diag_log=None,
+                                    keep=False,
+                                    playlist_id=None,
+                                    playlist_title="",
+                                    on_video_id=saved.append,
+                                )
+                                self.assertEqual(saved, ["vid123"])
+                                mock_clean.assert_called_once()
 
 
 if __name__ == "__main__":

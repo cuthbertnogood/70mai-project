@@ -55,6 +55,7 @@ from youtube_upload import (
     post_video_comment,
     upload_session_path_for_file,
     upload_video,
+    verify_youtube_video_duration,
 )
 from youtube_upload_diagnostics import DEFAULT_DIAG_LOG
 
@@ -498,6 +499,8 @@ def upload_and_cleanup(
     upload_chunk_bytes: int | None = None,
     status_hook: Callable[[int, int, int], None] | None = None,
     on_video_id: Callable[[str], None] | None = None,
+    expected_duration_sec: float | None = None,
+    verify_youtube_duration: bool = True,
 ) -> tuple[str | None, str | None, int, float]:
     """Upload, add to playlist, delete local file. Returns (video_id, playlist_id, freed_bytes, elapsed_sec)."""
     if not path.is_file():
@@ -528,6 +531,18 @@ def upload_and_cleanup(
         chunk_bytes=upload_chunk_bytes,
     )
     reporter.finish()
+
+    if verify_youtube_duration:
+        expected = expected_duration_sec
+        if expected is None or expected <= 0:
+            expected = probe_duration(path)
+        verify_youtube_video_duration(
+            video_id,
+            expected,
+            credentials_path=credentials,
+            token_path=token,
+        )
+
     if on_video_id is not None:
         on_video_id(video_id)
     elapsed = time.monotonic() - started
