@@ -552,6 +552,7 @@ def chunk_merges_ready(
     Uses ffprobe (probe=True) so short Parking/Event merges are not false-ready.
     """
     from compose_70mai import plan_segments, scan_merged_clips
+    from plan_estimate import SINGLE_VIDEO_TYPES
 
     record_type = chunk.record_type
     front = scan_merged_clips(
@@ -585,6 +586,14 @@ def chunk_merges_ready(
         timeline_ok = False
     for trip in chunk.trips:
         if timeline_ok and front_entries is not None and back_entries is not None:
+            if record_type in SINGLE_VIDEO_TYPES:
+                from clip_timeline import build_slots, timeline_duration
+
+                slots = build_slots(front_entries, back_entries, mode="slot")
+                slot_dur = timeline_duration(slots)
+                if slot_dur < trip.duration_sec * min_coverage:
+                    return False
+                continue
             ff = filter_entries_to_window(front_entries, trip.start, trip.end)
             bf = filter_entries_to_window(back_entries, trip.start, trip.end)
             if not ff or not bf:

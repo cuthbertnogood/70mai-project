@@ -26,6 +26,7 @@ from compose_70mai import (
     scan_merged_clips,
 )
 from import_70mai import format_duration, parse_datetime
+from plan_estimate import SINGLE_VIDEO_TYPES
 from telemetry_overlay import render_telemetry_video, resolve_gps_sources, telemetry_requested
 
 from clip_timeline import (
@@ -281,12 +282,15 @@ def build_aligned_lanes(
     )
     raw_front = len(front_entries)
     raw_back = len(back_entries)
-    front_entries = filter_entries_to_window(front_entries, wall_start, window_end)
-    back_entries = filter_entries_to_window(back_entries, wall_start, window_end)
+    mode = "slot" if record_type in SINGLE_VIDEO_TYPES else "wall"
+    # Parking/Event: slot timeline compresses months of wall time — do not
+    # filter manifest entries by the nominal trip wall window (2h from t0).
+    if mode != "slot":
+        front_entries = filter_entries_to_window(front_entries, wall_start, window_end)
+        back_entries = filter_entries_to_window(back_entries, wall_start, window_end)
     if not front_entries and not back_entries:
         return None
 
-    mode = "slot" if record_type in SINGLE_VIDEO_TYPES else "wall"
     slots = build_slots(
         front_entries,
         back_entries,

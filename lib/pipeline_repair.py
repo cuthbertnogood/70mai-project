@@ -318,50 +318,105 @@ def diagnose_chunk(
                         )
                     )
 
-    for trip in chunk.trips:
-        for camera in ("Front", "Back"):
-            covered, err = _segment_coverage(
-                video_dir,
-                record_type,
-                camera,
-                trip.start,
-                trip.duration_sec,
-            )
-            if err or covered is None:
+    if record_type in SINGLE_VIDEO_TYPES and aligned:
+        from clip_timeline import build_slots, load_manifest, timeline_duration
+        from compose_70mai import scan_merged_clips
+
+        front_clips = scan_merged_clips(
+            video_dir, "Front", record_type=record_type, probe=False
+        )
+        back_clips = scan_merged_clips(
+            video_dir, "Back", record_type=record_type, probe=False
+        )
+        front_entries: list = []
+        back_entries: list = []
+        for clip in front_clips:
+            manifest = load_manifest(clip.path)
+            if manifest is not None:
+                front_entries.extend(manifest.clips)
+        for clip in back_clips:
+            manifest = load_manifest(clip.path)
+            if manifest is not None:
+                back_entries.extend(manifest.clips)
+        for trip in chunk.trips:
+            if not front_entries or not back_entries:
                 issues.append(
                     HealthIssue(
                         code="compose_gap",
                         record_type=record_type,
-                        camera=camera,
-                        severity=cov_sev,
+                        camera=None,
+                        severity="blocker",
                         message=(
-                            f"plan_segments {record_type}/{camera} trip "
-                            f"{trip.index}: {err or 'no coverage'}"
-                        ),
-                        remediation="rebuild_merge",
-                        path=(
-                            front_path if camera == "Front" else back_path
-                        ),
-                    )
-                )
-            elif covered < trip.duration_sec * COVERAGE_THRESHOLD:
-                issues.append(
-                    HealthIssue(
-                        code="compose_gap",
-                        record_type=record_type,
-                        camera=camera,
-                        severity=cov_sev,
-                        message=(
-                            f"{record_type}/{camera} covers {covered:.1f}s of "
-                            f"needed {trip.duration_sec:.1f}s "
+                            f"{record_type} missing timeline manifest entries "
                             f"(trip {trip.index})"
                         ),
                         remediation="rebuild_merge",
-                        path=(
-                            front_path if camera == "Front" else back_path
-                        ),
+                        path=front_path or back_path,
                     )
                 )
+                continue
+            slots = build_slots(front_entries, back_entries, mode="slot")
+            slot_dur = timeline_duration(slots)
+            if slot_dur < trip.duration_sec * COVERAGE_THRESHOLD:
+                issues.append(
+                    HealthIssue(
+                        code="compose_gap",
+                        record_type=record_type,
+                        camera=None,
+                        severity="blocker",
+                        message=(
+                            f"{record_type} slot timeline {slot_dur:.1f}s < "
+                            f"needed {trip.duration_sec:.1f}s (trip {trip.index})"
+                        ),
+                        remediation="rebuild_merge",
+                        path=front_path or back_path,
+                    )
+                )
+    else:
+        for trip in chunk.trips:
+            for camera in ("Front", "Back"):
+                covered, err = _segment_coverage(
+                    video_dir,
+                    record_type,
+                    camera,
+                    trip.start,
+                    trip.duration_sec,
+                )
+                if err or covered is None:
+                    issues.append(
+                        HealthIssue(
+                            code="compose_gap",
+                            record_type=record_type,
+                            camera=camera,
+                            severity=cov_sev,
+                            message=(
+                                f"plan_segments {record_type}/{camera} trip "
+                                f"{trip.index}: {err or 'no coverage'}"
+                            ),
+                            remediation="rebuild_merge",
+                            path=(
+                                front_path if camera == "Front" else back_path
+                            ),
+                        )
+                    )
+                elif covered < trip.duration_sec * COVERAGE_THRESHOLD:
+                    issues.append(
+                        HealthIssue(
+                            code="compose_gap",
+                            record_type=record_type,
+                            camera=camera,
+                            severity=cov_sev,
+                            message=(
+                                f"{record_type}/{camera} covers {covered:.1f}s of "
+                                f"needed {trip.duration_sec:.1f}s "
+                                f"(trip {trip.index})"
+                            ),
+                            remediation="rebuild_merge",
+                            path=(
+                                front_path if camera == "Front" else back_path
+                            ),
+                        )
+                    )
 
     # Deduplicate by (code, camera, path)
     seen: set[tuple] = set()
