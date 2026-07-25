@@ -103,7 +103,7 @@ cd /Users/cuthbert/work_local/70mai_project
 # Compose/upload: вторая строка как у copy/merge — % · размер · скорость (Nx / MB/s) · ETA; % compose в шапке/таблице — **по ролику** (chunk), не сбрасывается при старте следующей поездки; в detail — trip N и % текущей поездки.
 # Compose ждёт Front+Back ≥98%; в TUI — живое покрытие % по каждой камере.
 # Блок «процессы»: watchdog/autopilot/import (pid, uptime, флаги), возраст publish_all.log, merge_stage на диске; если всё мертво — подсказка перезапуска.
-# Компактный режим (<46 строк терминала): copy/merge с полными деталями как раньше; compose/upload — одной строкой; без рамки таблицы и легенды «конвейер».
+# Компактный режим (<46 строк терминала): полный блок этапов (copy/merge/compose/upload); без рамки таблицы и легенды «конвейер».
 # Правки экрана — lib/autopilot_dashboard_view.py (автоперезагрузка).
 ./scripts/autopilot_dashboard.sh
 ```

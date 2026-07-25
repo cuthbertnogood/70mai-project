@@ -3862,16 +3862,6 @@ def _format_pipeline_block(
             status = "· ждёт"
         return f"{name:<8} {status}"
 
-    def _chip(name: str, *, on: bool, done: bool, extra: str = "") -> str:
-        if on:
-            body = extra or "►"
-            return f"{name}►{body}"
-        if done:
-            return f"{name}✓"
-        if extra:
-            return f"{name}·{extra[:28]}"
-        return f"{name}·"
-
     diag = diagnose_pipeline_bottleneck(
         temp_dir=temp_dir,
         copy_on=copy_on,
@@ -3914,21 +3904,29 @@ def _format_pipeline_block(
         out.append(_line("merge", on=merge_on, done=merge_done, extra=merge_extra))
         if merge_on and merge_detail_line:
             out.append(f"         {merge_detail_line}")
-        rest = [
-            _chip(
-                "compose",
-                on=compose_on,
-                done=compose_done,
-                extra=compose_extra
-                or (compose_wait_lines[0][:32] if compose_wait_lines else ""),
-            ),
-            _chip("upload", on=upload_on, done=video_done, extra=upload_extra),
-        ]
-        out.append("         " + " · ".join(rest))
+        out.append(
+            _line("compose", on=compose_on, done=compose_done, extra=compose_extra)
+        )
         if compose_on and compose_detail_line:
             out.append(f"         {compose_detail_line}")
+        for wl in compose_wait_lines:
+            out.append(f"         {wl}")
+        out.append(
+            _line(
+                "upload",
+                on=upload_on,
+                done=video_done,
+                extra=upload_extra,
+            )
+        )
         if upload_on and upload_detail_line:
             out.append(f"         {upload_detail_line}")
+        if log_fallback and (copy_on or merge_on) and stale and not prefetch_on:
+            out.append("источник: publish_all.log (status.json устарел)")
+        elif prefetch_on and log_fallback:
+            out.append("prefetch: publish_all.log (фоновый import следующего чанка)")
+        elif stale:
+            out.append("idle — status.json устарел (см. proc)")
         if diag:
             out.append(f"диагноз: {diag}")
         return out
