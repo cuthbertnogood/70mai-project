@@ -51,6 +51,7 @@ def render(dash: Any) -> None:
     except OSError:
         term_cols = 100
         term_rows = 40
+    compact = d._dashboard_compact(term_rows)
     two_col = d._use_two_col_trips(term_cols)
     trip_cols = 2 if two_col else 1
     trip_col_w = d._trip_list_col_width(term_cols)
@@ -158,37 +159,49 @@ def render(dash: Any) -> None:
         import_alive=import_alive,
         procs=procs,
         prefetch=prefetch,
+        compact=compact,
     ):
         for hl in d._wrap_line(cl, term_cols):
             lines.append(hl)
     age = d._status_age_line(st)
-    if age:
+    if age and not compact:
         for hl in d._wrap_line(age, term_cols):
             lines.append(hl)
-    for proc_line in d.format_process_detail_block(
+    proc_lines = d.format_process_detail_block(
         temp_dir=dash.temp_dir,
         video_dir=dash.video_dir,
         procs=procs,
         prefetch=prefetch,
         log_fallback=log_fallback,
-    ):
+        compact=compact,
+    )
+    if compact and age:
+        if proc_lines:
+            proc_lines = [proc_lines[0] + f" · {age}"]
+        else:
+            proc_lines = [age]
+    for proc_line in proc_lines:
         for hl in d._wrap_line(proc_line, term_cols):
             lines.append(hl)
-    for hl in d._wrap_line(disk_line, term_cols):
-        lines.append(hl)
+    meta = disk_line
     if dash.source is not None:
         try:
             from card_identity import format_sd_clip_summary
 
             sd_line = format_sd_clip_summary(dash.source)
             if sd_line:
-                for hl in d._wrap_line(sd_line, term_cols):
-                    lines.append(hl)
+                meta = f"{disk_line}  ·  {sd_line}"
         except OSError:
             pass
+    for hl in d._wrap_line(meta, term_cols):
+        lines.append(hl)
 
     show_rows, collapse_note = d._visible_rows(
-        dash.rows, term_rows=term_rows, total=total, columns=trip_cols
+        dash.rows,
+        term_rows=term_rows,
+        total=total,
+        columns=trip_cols,
+        compact=compact,
     )
     if collapse_note:
         lines.append(collapse_note)
@@ -236,11 +249,18 @@ def render(dash: Any) -> None:
                 width=trip_col_w,
             )
         )
-    lines.extend(d._two_column_pack(trip_lines, term_cols=term_cols))
-    lines.extend(d.format_local_files_block(dash.rows, term_cols=term_cols))
-    lines.extend(d.format_pipeline_legend(term_cols=term_cols))
-    for leg in d._STATUS_LEGEND:
-        lines.extend(d._wrap_line(leg, term_cols))
+    lines.extend(
+        d._two_column_pack(trip_lines, term_cols=term_cols, framed=not compact)
+    )
+    lines.extend(
+        d.format_local_files_block(
+            dash.rows, term_cols=term_cols, compact=compact
+        )
+    )
+    lines.extend(d.format_pipeline_legend(term_cols=term_cols, compact=compact))
+    if not compact:
+        for leg in d._STATUS_LEGEND:
+            lines.extend(d._wrap_line(leg, term_cols))
     for row in dash.rows:
         if row.status in ("fail", "stall", "oauth") and row.reason not in ("—", ""):
             num = d.chunk_display_num(row)
@@ -251,17 +271,23 @@ def render(dash: Any) -> None:
                     term_cols,
                 )
             )
-    lines.extend(d.format_parking_merge_hint(
-        dash.temp_dir,
-        term_cols=term_cols,
-        import_alive=import_alive,
-        video_dir=dash.video_dir,
-    ))
-    lines.extend(d.format_failures_block(
-        dash.temp_dir,
-        term_cols=term_cols,
-        source=getattr(dash, "source", None),
-    ))
+    lines.extend(
+        d.format_parking_merge_hint(
+            dash.temp_dir,
+            term_cols=term_cols,
+            import_alive=import_alive,
+            video_dir=dash.video_dir,
+            compact=compact,
+        )
+    )
+    lines.extend(
+        d.format_failures_block(
+            dash.temp_dir,
+            term_cols=term_cols,
+            source=getattr(dash, "source", None),
+            compact=compact,
+        )
+    )
     block = "\n".join(lines)
     out = dash._tty
     if dash._alt_screen:

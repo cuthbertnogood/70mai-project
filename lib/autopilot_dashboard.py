@@ -857,8 +857,10 @@ _STATUS_LEGEND = (
 )
 
 
-def format_pipeline_legend(*, term_cols: int) -> list[str]:
+def format_pipeline_legend(*, term_cols: int, compact: bool = False) -> list[str]:
     """What prefetch / copy / merge / compose / upload mean in the этапы block."""
+    if compact:
+        return []
     lines = [
         "── конвейер ──",
         "prefetch — фоновый import следующего ~2h ролика (SD→SSD) параллельно compose/upload текущего",
@@ -873,6 +875,11 @@ def format_pipeline_legend(*, term_cols: int) -> list[str]:
 
 # status.json older than this → idle (no ghost ►), even if procs still listed.
 _STALE_STATUS_SEC = 300
+
+
+def _dashboard_compact(term_rows: int) -> bool:
+    """Tighter layout when the terminal is short (typical laptop ~40 lines)."""
+    return term_rows < 46
 
 
 def _table_width(widths: tuple[int, ...]) -> int:
@@ -963,16 +970,28 @@ def _trip_compact_line(
     return _fit_text(" ".join(bits), width)
 
 
-def _two_column_pack(items: list[str], *, term_cols: int, gap: str = " │ ") -> list[str]:
+def _two_column_pack(
+    items: list[str],
+    *,
+    term_cols: int,
+    gap: str = " │ ",
+    framed: bool = True,
+) -> list[str]:
     """Pack trip lines into a framed 1- or 2-column box (┏━┳━┓ / ┃ ┃ / ┗━┻━┛)."""
-    del gap  # separator is the table middle border
     if not items:
         return []
     col_w = _trip_list_col_width(term_cols)
     if _use_two_col_trips(term_cols):
-        widths = (col_w, col_w)
         mid = (len(items) + 1) // 2
         left, right = items[:mid], items[mid:]
+        if not framed:
+            out: list[str] = []
+            for i in range(mid):
+                l = _fit_text(left[i], col_w) if i < len(left) else ""
+                r = _fit_text(right[i], col_w) if i < len(right) else ""
+                out.append(f"{l:<{col_w}}{gap}{r}")
+            return out
+        widths = (col_w, col_w)
         out = [_table_top(widths)]
         for i in range(mid):
             l = left[i] if i < len(left) else ""
@@ -980,6 +999,8 @@ def _two_column_pack(items: list[str], *, term_cols: int, gap: str = " │ ") ->
             out.append(_table_row((l, r), widths))
         out.append(_table_bottom(widths))
         return out
+    if not framed:
+        return items
     widths = (col_w,)
     out = [_table_top(widths)]
     for item in items:
@@ -1067,8 +1088,11 @@ def format_local_files_block(
     *,
     term_cols: int,
     limit: int = 1,
+    compact: bool = False,
 ) -> list[str]:
     """Single newest local path (by trip date) for trips not yet on YouTube."""
+    if compact:
+        return []
     del limit  # kept for callers; always one row
     candidates = [r for r in rows if _row_show_local_path(r)]
     if not candidates:
@@ -1331,8 +1355,11 @@ def format_failures_block(
     term_cols: int,
     limit: int = 5,
     source: Path | None = None,
+    compact: bool = False,
 ) -> list[str]:
     """Footer lines: «Сбои» header (with bad-file counter) + recent failures."""
+    if compact:
+        limit = min(limit, 2)
     fails = collect_failure_lines(temp_dir, limit=limit, source=source)
     bad_n = 0
     try:
@@ -1347,6 +1374,8 @@ def format_failures_block(
     if bad_n:
         header += f"  битых файлов: {bad_n}"
     out: list[str] = []
+    if compact and not fails:
+        return out
     out.extend(_wrap_line(header, term_cols))
     if not fails:
         out.extend(_wrap_line("нет свежих сбоев", term_cols))
@@ -1419,8 +1448,11 @@ def format_parking_merge_hint(
     term_cols: int,
     import_alive: bool = False,
     video_dir: Path | None = None,
+    compact: bool = False,
 ) -> list[str]:
     """Live Parking duration: сейчас Xs / цель ~7309s (short был ~6889s)."""
+    if compact and import_alive:
+        return []
     detail = parse_merge_log_detail(temp_dir)
     cam = str((detail or {}).get("camera") or "")
     output = str((detail or {}).get("output") or "")
@@ -2043,10 +2075,45 @@ def format_process_detail_block(
     procs: list[PipelineProc],
     prefetch: PrefetchImportState | None = None,
     log_fallback: dict[str, str] | None = None,
+    compact: bool = False,
 ) -> list[str]:
     """Multi-line process supervisor block for the dashboard."""
     wd = resolve_watchdog_snapshot(temp_dir, procs)
     by_role = {p.role: p for p in procs}
+    if compact:
+        bits: list[str] = []
+        wd_proc = by_role.get("watchdog")
+        wd_mark = "wd✓" if wd.alive else "wd✗"
+        wd_id = wd_proc.pid if wd_proc else (wd.pid or "—")
+        bits.append(f"{wd_mark}{wd_id}")
+        auto = by_role.get("autopilot")
+        if auto:
+            bits.append(f"auto✓{auto.pid}")
+        elif not wd.alive:
+            bits.append("auto✗")
+        imp = by_role.get("import") or by_role.get("prefetch")
+        if imp:
+            detail = _proc_work_detail(
+                imp, log_fallback=log_fallback, prefetch=prefetch
+            )
+            bits.append(f"imp✓{imp.pid} {detail[:36]}")
+        for role in ("compose", "publish", "ffmpeg"):
+            proc = by_role.get(role)
+            if proc:
+                bits.append(f"{role[:4]}✓{proc.pid}")
+        log_age, log_snip = log_last_activity(temp_dir)
+        if log_age is not None:
+            bits.append(f"log {_human_etime_seconds(log_age)}")
+        stages = summarize_merge_stages(video_dir)
+        if stages:
+            bits.append(stages[0][:40])
+        elif log_snip and log_age is not None and log_age >= 300:
+            bits.append("зависло?")
+        line = "proc: " + " · ".join(bits)
+        if not wd.alive and not procs:
+            line += " · ⚠ ./scripts/watch_publish_all_70mai.sh --wait"
+        return [line]
+
     lines = ["процессы:"]
 
     wd_extra_bits: list[str] = []
@@ -3562,6 +3629,7 @@ def _format_pipeline_block(
     import_alive: bool = False,
     procs: list | None = None,
     prefetch: PrefetchImportState | None = None,
+    compact: bool = False,
 ) -> list[str]:
     """One line per pipeline step: copy / merge / compose / upload + status."""
     phase = str((st or {}).get("phase") or "").strip()
@@ -3794,6 +3862,63 @@ def _format_pipeline_block(
             status = "· ждёт"
         return f"{name:<8} {status}"
 
+    def _chip(name: str, *, on: bool, done: bool, extra: str = "") -> str:
+        if on:
+            body = extra or "►"
+            return f"{name}►{body}"
+        if done:
+            return f"{name}✓"
+        if extra:
+            return f"{name}·{extra[:28]}"
+        return f"{name}·"
+
+    diag = diagnose_pipeline_bottleneck(
+        temp_dir=temp_dir,
+        copy_on=copy_on,
+        merge_on=merge_on,
+        compose_on=compose_on,
+        upload_on=upload_on,
+        copy_done=copy_done,
+        merge_done=merge_done,
+        compose_done=compose_done,
+        video_done=video_done,
+        import_alive=import_alive,
+        stale=stale,
+        log_fallback=log_fallback,
+        merge_detail_line=merge_detail_line,
+        compose_detail_line=compose_detail_line,
+        upload_detail_line=upload_detail_line,
+        st=st,
+        procs=procs or [],
+    )
+
+    if compact:
+        chips = [
+            _chip("copy", on=copy_on, done=copy_done, extra=copy_extra),
+            _chip("merge", on=merge_on, done=merge_done, extra=merge_extra),
+            _chip(
+                "compose",
+                on=compose_on,
+                done=compose_done,
+                extra=compose_extra or (compose_wait_lines[0][:24] if compose_wait_lines else ""),
+            ),
+            _chip("upload", on=upload_on, done=video_done, extra=upload_extra),
+        ]
+        if prefetch_on:
+            chips.insert(
+                0,
+                _chip(
+                    "pref",
+                    on=prefetch.active,
+                    done=False,
+                    extra=prefetch_extra,
+                ),
+            )
+        out = ["этапы: " + " · ".join(chips)]
+        if diag:
+            out.append(f"диагноз: {diag}")
+        return out
+
     lines = [
         "этапы:",
     ]
@@ -3842,25 +3967,6 @@ def _format_pipeline_block(
         lines.append("prefetch: publish_all.log (фоновый import следующего чанка)")
     elif stale:
         lines.append("idle — status.json устарел (см. proc)")
-    diag = diagnose_pipeline_bottleneck(
-        temp_dir=temp_dir,
-        copy_on=copy_on,
-        merge_on=merge_on,
-        compose_on=compose_on,
-        upload_on=upload_on,
-        copy_done=copy_done,
-        merge_done=merge_done,
-        compose_done=compose_done,
-        video_done=video_done,
-        import_alive=import_alive,
-        stale=stale,
-        log_fallback=log_fallback,
-        merge_detail_line=merge_detail_line,
-        compose_detail_line=compose_detail_line,
-        upload_detail_line=upload_detail_line,
-        st=st,
-        procs=procs or [],
-    )
     if diag:
         lines.append(f"диагноз: {diag}")
     return lines
@@ -3877,11 +3983,14 @@ def _visible_rows(
     term_rows: int,
     total: int,
     columns: int = 1,
+    compact: bool = False,
 ) -> tuple[list, str | None]:
     """Collapse a long leading run of done trips so the table fits."""
     # Two columns ≈ half the vertical cost → show roughly 2× before collapsing.
     soft_cap = 14 * max(1, min(2, columns))
-    if term_rows >= 36 or len(rows) <= soft_cap:
+    if compact:
+        soft_cap = max(4, (term_rows - 14) // max(1, (columns + 1) // 2))
+    if (not compact and term_rows >= 36) or len(rows) <= soft_cap:
         return list(rows), None
 
     leading = 0
