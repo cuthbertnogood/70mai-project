@@ -606,8 +606,8 @@ def chunk_merges_ready(
             return False
         if not fs or not bs:
             return False
-        front_cov = sum(seg.duration for seg in fs)
-        back_cov = sum(seg.duration for seg in bs)
+        front_cov = sum(getattr(seg, "duration", 0.0) or 0.0 for seg in fs)
+        back_cov = sum(getattr(seg, "duration", 0.0) or 0.0 for seg in bs)
         need = trip.duration_sec * min_coverage
         if front_cov < need or back_cov < need:
             return False

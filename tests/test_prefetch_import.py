@@ -96,16 +96,22 @@ class BuildImportCmdTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             video_dir = Path(tmp) / "video"
             chunk = _chunk("Normal", 1, 10)
+            clip = type("Clip", (), {"path": video_dir / "NO_x_F.mp4"})()
+            manifest = type("Man", (), {"clips": [object()]})()
             with patch(
                 "compose_70mai.scan_merged_clips",
-                side_effect=lambda _vd, cam, **kw: [object()] if cam else [],
+                side_effect=lambda _vd, cam, **kw: [clip] if cam else [],
             ):
-                with patch("compose_70mai.plan_segments", return_value=[object()]):
+                with patch("clip_timeline.load_manifest", return_value=manifest):
                     with patch(
-                        "clip_timeline.merges_timeline_ready",
-                        return_value=(True, ""),
+                        "clip_timeline.filter_entries_to_window",
+                        return_value=[object()],
                     ):
-                        self.assertTrue(chunk_merges_ready(video_dir, chunk))
+                        with patch(
+                            "clip_timeline.merges_timeline_ready",
+                            return_value=(True, ""),
+                        ):
+                            self.assertTrue(chunk_merges_ready(video_dir, chunk))
 
 
 if __name__ == "__main__":
