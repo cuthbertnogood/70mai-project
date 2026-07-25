@@ -102,6 +102,7 @@ cd /Users/cuthbert/work_local/70mai_project
 # история: host `video/Output/.publish_tmp/bad_clips.jsonl` + SD `/.70mai/import/bad_clips.jsonl`
 # Compose/upload: вторая строка как у copy/merge — % · размер · скорость (Nx / MB/s) · ETA; % compose в шапке/таблице — **по ролику** (chunk), не сбрасывается при старте следующей поездки; в detail — trip N и % текущей поездки.
 # Compose ждёт Front+Back ≥98%; в TUI — живое покрытие % по каждой камере.
+# Блок «процессы»: watchdog/autopilot/import (pid, uptime, флаги), возраст publish_all.log, merge_stage на диске; если всё мертво — подсказка перезапуска.
 # Правки экрана — lib/autopilot_dashboard_view.py (автоперезагрузка).
 ./scripts/autopilot_dashboard.sh
 ```

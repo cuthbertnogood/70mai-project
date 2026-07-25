@@ -161,13 +161,19 @@ def render(dash: Any) -> None:
     ):
         for hl in d._wrap_line(cl, term_cols):
             lines.append(hl)
-    meta_bits: list[str] = []
     age = d._status_age_line(st)
     if age:
-        meta_bits.append(age)
-    meta_bits.extend(d._format_pipeline_processes(procs, prefetch=prefetch))
-    for hl in d._wrap_line("  ·  ".join(meta_bits), term_cols):
-        lines.append(hl)
+        for hl in d._wrap_line(age, term_cols):
+            lines.append(hl)
+    for proc_line in d.format_process_detail_block(
+        temp_dir=dash.temp_dir,
+        video_dir=dash.video_dir,
+        procs=procs,
+        prefetch=prefetch,
+        log_fallback=log_fallback,
+    ):
+        for hl in d._wrap_line(proc_line, term_cols):
+            lines.append(hl)
     for hl in d._wrap_line(disk_line, term_cols):
         lines.append(hl)
     if dash.source is not None:

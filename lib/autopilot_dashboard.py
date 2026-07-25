@@ -1825,6 +1825,306 @@ def _format_pipeline_processes(
     return [line]
 
 
+_WATCHDOG_EVENT_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[watchdog\] (.+)$"
+)
+_WATCHDOG_ATTEMPT_RE = re.compile(r"=== Attempt (\d+) ===")
+_WATCHDOG_CONFIG_RE = re.compile(
+    r"Watchdog started \(restart=(\d+)s, stop_on_success=(\d+)"
+)
+
+
+@dataclass(frozen=True)
+class WatchdogSnapshot:
+    alive: bool
+    pid: int | None
+    attempt: int | None
+    restart_sec: int | None
+    stop_on_success: bool | None
+    awake: bool
+    last_event: str
+    last_event_ts: datetime | None
+
+
+def _parse_import_cli(cmd: str) -> str | None:
+    if "import_70mai.py" not in cmd:
+        return None
+    m = re.search(r"--types?\s+(\S+)", cmd)
+    return m.group(1).split(",")[0] if m else None
+
+
+def _parse_autopilot_flags(cmd: str) -> str:
+    flags = [
+        f.removeprefix("--")
+        for f in ("--wait", "--skip-import", "--force-restart", "--dry-run")
+        if f in cmd
+    ]
+    return " ".join(flags) if flags else "run"
+
+
+def _proc_work_detail(
+    proc: PipelineProc,
+    *,
+    log_fallback: dict[str, str] | None,
+    prefetch: PrefetchImportState | None,
+) -> str:
+    cmd = proc.command or proc.tip
+    if proc.role == "watchdog":
+        return "supervisor"
+    if proc.role == "autopilot":
+        return _parse_autopilot_flags(cmd)
+    if proc.role in ("import", "prefetch"):
+        rt = _parse_import_cli(cmd) or (
+            prefetch.record_type if prefetch else ""
+        )
+        bits: list[str] = []
+        if rt:
+            bits.append(rt)
+        if prefetch and prefetch.chunk_index and proc.role == "prefetch":
+            bits.append(f"ch.{prefetch.chunk_index}")
+        if log_fallback:
+            if log_fallback.get("copy"):
+                bits.append(log_fallback["copy"][:40])
+            elif log_fallback.get("merge"):
+                bits.append(log_fallback["merge"][:40])
+        elif not bits:
+            bits.append(proc.tip)
+        return " · ".join(bits)
+    if proc.role == "publish":
+        parsed = _parse_publish_cli(cmd)
+        if parsed:
+            return f"{parsed[0]} ch.{parsed[1]}"
+        return proc.tip
+    if proc.role == "compose":
+        m = re.search(r"compose_[^\s]+\.py", cmd)
+        return m.group(0) if m else proc.tip
+    if proc.role == "ffmpeg":
+        inferred = _parse_ffmpeg_compose(cmd)
+        if inferred:
+            return (
+                f"{inferred['record_type']} ch.{inferred['chunk_index']} "
+                f"{proc.tip}"
+            )
+        return proc.tip
+    return proc.tip
+
+
+def resolve_watchdog_snapshot(
+    temp_dir: Path,
+    procs: list[PipelineProc],
+) -> WatchdogSnapshot:
+    wd_proc = next((p for p in procs if p.role == "watchdog"), None)
+    text = _tail_text(temp_dir / "publish_all_watchdog.log", max_bytes=128_000)
+    attempt: int | None = None
+    restart_sec: int | None = None
+    stop_on_success: bool | None = None
+    awake = False
+    last_event = ""
+    last_event_ts: datetime | None = None
+    for line in text.splitlines():
+        m = _WATCHDOG_EVENT_RE.match(line.strip())
+        if not m:
+            continue
+        try:
+            ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        msg = m.group(2).strip()
+        last_event_ts = ts
+        last_event = msg
+        m_attempt = _WATCHDOG_ATTEMPT_RE.search(msg)
+        if m_attempt:
+            attempt = int(m_attempt.group(1))
+        m_cfg = _WATCHDOG_CONFIG_RE.search(msg)
+        if m_cfg:
+            restart_sec = int(m_cfg.group(1))
+            stop_on_success = m_cfg.group(2) == "1"
+        if "Awake on" in msg or "Awake partial" in msg or "awake=1" in msg:
+            awake = True
+    return WatchdogSnapshot(
+        alive=wd_proc is not None,
+        pid=wd_proc.pid if wd_proc else None,
+        attempt=attempt,
+        restart_sec=restart_sec,
+        stop_on_success=stop_on_success,
+        awake=awake,
+        last_event=last_event,
+        last_event_ts=last_event_ts,
+    )
+
+
+def log_last_activity(temp_dir: Path) -> tuple[int | None, str]:
+    """Age (sec) and short snippet of the last publish_all.log line."""
+    log_path = temp_dir / "publish_all.log"
+    text = _tail_text(log_path, max_bytes=8192)
+    if not text:
+        return None, ""
+    last_ts: datetime | None = None
+    last_line = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = _LOG_TS_RE.match(line)
+        if m:
+            try:
+                last_ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+        last_line = line
+    if last_ts is None:
+        try:
+            age = max(
+                0,
+                int(time.time() - log_path.stat().st_mtime),
+            )
+        except OSError:
+            return None, last_line[:72]
+        return age, last_line[:72]
+    age = max(0, int((datetime.now() - last_ts).total_seconds()))
+    snippet = last_line
+    if _LOG_TS_RE.match(snippet):
+        snippet = snippet.split(" ", 2)[-1] if " " in snippet else snippet
+    return age, snippet[:72]
+
+
+def summarize_merge_stages(video_dir: Path | None) -> list[str]:
+    if video_dir is None or not video_dir.is_dir():
+        return []
+    out: list[str] = []
+    try:
+        for stage_root in sorted(video_dir.glob("*/*/.merge_stage")):
+            if not stage_root.is_dir():
+                continue
+            n_sess = sum(1 for p in stage_root.iterdir() if p.is_dir())
+            total = 0
+            for root, _, files in os.walk(stage_root):
+                for name in files:
+                    try:
+                        total += (Path(root) / name).stat().st_size
+                    except OSError:
+                        pass
+            if total <= 0:
+                continue
+            rel = stage_root.relative_to(video_dir)
+            cam = str(rel).replace("/.merge_stage", "")
+            from publish_all_70mai import format_gb
+
+            out.append(f"{cam} stage {format_gb(total)} ({n_sess} sess)")
+    except OSError:
+        pass
+    return out
+
+
+def _format_one_process_line(
+    role: str,
+    *,
+    alive: bool,
+    pid: int | None,
+    etime_sec: int | None,
+    detail: str,
+    extra: str = "",
+) -> str:
+    mark = "✓" if alive else "✗"
+    pid_s = str(pid) if pid else "—"
+    etime_s = _human_etime_seconds(etime_sec) if etime_sec is not None else "—"
+    parts = [f"  {mark} {role:<9} {pid_s} · {etime_s}"]
+    if detail:
+        parts.append(detail)
+    if extra:
+        parts.append(extra)
+    return " · ".join(parts)
+
+
+def format_process_detail_block(
+    *,
+    temp_dir: Path,
+    video_dir: Path | None,
+    procs: list[PipelineProc],
+    prefetch: PrefetchImportState | None = None,
+    log_fallback: dict[str, str] | None = None,
+) -> list[str]:
+    """Multi-line process supervisor block for the dashboard."""
+    wd = resolve_watchdog_snapshot(temp_dir, procs)
+    by_role = {p.role: p for p in procs}
+    lines = ["процессы:"]
+
+    wd_extra_bits: list[str] = []
+    if wd.attempt is not None:
+        wd_extra_bits.append(f"attempt {wd.attempt}")
+    if wd.restart_sec is not None:
+        wd_extra_bits.append(f"restart {wd.restart_sec}s")
+    if wd.stop_on_success is True:
+        wd_extra_bits.append("stop_on_success")
+    if wd.awake:
+        wd_extra_bits.append("awake")
+    wd_proc = by_role.get("watchdog")
+    lines.append(
+        _format_one_process_line(
+            "watchdog",
+            alive=wd.alive,
+            pid=wd_proc.pid if wd_proc else wd.pid,
+            etime_sec=wd_proc.etime_sec if wd_proc else None,
+            detail="supervisor",
+            extra=" · ".join(wd_extra_bits),
+        )
+    )
+    if not wd.alive and wd.last_event:
+        age = ""
+        if wd.last_event_ts:
+            age = f" {_human_etime_seconds(int((datetime.now() - wd.last_event_ts).total_seconds()))} назад"
+        lines.append(f"         последнее{age}: {wd.last_event[:64]}")
+
+    for role in ("autopilot", "import", "prefetch", "compose", "publish", "ffmpeg"):
+        proc = by_role.get(role)
+        if proc is None:
+            continue
+        label = role
+        if role == "prefetch" and prefetch and prefetch.chunk_index:
+            label = f"prefetch ch.{prefetch.chunk_index}"
+        lines.append(
+            _format_one_process_line(
+                label,
+                alive=True,
+                pid=proc.pid,
+                etime_sec=proc.etime_sec,
+                detail=_proc_work_detail(
+                    proc, log_fallback=log_fallback, prefetch=prefetch
+                ),
+            )
+        )
+
+    expected = ("autopilot", "watchdog")
+    for role in expected:
+        if role in by_role or (role == "watchdog" and wd.alive):
+            continue
+        if role == "watchdog":
+            continue  # already handled above
+        lines.append(
+            _format_one_process_line(role, alive=False, pid=None, etime_sec=None, detail="нет")
+        )
+
+    log_age, log_snip = log_last_activity(temp_dir)
+    log_bits: list[str] = []
+    if log_age is not None:
+        log_bits.append(f"log {_human_etime_seconds(log_age)} назад")
+    else:
+        log_bits.append("log —")
+    if log_snip:
+        log_bits.append(log_snip)
+    if log_age is not None and log_age >= 300 and log_snip:
+        log_bits.append("(возможно зависло)")
+    lines.append("  " + " · ".join(log_bits))
+
+    for stage_line in summarize_merge_stages(video_dir):
+        lines.append(f"  stage: {stage_line}")
+
+    if not procs and not wd.alive:
+        lines.append("  ⚠ автопилот остановлен — ./scripts/watch_publish_all_70mai.sh --wait")
+
+    return lines
+
+
 def _status_age_seconds(st: dict | None) -> int | None:
     if not st:
         return None
