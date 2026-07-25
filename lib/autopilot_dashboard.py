@@ -3893,28 +3893,42 @@ def _format_pipeline_block(
     )
 
     if compact:
-        chips = [
-            _chip("copy", on=copy_on, done=copy_done, extra=copy_extra),
-            _chip("merge", on=merge_on, done=merge_done, extra=merge_extra),
+        out = ["этапы:"]
+        if prefetch_on:
+            if prefetch.active:
+                out.append(
+                    _line("prefetch", on=True, done=False, extra=prefetch_extra)
+                )
+            else:
+                pause_extra = (
+                    f"ch.{prefetch.chunk_index} — {prefetch.skip_reason}"
+                    if prefetch.skip_reason
+                    else prefetch_extra
+                )
+                out.append(
+                    _line("prefetch", on=False, done=False, extra=pause_extra)
+                )
+        out.append(_line("copy", on=copy_on, done=copy_done, extra=copy_extra))
+        if copy_on and copy_detail_line:
+            out.append(f"         {copy_detail_line}")
+        out.append(_line("merge", on=merge_on, done=merge_done, extra=merge_extra))
+        if merge_on and merge_detail_line:
+            out.append(f"         {merge_detail_line}")
+        rest = [
             _chip(
                 "compose",
                 on=compose_on,
                 done=compose_done,
-                extra=compose_extra or (compose_wait_lines[0][:24] if compose_wait_lines else ""),
+                extra=compose_extra
+                or (compose_wait_lines[0][:32] if compose_wait_lines else ""),
             ),
             _chip("upload", on=upload_on, done=video_done, extra=upload_extra),
         ]
-        if prefetch_on:
-            chips.insert(
-                0,
-                _chip(
-                    "pref",
-                    on=prefetch.active,
-                    done=False,
-                    extra=prefetch_extra,
-                ),
-            )
-        out = ["этапы: " + " · ".join(chips)]
+        out.append("         " + " · ".join(rest))
+        if compose_on and compose_detail_line:
+            out.append(f"         {compose_detail_line}")
+        if upload_on and upload_detail_line:
+            out.append(f"         {upload_detail_line}")
         if diag:
             out.append(f"диагноз: {diag}")
         return out
