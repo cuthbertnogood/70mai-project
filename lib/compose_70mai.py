@@ -422,13 +422,25 @@ def parse_screen_start(path: Path) -> datetime:
     )
 
 
+def _merged_end(start: datetime, date_part: str, end_part: str) -> datetime:
+    """Parse filename end time; roll +1 day when the chunk crosses midnight.
+
+    ``output_name`` stores end as ``%H%M%S`` only (no date). Same-calendar-day
+    parse then yields ``end < start`` for overnight chunks — break prune/compose.
+    """
+    end = datetime.strptime(date_part + end_part, "%Y%m%d%H%M%S")
+    if end < start:
+        end += timedelta(days=1)
+    return end
+
+
 def parse_merged_file(path: Path) -> MergedClip | None:
     match = MERGED_RE.match(path.name)
     if not match:
         return None
     _prefix, date_part, start_part, end_part, cam_suffix = match.groups()
     start = datetime.strptime(date_part + start_part, "%Y%m%d%H%M%S")
-    end = datetime.strptime(date_part + end_part, "%Y%m%d%H%M%S")
+    end = _merged_end(start, date_part, end_part)
     camera = "Front" if cam_suffix.upper() == "F" else "Back"
     return MergedClip(path=path, start=start, end=end, camera=camera)
 
@@ -438,7 +450,7 @@ def parse_event_export_file(path: Path) -> MergedClip | None:
     if match:
         date_part, start_part, end_part, cam_suffix = match.groups()
         start = datetime.strptime(date_part + start_part, "%Y%m%d%H%M%S")
-        end = datetime.strptime(date_part + end_part, "%Y%m%d%H%M%S")
+        end = _merged_end(start, date_part, end_part)
         camera = "Front" if cam_suffix.upper() == "F" else "Back"
         return MergedClip(path=path, start=start, end=end, camera=camera)
     match = EVENT_EXPORT_RE.match(path.name)

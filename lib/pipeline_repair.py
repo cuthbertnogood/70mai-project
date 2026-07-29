@@ -487,11 +487,11 @@ def _merge_meets_coverage(
     """True when PA_*/EV_* on disk is ≥ coverage threshold of expected duration."""
     if expected_sec is None or expected_sec <= 0 or not path.is_file():
         return False
-    from import_70mai import is_valid_merge_output
+    from import_70mai import find_tool, is_valid_merge_output
 
     return is_valid_merge_output(
         path,
-        "ffprobe",
+        find_tool("ffprobe"),
         expected_sec,
         record_type=record_type,
     )

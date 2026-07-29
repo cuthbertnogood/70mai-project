@@ -196,20 +196,27 @@ class ImportStateStore:
         self._data = self._load()
 
     def _load(self) -> dict:
+        # Prefer the freshest copy: SD writes can fail after local save, so an
+        # older SD file must not win over a newer local cache.
+        candidates: list[dict] = []
         for path in (self.sd_path, self.local_path):
             if path and path.is_file():
                 try:
-                    return json.loads(path.read_text(encoding="utf-8"))
+                    candidates.append(json.loads(path.read_text(encoding="utf-8")))
                 except (OSError, json.JSONDecodeError):
                     pass
-        return {
-            "source": str(self.source),
-            "label": self.label,
-            "chunk_minutes": self.chunk_minutes,
-            "gap_seconds": self.gap_seconds,
-            "files": {},
-            "merge_stats": {},
-        }
+        if not candidates:
+            return {
+                "source": str(self.source),
+                "label": self.label,
+                "chunk_minutes": self.chunk_minutes,
+                "gap_seconds": self.gap_seconds,
+                "files": {},
+                "merge_stats": {},
+            }
+        if len(candidates) == 1:
+            return candidates[0]
+        return max(candidates, key=lambda d: str(d.get("updated_at") or ""))
 
     def _save(self) -> None:
         self._data["updated_at"] = _utc_now()
@@ -489,8 +496,7 @@ class ImportStateStore:
             entry["last_clip"] = last_clip
         with self._lock:
             self._data.setdefault("files", {})[key] = entry
-            if status != "skipped":
-                self._save()
+            self._save()
 
     def get_merge_entry(
         self, *, record_type: str, camera: str, filename: str
