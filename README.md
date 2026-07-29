@@ -175,7 +175,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | **Мало места перед compose** | `guard_free_disk`: ждёт фоновый upload → prune merged + composed для уже залитых trips → retry до 4× (30 с). В **chunk mode** prune только после `chunk_uploaded` (не по trip_parts внутри незалитого чанка). При неудаче chunk помечается failed, автопилот идёт дальше (`--continue-on-error`). |
 | **Kill import / watchdog restart** | Import resume: готовые SSD merges + `chunk_merges_ready` → пропускает re-copy. Event/Parking slot-timeline: **не** фильтровать manifest по wall-clock окну поездки (месяцы клипов → один ролик). |
 | **Upload OK, state не успел** | После `video_id` от YouTube state пишется на SD+host **до** удаления composed mp4 (`on_video_id` checkpoint). Comment 403 не откатывает upload. |
-| **Проверка длины на YouTube** | После upload: `videos.list(contentDetails)` vs ffprobe локального mp4 (≥98%). Короткий ролик → upload failed, state не помечается uploaded, локальный файл не удаляется. |
+| **Проверка длины на YouTube** | После upload: `videos.list(contentDetails)` vs ffprobe локального mp4 (≥98%). Сразу после заливки YouTube часто отдаёт `P0D` (ещё processing) — ждём до ~15 мин с повтором. Короткий ролик → fail; `video_id` сохраняется в state до verify, чтобы не перезаливать. |
 | **Prefetch / BackgroundStep** | Фоновый prefetch import **снят**; `--no-prefetch-import` — no-op для совместимости со старыми watchdog-командами. |
 
 ---
