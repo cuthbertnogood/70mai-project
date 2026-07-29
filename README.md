@@ -104,6 +104,8 @@ cd /Users/cuthbert/work_local/70mai_project
 # Compose ждёт Front+Back ≥98%; в TUI — живое покрытие % по каждой камере.
 # Блок «процессы»: watchdog/autopilot/import (pid, uptime, флаги), возраст publish_all.log, merge_stage на диске; если всё мертво — подсказка перезапуска.
 # Компактный режим (<46 строк терминала): полный блок этапов (copy/merge/compose/upload); без рамки таблицы и легенды «конвейер».
+# Upload Parking/Event: дашборд читает свежий `Upload part_…` из publish_all.log, если status.json застрял на compose.
+# Завершённые этапы: `✓ готово — <результат>` (не голое ✓), чтобы не путать с зависанием.
 # Правки экрана — lib/autopilot_dashboard_view.py (автоперезагрузка).
 ./scripts/autopilot_dashboard.sh
 ```

@@ -1905,6 +1905,46 @@ def main() -> None:
                 part_description=part_description,
                 pl_title=pl_title,
             ) -> None:
+                from autopilot_dashboard import write_status
+
+                write_status(
+                    args.temp_dir,
+                    record_type=record_type,
+                    chunk_index=chunk.index,
+                    trip_index=1,
+                    phase="upload",
+                    detail=output.name,
+                )
+                upload_t0 = time.monotonic()
+
+                def status_hook(pct: int, offset: int, size: int) -> None:
+                    elapsed = time.monotonic() - upload_t0
+                    rate = offset / elapsed if elapsed > 0 and offset > 0 else 0.0
+                    remaining = max(0, size - offset)
+                    eta_sec = remaining / rate if rate > 0 else 0.0
+                    speed_mb = rate / (1024 * 1024)
+                    detail = (
+                        f"{format_file_size(offset)}/{format_file_size(size)}"
+                        if size
+                        else output.name
+                    )
+                    if speed_mb > 0:
+                        detail = f"{detail} · {speed_mb:.1f} MB/s"
+                    write_status(
+                        args.temp_dir,
+                        record_type=record_type,
+                        chunk_index=chunk.index,
+                        trip_index=1,
+                        phase="upload",
+                        detail=detail,
+                        percent=float(pct),
+                        output_bytes=offset,
+                        speed=speed_mb if speed_mb > 0 else None,
+                        speed_unit="MB/s" if speed_mb > 0 else None,
+                        eta=format_duration(eta_sec) if rate > 0 else None,
+                        elapsed=format_duration(elapsed),
+                    )
+
                 def persist_chunk_uploaded(video_id: str) -> None:
                     with state_lock:
                         mark_chunk_state(
@@ -1933,6 +1973,7 @@ def main() -> None:
                         playlist_id=playlist_holder["id"],
                         playlist_title=pl_title,
                         upload_chunk_bytes=upload_chunk_bytes,
+                        status_hook=status_hook,
                         on_video_id=persist_chunk_uploaded,
                     )
                 except YouTubeUploadError as exc:

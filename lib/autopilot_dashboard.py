@@ -413,6 +413,9 @@ def resolve_live_status(
     if phase in ("compose", "stall") and auto_fix:
         st = refresh_stale_compose_status(temp_dir, st)
         phase = str((st or {}).get("phase") or "")
+    if auto_fix:
+        st = apply_live_upload_from_log(temp_dir, st)
+        phase = str((st or {}).get("phase") or "")
     if phase in ("compose", "upload", "stall", "oauth"):
         return st
     log_st = read_import_progress_from_log(temp_dir)
@@ -473,21 +476,26 @@ def _parse_ffmpeg_compose(cmd: str) -> dict | None:
 
 def infer_live_job_from_processes() -> dict | None:
     """Best-effort active compose/upload job from ps (fixes stale status.json)."""
-    for proc in list_pipeline_processes():
+    procs = list_pipeline_processes()
+    encoding = False
+    for proc in procs:
         if proc.role == "ffmpeg" and "encode" in proc.tip:
             inferred = _parse_ffmpeg_compose(proc.command)
             if inferred:
                 return inferred
-    for proc in list_pipeline_processes():
+            encoding = True
+    for proc in procs:
         if proc.role == "publish":
             parsed = _parse_publish_cli(proc.command)
             if parsed:
                 record_type, chunk_index = parsed
+                # publish alive without ffmpeg encode → upload (chunk path
+                # often leaves status.json stuck on compose).
                 return {
                     "record_type": record_type,
                     "chunk_index": chunk_index,
                     "trip_index": 1,
-                    "phase": "compose",
+                    "phase": "compose" if encoding else "upload",
                 }
     return None
 
@@ -514,28 +522,125 @@ def reconcile_status_with_processes(
         or int(st.get("chunk_index") or 0) != int(inferred.get("chunk_index") or 0)
         or int(st.get("trip_index") or 0) != int(inferred.get("trip_index") or 0)
     )
-    if not mismatch:
+    phase_mismatch = (
+        phase in ("compose", "upload", "stall")
+        and str(inferred.get("phase") or "") in ("compose", "upload")
+        and phase != str(inferred.get("phase"))
+    )
+    if not mismatch and not phase_mismatch:
         return refresh_stale_compose_status(temp_dir, st)
-    kept = {
-        k: st[k]
-        for k in (
-            "percent",
-            "output_bytes",
-            "speed",
-            "speed_unit",
-            "eta",
-            "elapsed",
-            "detail",
-            "stalled",
-        )
-        if k in st
-    }
+    # Trip/type mismatch: keep progress fields. Phase-only compose→upload: drop
+    # encode telemetry so log overlay can fill upload %.
+    keep_progress = not phase_mismatch or str(inferred.get("phase")) == phase
+    kept = {}
+    if keep_progress:
+        kept = {
+            k: st[k]
+            for k in (
+                "percent",
+                "output_bytes",
+                "speed",
+                "speed_unit",
+                "eta",
+                "elapsed",
+                "detail",
+                "stalled",
+            )
+            if k in st
+        }
     st.update(inferred)
     st.update({k: v for k, v in kept.items() if v not in (None, "")})
     st["ts"] = datetime.now().isoformat(timespec="seconds")
     st["reason"] = ""
     _maybe_write_reconciled_status(temp_dir, st)
     return st
+
+
+def apply_live_upload_from_log(
+    temp_dir: Path,
+    st: dict | None,
+    *,
+    max_age_sec: float = 180.0,
+) -> dict | None:
+    """If publish_all.log shows a fresh Upload line, force phase=upload for the UI.
+
+    Parking/Event chunk upload historically omitted status_hook, so status.json
+    stayed on compose@99% while the log advanced. Dashboard must follow the log.
+    """
+    detail = parse_upload_log_detail(temp_dir)
+    if not detail:
+        return st
+    log_ts = detail.get("log_ts")
+    if not isinstance(log_ts, datetime):
+        return st
+    age = (datetime.now() - log_ts).total_seconds()
+    if age < 0 or age > max_age_sec:
+        return st
+    procs = list_pipeline_processes(temp_dir=temp_dir)
+    if any(p.role == "ffmpeg" and "encode" in p.tip for p in procs):
+        return st
+    publish_alive = any(p.role == "publish" for p in procs)
+    phase = str((st or {}).get("phase") or "")
+    if phase not in ("compose", "stall", "upload", ""):
+        return st
+    if not publish_alive and phase == "upload" and age <= max_age_sec:
+        # Keep showing last upload line briefly after publish exits.
+        pass
+    elif not publish_alive and phase in ("compose", "stall", ""):
+        return st
+
+    record_type = str((st or {}).get("record_type") or "")
+    chunk_index = int((st or {}).get("chunk_index") or 0)
+    trip_index = int((st or {}).get("trip_index") or 1)
+    if not record_type or chunk_index <= 0:
+        inferred = infer_live_job_from_processes()
+        if inferred:
+            record_type = str(inferred.get("record_type") or record_type)
+            chunk_index = int(inferred.get("chunk_index") or chunk_index or 1)
+            trip_index = int(inferred.get("trip_index") or trip_index or 1)
+    if not record_type or chunk_index <= 0:
+        return st
+
+    pct = detail.get("percent")
+    speed = detail.get("speed")
+    detail_txt = " · ".join(
+        x
+        for x in (
+            detail.get("bytes_txt") or detail.get("file") or "",
+            f"{float(speed):.1f} MB/s" if isinstance(speed, (int, float)) else "",
+        )
+        if x
+    )
+    try:
+        write_status(
+            temp_dir,
+            record_type=record_type,
+            chunk_index=chunk_index,
+            trip_index=trip_index,
+            phase="upload",
+            detail=detail_txt,
+            percent=float(pct) if isinstance(pct, (int, float)) else None,
+            speed=float(speed) if isinstance(speed, (int, float)) else None,
+            speed_unit="MB/s" if isinstance(speed, (int, float)) else None,
+            eta=str(detail.get("eta") or "") or None,
+            elapsed=str(detail.get("elapsed") or "") or None,
+        )
+    except (OSError, TypeError, ValueError):
+        st = dict(st or {})
+        st.update(
+            {
+                "phase": "upload",
+                "percent": float(pct) if isinstance(pct, (int, float)) else None,
+                "detail": detail_txt,
+                "speed": float(speed) if isinstance(speed, (int, float)) else None,
+                "speed_unit": "MB/s",
+                "eta": detail.get("eta"),
+                "elapsed": detail.get("elapsed"),
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        return st
+    return read_status(temp_dir) or st
 
 
 def _maybe_write_reconciled_status(temp_dir: Path, st: dict) -> None:
@@ -2843,7 +2948,7 @@ def parse_upload_log_detail(temp_dir: Path | None) -> dict | None:
             continue
         size_part = m.group(2).strip()
         pct_m = re.search(r"\((\d+)%\)", size_part)
-        found = {
+        entry: dict = {
             "file": m.group(1),
             "bytes_txt": re.sub(r"\s*\(\d+%\)\s*$", "", size_part).strip(),
             "percent": float(pct_m.group(1)) if pct_m else None,
@@ -2852,6 +2957,15 @@ def parse_upload_log_detail(temp_dir: Path | None) -> dict | None:
             "elapsed": m.group(4).strip(),
             "eta": m.group(5).strip(),
         }
+        m_ts = _LOG_TS_RE.match(line)
+        if m_ts:
+            try:
+                entry["log_ts"] = datetime.strptime(
+                    m_ts.group(1), "%Y-%m-%d %H:%M:%S"
+                )
+            except ValueError:
+                pass
+        found = entry
     return found
 
 
@@ -3618,6 +3732,183 @@ def _backfill_status_from_import_log(temp_dir: Path) -> bool:
     return True
 
 
+def collect_stage_outcomes(
+    *,
+    temp_dir: Path | None,
+    video_dir: Path | None,
+    st: dict | None,
+    rows: list,
+    copy_done: bool,
+    merge_done: bool,
+    compose_done: bool,
+    upload_done: bool,
+) -> dict[str, str]:
+    """Human results for finished pipeline stages (so ✓ is not an empty hang)."""
+    out: dict[str, str] = {}
+    record_type = str((st or {}).get("record_type") or "")
+    chunk_index = int((st or {}).get("chunk_index") or 0)
+    if not record_type:
+        for row in rows:
+            if getattr(row, "status", "") in (
+                "compose",
+                "upload",
+                "import",
+                "done",
+                "stall",
+            ):
+                record_type = row.record_type
+                chunk_index = int(row.chunk_index or 0)
+                break
+    if not record_type and rows:
+        record_type = rows[0].record_type
+        chunk_index = int(rows[0].chunk_index or 1)
+
+    text = ""
+    if temp_dir is not None:
+        text = _tail_text(temp_dir / "publish_all.log", max_bytes=160_000)
+
+    if copy_done:
+        bits: list[str] = []
+        last_front = last_back = ""
+        last_copy_ok = ""
+        for line in text.splitlines():
+            m = re.search(
+                r"---\s+(Normal|Event|Parking)/(Front|Back)\s+done:\s+"
+                r"(\d+)\s+merged",
+                line,
+            )
+            if m and (not record_type or m.group(1) == record_type):
+                if m.group(2) == "Front":
+                    last_front = f"Front {m.group(3)} merge"
+                else:
+                    last_back = f"Back {m.group(3)} merge"
+            m2 = re.search(
+                r"\[copy\]\s+(?:(Front|Back)\s+)?(\d+)/(\d+):\s+ok",
+                line,
+            )
+            if m2 and int(m2.group(2)) >= int(m2.group(3)):
+                cam = m2.group(1) or ""
+                last_copy_ok = f"{cam} {m2.group(2)}/{m2.group(3)} ok".strip()
+        if last_front or last_back:
+            bits = [x for x in (last_front, last_back) if x]
+        elif last_copy_ok:
+            bits = [last_copy_ok]
+        out["copy"] = " · ".join(bits) if bits else "клипы на SSD"
+
+    if merge_done:
+        bits = []
+        last_done = ""
+        for line in text.splitlines():
+            m = _MERGE_DONE_RE.search(line)
+            if m:
+                last_done = f"{m.group(1)} {m.group(2)} MB · {m.group(3)}"
+            m2 = re.search(
+                r"---\s+(Normal|Event|Parking)/(Front|Back)\s+done:\s+"
+                r"(\d+)\s+merged",
+                line,
+            )
+            if m2 and (not record_type or m2.group(1) == record_type):
+                bits.append(f"{m2.group(2)} {m2.group(3)} файл(ов)")
+        if last_done:
+            bits = [last_done]
+        elif bits:
+            # de-dupe while keeping order
+            seen: set[str] = set()
+            uniq: list[str] = []
+            for b in bits:
+                if b in seen:
+                    continue
+                seen.add(b)
+                uniq.append(b)
+            bits = uniq
+        # On-disk merges (may already be pruned after compose)
+        if video_dir and record_type and not bits:
+            sizes: list[str] = []
+            for cam in ("Front", "Back"):
+                folder = video_dir / record_type / cam
+                if not folder.is_dir():
+                    continue
+                try:
+                    mp4s = sorted(folder.glob("*.mp4"))
+                except OSError:
+                    mp4s = []
+                if not mp4s:
+                    continue
+                path = mp4s[-1]
+                try:
+                    sz = path.stat().st_size
+                except OSError:
+                    continue
+                sizes.append(f"{cam} {_fmt_gb(sz)} {path.name[:28]}")
+            if sizes:
+                bits = sizes
+        out["merge"] = " · ".join(bits[:2]) if bits else "merges готовы (или pruned)"
+
+    if compose_done and temp_dir is not None and record_type and chunk_index > 0:
+        from publish_paths import compose_part_path, resolve_compose_trip_path
+
+        candidates = [
+            compose_part_path(temp_dir, record_type, chunk_index),
+            resolve_compose_trip_path(temp_dir, record_type, chunk_index, 1),
+        ]
+        best: Path | None = None
+        best_sz = 0
+        for cand in candidates:
+            try:
+                if cand.is_file():
+                    sz = cand.stat().st_size
+                    if sz > best_sz:
+                        best, best_sz = cand, sz
+            except OSError:
+                continue
+        if best is not None and best_sz > 0:
+            dur_txt = ""
+            # Prefer planned duration from status/rows over ffprobe (cheap).
+            for row in rows:
+                if (
+                    row.record_type == record_type
+                    and int(row.chunk_index or 0) == chunk_index
+                    and row.duration_sec > 0
+                ):
+                    from import_70mai import format_duration
+
+                    dur_txt = format_duration(float(row.duration_sec))
+                    break
+            bits = [best.name, _fmt_gb(best_sz)]
+            if dur_txt:
+                bits.append(dur_txt)
+            out["compose"] = " · ".join(bits)
+        else:
+            out["compose"] = "encode готов (файл уже в upload/pruned)"
+
+    if upload_done:
+        url = ""
+        if isinstance(st, dict) and st.get("youtube_url"):
+            url = str(st.get("youtube_url") or "")
+        if not url:
+            for row in rows:
+                if (
+                    row.record_type == record_type
+                    and int(row.chunk_index or 0) == chunk_index
+                    and row.youtube_url
+                ):
+                    url = row.youtube_url
+                    break
+        if url:
+            out["upload"] = _youtube_display(url)
+        else:
+            # Last successful upload line in log
+            for line in reversed(text.splitlines()):
+                m = re.search(r"(?:Uploaded|video_id[=:]\s*|youtu\.be/)([A-Za-z0-9_-]{11})", line)
+                if m:
+                    out["upload"] = f"youtu.be/{m.group(1)}"
+                    break
+            if "upload" not in out:
+                out["upload"] = "на YouTube"
+
+    return out
+
+
 def _format_pipeline_block(
     st: dict | None,
     rows: list,
@@ -3855,12 +4146,38 @@ def _format_pipeline_block(
         if on:
             status = f"► активно {extra}".strip() if extra else "► активно"
         elif done:
-            status = "✓ готово"
+            status = f"✓ готово — {extra}" if extra else "✓ готово"
         elif extra:
             status = f"· ждёт — {extra}"
         else:
             status = "· ждёт"
         return f"{name:<8} {status}"
+
+    outcomes = collect_stage_outcomes(
+        temp_dir=temp_dir,
+        video_dir=video_dir,
+        st=st if isinstance(st, dict) else None,
+        rows=rows,
+        copy_done=copy_done,
+        merge_done=merge_done,
+        compose_done=compose_done,
+        upload_done=video_done,
+    )
+    if copy_done and outcomes.get("copy") and not copy_on:
+        copy_extra = outcomes["copy"]
+    if merge_done and outcomes.get("merge") and not merge_on:
+        merge_extra = outcomes["merge"]
+    if compose_done and outcomes.get("compose") and not compose_on:
+        compose_extra = outcomes["compose"]
+    if video_done and outcomes.get("upload") and not upload_on:
+        upload_extra = outcomes["upload"]
+    # During upload: show prior stages as finished-with-result, not bare ✓
+    if (upload_on or compose_on or compose_done) and not copy_on and copy_done:
+        copy_extra = copy_extra or outcomes.get("copy") or "import copy ок"
+    if (upload_on or compose_on or compose_done) and not merge_on and merge_done:
+        merge_extra = merge_extra or outcomes.get("merge") or "import merge ок"
+    if upload_on and not compose_on and compose_done:
+        compose_extra = compose_extra or outcomes.get("compose") or "encode ок"
 
     diag = diagnose_pipeline_bottleneck(
         temp_dir=temp_dir,
