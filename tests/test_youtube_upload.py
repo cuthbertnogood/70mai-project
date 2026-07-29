@@ -245,6 +245,8 @@ class YouTubeDurationTests(unittest.TestCase):
         self.assertAlmostEqual(
             youtube_upload.parse_youtube_duration("PT1H2M3.5S"), 3723.5
         )
+        self.assertEqual(youtube_upload.parse_youtube_duration("P0D"), 0.0)
+        self.assertEqual(youtube_upload.parse_youtube_duration("PT0S"), 0.0)
 
     def test_verify_youtube_video_duration_rejects_short(self) -> None:
         with patch.object(
@@ -275,6 +277,27 @@ class YouTubeDurationTests(unittest.TestCase):
                 token_path=Path("t.json"),
             )
             self.assertEqual(actual, 7200.0)
+
+    def test_verify_retries_while_youtube_processing(self) -> None:
+        with (
+            patch.object(
+                youtube_upload,
+                "fetch_youtube_duration_sec",
+                side_effect=[0.0, 0.0, 7200.0],
+            ) as fetch,
+            patch.object(youtube_upload.time, "sleep") as sleep,
+        ):
+            actual = youtube_upload.verify_youtube_video_duration(
+                "abc123",
+                7321.0,
+                credentials_path=Path("c.json"),
+                token_path=Path("t.json"),
+                poll_sec=1.0,
+                max_wait_sec=60.0,
+            )
+            self.assertEqual(actual, 7200.0)
+            self.assertEqual(fetch.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
 
 
 if __name__ == "__main__":

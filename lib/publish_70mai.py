@@ -532,6 +532,11 @@ def upload_and_cleanup(
     )
     reporter.finish()
 
+    # Persist video_id before duration verify — YouTube may return P0D for minutes
+    # while processing; losing the id would force a full re-upload.
+    if on_video_id is not None:
+        on_video_id(video_id)
+
     if verify_youtube_duration:
         expected = expected_duration_sec
         if expected is None or expected <= 0:
@@ -543,8 +548,6 @@ def upload_and_cleanup(
             token_path=token,
         )
 
-    if on_video_id is not None:
-        on_video_id(video_id)
     elapsed = time.monotonic() - started
 
     if post_comment:

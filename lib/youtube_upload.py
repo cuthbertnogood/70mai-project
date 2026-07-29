@@ -858,13 +858,20 @@ YOUTUBE_DURATION_MIN_RATIO = 0.98
 
 
 def parse_youtube_duration(iso: str) -> float:
-    """Parse YouTube ISO8601 duration (e.g. PT1H2M3.5S) to seconds."""
+    """Parse YouTube ISO8601 duration (e.g. PT1H2M3.5S) to seconds.
+
+    ``P0D`` / ``PT0S`` mean the video is still processing — return 0.0 so callers
+    can poll instead of crashing.
+    """
     import re
 
-    if not iso or not iso.startswith("PT"):
+    raw = (iso or "").strip()
+    if raw in ("P0D", "PT0S", "P0DT0S", "P0DT0H0M0S"):
+        return 0.0
+    if not raw or not raw.startswith("PT"):
         raise ValueError(f"invalid ISO8601 duration: {iso!r}")
     hours = minutes = seconds = 0.0
-    for val, unit in re.findall(r"(\d+(?:\.\d+)?)([HMS])", iso):
+    for val, unit in re.findall(r"(\d+(?:\.\d+)?)([HMS])", raw):
         v = float(val)
         if unit == "H":
             hours = v
@@ -885,7 +892,7 @@ def fetch_youtube_duration_sec(
     youtube = get_youtube_service(credentials_path, token_path)
     response = (
         youtube.videos()
-        .list(part="contentDetails", id=video_id)
+        .list(part="contentDetails,status", id=video_id)
         .execute()
     )
     items = response.get("items") or []
@@ -904,17 +911,44 @@ def verify_youtube_video_duration(
     min_ratio: float = YOUTUBE_DURATION_MIN_RATIO,
     credentials_path: Path = DEFAULT_CREDENTIALS,
     token_path: Path = DEFAULT_TOKEN,
+    max_wait_sec: float = 900.0,
+    poll_sec: float = 20.0,
 ) -> float:
-    """Fail upload if YouTube duration is shorter than expected (post-upload QA)."""
+    """Fail upload if YouTube duration is shorter than expected (post-upload QA).
+
+    Right after resumable upload finishes, YouTube often returns ``P0D`` until
+    processing completes — poll until a real duration appears.
+    """
     if expected_sec <= 0:
         raise YouTubeUploadError(
             f"Cannot verify YouTube duration: invalid expected {expected_sec}s"
         )
-    actual = fetch_youtube_duration_sec(
-        video_id,
-        credentials_path=credentials_path,
-        token_path=token_path,
-    )
+    deadline = time.monotonic() + max(0.0, float(max_wait_sec))
+    actual = 0.0
+    attempt = 0
+    while True:
+        attempt += 1
+        actual = fetch_youtube_duration_sec(
+            video_id,
+            credentials_path=credentials_path,
+            token_path=token_path,
+        )
+        if actual > 0:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise YouTubeUploadError(
+                f"YouTube still processing {video_id} after {max_wait_sec:.0f}s "
+                f"(duration P0D) — https://youtu.be/{video_id}"
+            )
+        wait = min(float(poll_sec), remaining)
+        log(
+            f"  YouTube processing… duration still 0s "
+            f"(attempt {attempt}, retry in {wait:.0f}s) "
+            f"https://youtu.be/{video_id}"
+        )
+        time.sleep(wait)
+
     need = expected_sec * min_ratio
     if actual + 0.5 < need:
         raise YouTubeUploadError(
