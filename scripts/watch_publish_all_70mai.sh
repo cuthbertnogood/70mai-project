@@ -133,9 +133,14 @@ kill_stale_import_70mai() {
 }
 
 kill_stale_autopilot_holder() {
-  [[ -f "$AUTOPILOT_LOCK" ]] || return 0
-  local pid
-  pid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK" 2>/dev/null || true)"
+  local pid=""
+  if [[ -d "$AUTOPILOT_LOCK" ]]; then
+    pid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK/pid" 2>/dev/null || true)"
+  elif [[ -f "$AUTOPILOT_LOCK" ]]; then
+    pid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK" 2>/dev/null || true)"
+  else
+    return 0
+  fi
   if pid_alive "$pid"; then
     log "Killing previous autopilot pid $pid (watchdog takeover)"
     kill -TERM "$pid" 2>/dev/null || true
@@ -144,7 +149,7 @@ kill_stale_autopilot_holder() {
   elif [[ -n "$pid" ]]; then
     log "Removing stale autopilot lock (pid $pid not running)"
   fi
-  rm -f "$AUTOPILOT_LOCK"
+  rm -rf "$AUTOPILOT_LOCK"
 }
 
 live_pipeline_busy() {
@@ -162,16 +167,21 @@ live_pipeline_busy() {
 }
 
 clear_dead_autopilot_lock() {
-  [[ -f "$AUTOPILOT_LOCK" ]] || return 0
-  local pid
-  pid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK" 2>/dev/null || true)"
+  local pid=""
+  if [[ -d "$AUTOPILOT_LOCK" ]]; then
+    pid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK/pid" 2>/dev/null || true)"
+  elif [[ -f "$AUTOPILOT_LOCK" ]]; then
+    pid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK" 2>/dev/null || true)"
+  else
+    return 0
+  fi
   if pid_alive "$pid"; then
     return 0
   fi
   if [[ -n "$pid" ]]; then
     log "Removing stale autopilot lock (pid $pid not running)"
   fi
-  rm -f "$AUTOPILOT_LOCK"
+  rm -rf "$AUTOPILOT_LOCK"
 }
 
 cleanup_before_autopilot() {
@@ -323,8 +333,12 @@ run_autopilot() {
         WATCH_FORCE_KILL=1 cleanup_before_autopilot
         return 3
       fi
-      local apid
-      apid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK" 2>/dev/null || true)"
+      local apid=""
+      if [[ -d "$AUTOPILOT_LOCK" ]]; then
+        apid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK/pid" 2>/dev/null || true)"
+      elif [[ -f "$AUTOPILOT_LOCK" ]]; then
+        apid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK" 2>/dev/null || true)"
+      fi
       if [[ -n "$apid" ]] && pid_alive "$apid"; then
         continue
       fi

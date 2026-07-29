@@ -124,7 +124,7 @@ def prune_merged_for_trip(
     count = 0
     for camera in ("Front", "Back"):
         for clip in scan_merged_clips(
-            video_dir, camera, record_type=record_type, probe=False
+            video_dir, camera, record_type=record_type, probe=True
         ):
             if clip.start >= lo and clip.end <= hi:
                 try:

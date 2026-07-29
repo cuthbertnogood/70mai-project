@@ -66,7 +66,9 @@ DEFAULT_LOG = DEFAULT_TEMP_DIR / "publish_all.log"
 IMPORT_CHUNK_MINUTES = 10.0
 IMPORT_MERGE_RETRY_MAX = 3
 IMPORT_MERGE_RETRY_DELAY_SEC = 15
-LOCK_FILE = DEFAULT_TEMP_DIR / ".publish_all.lock"
+# Atomic mkdir lock (portable; macOS has no flock). Pid lives in lock/pid.
+# Legacy: a plain file at this path is migrated away on acquire/release.
+LOCK_DIR = DEFAULT_TEMP_DIR / ".publish_all.lock"
 SD_POLL_SEC = 15
 PUBLISH_WAIT_SEC = 30
 PUBLISH_WAIT_MAX_SEC = 90
@@ -275,7 +277,7 @@ def ensure_publish_slot(
 def _ask_console_restart(pid: int) -> bool:
     """Interactive confirm when lock is held (TTY only)."""
     log(
-        f"Другой автопилот уже работает (pid {pid}, lock {LOCK_FILE}).\n"
+        f"Другой автопилот уже работает (pid {pid}, lock {LOCK_DIR}).\n"
         f"  Перезапустить его сейчас? [y/N]\n"
         f"  Или сразу: ./scripts/publish_all_70mai.sh --force-restart …"
     )
@@ -288,14 +290,41 @@ def _ask_console_restart(pid: int) -> bool:
     return ans in ("y", "yes", "д", "да")
 
 
+def _read_lock_pid() -> int:
+    """Pid from lock dir (or legacy plain-file lock)."""
+    pid_path = LOCK_DIR / "pid"
+    if LOCK_DIR.is_dir() and pid_path.is_file():
+        raw = pid_path.read_text(encoding="utf-8").strip()
+    elif LOCK_DIR.is_file():
+        raw = LOCK_DIR.read_text(encoding="utf-8").strip()
+    else:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def _clear_lock_path() -> None:
+    if LOCK_DIR.is_dir():
+        shutil.rmtree(LOCK_DIR, ignore_errors=True)
+    elif LOCK_DIR.exists() or LOCK_DIR.is_symlink():
+        LOCK_DIR.unlink(missing_ok=True)
+
+
+def _try_mkdir_lock() -> bool:
+    try:
+        LOCK_DIR.mkdir()
+        return True
+    except FileExistsError:
+        return False
+
+
 def acquire_lock(*, force: bool = False) -> None:
     DEFAULT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    if LOCK_FILE.is_file():
-        raw = LOCK_FILE.read_text(encoding="utf-8").strip()
-        try:
-            pid = int(raw)
-        except ValueError:
-            pid = 0
+    # Legacy plain-file lock → clear after handling live/stale pid.
+    if LOCK_DIR.is_file():
+        pid = _read_lock_pid()
         if pid and pid != os.getpid() and _pid_alive(pid):
             if not force and _ask_console_restart(pid):
                 force = True
@@ -305,19 +334,45 @@ def acquire_lock(*, force: bool = False) -> None:
             else:
                 log(
                     f"ERROR: another publish_all may be running "
-                    f"(lock {LOCK_FILE}, pid {pid})\n"
+                    f"(lock {LOCK_DIR}, pid {pid})\n"
                     f"  Перезапуск: ./scripts/publish_all_70mai.sh "
                     f"--force-restart --wait"
                 )
                 raise SystemExit(1)
         elif pid and not _pid_alive(pid):
             log(f"Removing stale autopilot lock (pid {pid} not running)")
-        LOCK_FILE.unlink(missing_ok=True)
-    LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        LOCK_DIR.unlink(missing_ok=True)
+
+    if _try_mkdir_lock():
+        (LOCK_DIR / "pid").write_text(str(os.getpid()), encoding="utf-8")
+        return
+
+    pid = _read_lock_pid()
+    if pid and pid != os.getpid() and _pid_alive(pid):
+        if not force and _ask_console_restart(pid):
+            force = True
+        if force:
+            log(f"Force-restart: taking over from autopilot pid {pid}")
+            force_takeover_pipeline(lock_pid=pid)
+        else:
+            log(
+                f"ERROR: another publish_all may be running "
+                f"(lock {LOCK_DIR}, pid {pid})\n"
+                f"  Перезапуск: ./scripts/publish_all_70mai.sh "
+                f"--force-restart --wait"
+            )
+            raise SystemExit(1)
+    elif pid and not _pid_alive(pid):
+        log(f"Removing stale autopilot lock (pid {pid} not running)")
+    _clear_lock_path()
+    if not _try_mkdir_lock():
+        log(f"ERROR: could not acquire autopilot lock {LOCK_DIR}")
+        raise SystemExit(1)
+    (LOCK_DIR / "pid").write_text(str(os.getpid()), encoding="utf-8")
 
 
 def release_lock() -> None:
-    LOCK_FILE.unlink(missing_ok=True)
+    _clear_lock_path()
 
 
 def append_log(path: Path, header: str) -> None:
