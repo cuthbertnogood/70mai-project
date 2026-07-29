@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -223,6 +224,184 @@ def prune_uploaded_composed(
             except OSError:
                 pass
     return total
+
+
+def _unlink_merge_and_manifest(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    path.unlink(missing_ok=True)
+    try:
+        from clip_timeline import manifest_path_for
+
+        manifest_path_for(path).unlink(missing_ok=True)
+    except Exception:
+        pass
+    return size
+
+
+def _dir_tree_bytes(path: Path) -> int:
+    total = 0
+    if not path.exists():
+        return 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += (Path(root) / name).stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        return total
+    return total
+
+
+def prune_merge_stages(video_dir: Path, record_type: str) -> int:
+    """Remove `.merge_stage` trees (resume parts) for a record type."""
+    freed = 0
+    for camera in ("Front", "Back"):
+        stage = video_dir / record_type / camera / ".merge_stage"
+        if not stage.is_dir():
+            continue
+        size = _dir_tree_bytes(stage)
+        shutil.rmtree(stage, ignore_errors=True)
+        if size:
+            freed += size
+            log(
+                f"  Pruned {record_type}/{camera}/.merge_stage: "
+                f"freed {format_file_size(size)}"
+            )
+    return freed
+
+
+def prune_all_merges_for_type(video_dir: Path, record_type: str) -> int:
+    """Delete all SSD merges (PA_/EV_/NO_*.mp4) for a type — sources stay on SD."""
+    freed = 0
+    count = 0
+    for camera in ("Front", "Back"):
+        folder = video_dir / record_type / camera
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.mp4")):
+            size = _unlink_merge_and_manifest(path)
+            if size:
+                freed += size
+                count += 1
+    if freed:
+        log(
+            f"  Pruned {count} {record_type} merge(s): "
+            f"freed {format_file_size(freed)}"
+        )
+    return freed
+
+
+def prune_compose_type_dir(temp_dir: Path, record_type: str) -> int:
+    """Delete leftover compose mp4 under `.publish_tmp/{Type}/` (parts, full_long, …)."""
+    root = temp_dir / record_type
+    if not root.is_dir():
+        return 0
+    freed = 0
+    for path in sorted(root.rglob("*.mp4")):
+        if not path.is_file():
+            continue
+        try:
+            size = path.stat().st_size
+            path.unlink(missing_ok=True)
+        except OSError:
+            continue
+        freed += size
+        rel = path.relative_to(temp_dir)
+        log(f"  Pruned composed {rel}: freed {format_file_size(size)}")
+    return freed
+
+
+def prune_legacy_compose_empties(temp_dir: Path) -> int:
+    """Remove empty legacy `chunk_NN/trip_*.mp4` leftovers."""
+    freed = 0
+    if not temp_dir.is_dir():
+        return 0
+    for path in temp_dir.glob("chunk_*/trip_*.mp4"):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > 0:
+            continue
+        path.unlink(missing_ok=True)
+        log(f"  Pruned empty legacy {path.relative_to(temp_dir)}")
+    return freed
+
+
+def type_fully_uploaded(state: dict, record_type: str, chunks: list) -> bool:
+    """True when every planned chunk of this type is uploaded."""
+    type_chunks = [c for c in chunks if c.record_type == record_type]
+    if not type_chunks:
+        return bool(
+            any(
+                p.get("record_type") == record_type and p.get("uploaded")
+                for p in state.get("parts", [])
+            )
+            or any(
+                p.get("record_type") == record_type and p.get("uploaded")
+                for p in state.get("trip_parts", [])
+            )
+        )
+    for chunk in type_chunks:
+        if chunk_uploaded(state, record_type, chunk.index):
+            continue
+        if chunk.trips and all(
+            trip_uploaded(state, record_type, chunk.index, i)
+            for i, _ in enumerate(chunk.trips, start=1)
+        ):
+            continue
+        return False
+    return True
+
+
+def cleanup_after_successful_uploads(
+    *,
+    video_dir: Path,
+    temp_dir: Path,
+    state: dict,
+    chunks: list,
+    types: list[str] | None = None,
+    prune_merged: bool = True,
+) -> int:
+    """Free SSD after YouTube confirms upload (merges, merge_stage, compose tmp)."""
+    from plan_estimate import SINGLE_VIDEO_TYPES
+
+    types = list(types or sorted({c.record_type for c in chunks}))
+    freed = 0
+    freed += prune_uploaded_composed(
+        temp_dir, state, chunks, chunk_mode=True
+    )
+    freed += prune_legacy_compose_empties(temp_dir)
+
+    for record_type in types:
+        if not type_fully_uploaded(state, record_type, chunks):
+            continue
+        # Always clear compose leftovers for fully uploaded types
+        # (part_*.mp4 may remain if verify crashed after YouTube OK).
+        freed += prune_compose_type_dir(temp_dir, record_type)
+        if not prune_merged:
+            continue
+        if record_type in SINGLE_VIDEO_TYPES:
+            freed += prune_all_merges_for_type(video_dir, record_type)
+            freed += prune_merge_stages(video_dir, record_type)
+        else:
+            freed += prune_uploaded_trips(
+                state, chunks, video_dir, chunk_mode=True
+            )
+            freed += prune_merge_stages(video_dir, record_type)
+
+    if freed:
+        log(f"Cleanup after upload: total freed {format_file_size(freed)}")
+    else:
+        log("Cleanup after upload: nothing to delete")
+    return freed
 
 
 def guard_free_disk(

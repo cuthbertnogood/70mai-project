@@ -153,7 +153,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | `--profile` | `balanced` | `balanced` / `draft` / `quality` / `hevc` |
 | `--chunk-minutes` | `120` | Длина ролика (~мин) |
 | `--min-free-gb` | `20` | Не compose, если мало места |
-| `--prune-merged` | `after-compose` | Удалять 10‑мин склейки: `after-compose` / `after-upload` / `off` |
+| `--prune-merged` | `after-compose` | Удалять 10‑мин склейки: `after-compose` / `after-upload` / `off`. После полной заливки автопилот ещё раз чистит merges + `.merge_stage` + compose tmp |
 | `--repair` | `auto` | Чинить короткий Parking/Event merge: `auto` / `diagnose` / `off` |
 | `--skip-import` | off | Только compose+upload (merge уже на диске) |
 | `--no-overlap` | off | Отключить overlap compose∥upload внутри `publish_70mai` |
@@ -167,6 +167,15 @@ cd /Users/cuthbert/work_local/70mai_project
 cd /Users/cuthbert/work_local/70mai_project
 ./scripts/watch_publish_all_70mai.sh --wait --profile balanced --min-free-gb 20
 ```
+
+**Очистка SSD после успешного upload** (merges / `.merge_stage` / `part_*.mp4`; клипы на SD не трогает):
+
+```bash
+./scripts/cleanup_uploaded_70mai.sh --dry-run   # что удалит
+./scripts/cleanup_uploaded_70mai.sh             # удалить
+```
+
+Автопилот вызывает ту же очистку сам, когда `pending=0` или прогон закончился без ошибок.
 
 ---
 

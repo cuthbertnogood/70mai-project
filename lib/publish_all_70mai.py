@@ -985,6 +985,23 @@ def main() -> int:
                 )
             except Exception:
                 pass
+            if not args.dry_run and args.prune_merged != "off":
+                from publish_70mai import cleanup_after_successful_uploads
+
+                cleanup_after_successful_uploads(
+                    video_dir=args.video_dir,
+                    temp_dir=args.temp_dir,
+                    state=load_merged_publish_state(
+                        source,
+                        args.types,
+                        args.temp_dir,
+                        state_on_sd=state_on_sd,
+                        quiet=True,
+                    ),
+                    chunks=chunks,
+                    types=args.types,
+                    prune_merged=True,
+                )
             return 0
 
         import_store = None
@@ -1295,7 +1312,23 @@ def main() -> int:
                         )
 
             log("")
-            from publish_70mai import free_disk_gb
+            from publish_70mai import cleanup_after_successful_uploads, free_disk_gb
+
+            if failed == 0 and not args.dry_run and args.prune_merged != "off":
+                cleanup_after_successful_uploads(
+                    video_dir=args.video_dir,
+                    temp_dir=args.temp_dir,
+                    state=load_merged_publish_state(
+                        source,
+                        args.types,
+                        args.temp_dir,
+                        state_on_sd=state_on_sd,
+                        quiet=True,
+                    ),
+                    chunks=chunks,
+                    types=args.types,
+                    prune_merged=True,
+                )
 
             usage = autopilot_disk_usage(
                 args.video_dir, args.temp_dir, types=args.types
