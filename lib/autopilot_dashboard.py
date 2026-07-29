@@ -416,7 +416,12 @@ def resolve_live_status(
     if auto_fix:
         st = apply_live_upload_from_log(temp_dir, st)
         phase = str((st or {}).get("phase") or "")
+    if auto_fix:
+        st = apply_idle_done_status(temp_dir, st, rows=rows)
+        phase = str((st or {}).get("phase") or "")
     if phase in ("compose", "upload", "stall", "oauth"):
+        return st
+    if phase == "done":
         return st
     log_st = read_import_progress_from_log(temp_dir)
     if not log_st:
@@ -429,6 +434,108 @@ def resolve_live_status(
     except ValueError:
         return log_st
     return log_st if log_ts >= st_ts else st
+
+
+_FINISHED_LOG_RE = re.compile(
+    r"(All trips/events already uploaded — nothing to do\.|Autopilot done\.)"
+)
+
+
+def parse_autopilot_finished(temp_dir: Path) -> dict | None:
+    """Last 'nothing to do' / 'Autopilot done' line from publish_all.log."""
+    text = _tail_text(temp_dir / "publish_all.log", max_bytes=128_000)
+    if not text:
+        return None
+    last: dict | None = None
+    for line in text.splitlines():
+        if not _FINISHED_LOG_RE.search(line):
+            continue
+        m = _LOG_TS_RE.match(line)
+        ts: datetime | None = None
+        if m:
+            try:
+                ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                ts = None
+        detail = "nothing to do" if "nothing to do" in line else "Autopilot done"
+        last = {"log_ts": ts, "detail": detail, "line": line.strip()}
+    return last
+
+
+def _pipeline_busy(procs: list) -> bool:
+    return any(
+        p.role in ("import", "publish", "prefetch")
+        or (p.role == "ffmpeg" and "encode" in (p.tip or ""))
+        for p in procs
+    )
+
+
+def apply_idle_done_status(
+    temp_dir: Path,
+    st: dict | None,
+    *,
+    rows: list | None = None,
+) -> dict | None:
+    """When work is finished, stop showing a ghost upload/compose from status.json.
+
+    After Parking upload the file often stays at phase=upload@100% for hours.
+    Stale handling then blanked the phase and the UI showed «ждёт» + compose-wait.
+    """
+    procs = list_pipeline_processes(temp_dir=temp_dir)
+    if _pipeline_busy(procs):
+        return st
+    phase = str((st or {}).get("phase") or "")
+    if phase == "done" and not _status_is_stale(st):
+        return st
+
+    finished = parse_autopilot_finished(temp_dir)
+    rows_done = False
+    if rows:
+        chunks_done, chunk_total, _ = chunk_summary_counts(rows)
+        rows_done = chunk_total > 0 and chunks_done >= chunk_total
+
+    if not (finished or rows_done):
+        return st
+
+    detail = "все ролики залиты"
+    if finished and finished.get("detail"):
+        detail = str(finished["detail"])
+    record_type = str((st or {}).get("record_type") or "")
+    chunk_index = int((st or {}).get("chunk_index") or 0)
+    trip_index = int((st or {}).get("trip_index") or 1)
+    if rows_done and rows:
+        for row in reversed(rows):
+            if getattr(row, "status", "") == "done":
+                record_type = row.record_type
+                chunk_index = int(row.chunk_index or 1)
+                trip_index = int(row.trip_index or 1)
+                break
+    if not record_type:
+        record_type = "Normal"
+    if chunk_index <= 0:
+        chunk_index = 1
+    try:
+        write_status(
+            temp_dir,
+            record_type=record_type,
+            chunk_index=chunk_index,
+            trip_index=trip_index,
+            phase="done",
+            detail=detail,
+            percent=100.0,
+        )
+    except (OSError, TypeError, ValueError):
+        out = dict(st or {})
+        out.update(
+            {
+                "phase": "done",
+                "detail": detail,
+                "percent": 100.0,
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        return out
+    return read_status(temp_dir) or st
 
 
 _FFMPEG_RECORD_RE = re.compile(
@@ -3525,7 +3632,12 @@ def diagnose_pipeline_bottleneck(
     if stale and not import_alive and not any(
         (copy_on, merge_on, compose_on, upload_on)
     ):
+        if video_done or str((st or {}).get("phase") or "") == "done":
+            return None
         return "нет свежего статуса — смотри proc и publish_all.log"
+
+    if video_done and not any((copy_on, merge_on, compose_on, upload_on)):
+        return None
 
     def _waiting() -> list[str]:
         out: list[str] = []
@@ -3945,7 +4057,13 @@ def _format_pipeline_block(
     if stale:
         # Old status.json — do not show ghost "► compose".
         active_row = None
-        phase = ""
+        if phase == "done":
+            pass
+        elif rows:
+            chunks_done, chunk_total, _ = chunk_summary_counts(rows)
+            phase = "done" if chunk_total > 0 and chunks_done >= chunk_total else ""
+        else:
+            phase = ""
 
     copy_on = bool(copy.get("active")) and not stale
     merge_on = bool(merge.get("active")) and not stale
@@ -4098,7 +4216,7 @@ def _format_pipeline_block(
         )
         if not compose_detail_line and detail:
             compose_detail_line = detail[:72]
-    elif not compose_done and not upload_on:
+    elif (not stale) and (not compose_done) and (not upload_on):
         compose_extra, compose_wait_lines = format_compose_wait(
             temp_dir=temp_dir,
             video_dir=video_dir,
@@ -4243,7 +4361,10 @@ def _format_pipeline_block(
         elif prefetch_on and log_fallback:
             out.append("prefetch: publish_all.log (фоновый import следующего чанка)")
         elif stale:
-            out.append("idle — status.json устарел (см. proc)")
+            if video_done:
+                out.append("готово — нечего заливать")
+            else:
+                out.append("idle — status.json устарел (см. proc)")
         if diag:
             out.append(f"диагноз: {diag}")
         return out
@@ -4295,7 +4416,10 @@ def _format_pipeline_block(
     elif prefetch_on and log_fallback:
         lines.append("prefetch: publish_all.log (фоновый import следующего чанка)")
     elif stale:
-        lines.append("idle — status.json устарел (см. proc)")
+        if video_done:
+            lines.append("готово — нечего заливать")
+        else:
+            lines.append("idle — status.json устарел (см. proc)")
     if diag:
         lines.append(f"диагноз: {diag}")
     return lines

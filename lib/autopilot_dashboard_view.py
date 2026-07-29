@@ -128,7 +128,15 @@ def render(dash: Any) -> None:
             bits.append(log_fallback["merge_detail"])
         summary += "  |  " + (" · ".join(bits) if bits else "import …")
     elif stale:
-        summary += "  |  idle"
+        chunks_done, chunk_total, _ = d.chunk_summary_counts(dash.rows)
+        if (chunk_total and chunks_done >= chunk_total) or (
+            st and st.get("phase") == "done"
+        ):
+            summary += "  |  готово"
+        else:
+            summary += "  |  idle"
+    elif st and st.get("phase") == "done":
+        summary += "  |  готово"
     elif st and st.get("phase") == "import":
         pct = st.get("percent")
         detail = str(st.get("detail") or "").strip()

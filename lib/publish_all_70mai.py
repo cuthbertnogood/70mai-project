@@ -971,6 +971,20 @@ def main() -> int:
             )
         if pending == 0:
             log("All trips/events already uploaded — nothing to do.")
+            try:
+                from autopilot_dashboard import write_status
+
+                write_status(
+                    args.temp_dir,
+                    record_type=args.types[0] if args.types else "Normal",
+                    chunk_index=1,
+                    trip_index=1,
+                    phase="done",
+                    detail="nothing to do",
+                    percent=100.0,
+                )
+            except Exception:
+                pass
             return 0
 
         import_store = None

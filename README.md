@@ -105,6 +105,7 @@ cd /Users/cuthbert/work_local/70mai_project
 # Блок «процессы»: watchdog/autopilot/import (pid, uptime, флаги), возраст publish_all.log, merge_stage на диске; если всё мертво — подсказка перезапуска.
 # Компактный режим (<46 строк терминала): полный блок этапов (copy/merge/compose/upload); без рамки таблицы и легенды «конвейер».
 # Upload Parking/Event: дашборд читает свежий `Upload part_…` из publish_all.log, если status.json застрял на compose.
+# После «nothing to do» / Autopilot done — status → `phase=done` (не ghost upload@100% и не «ждёт» + compose-wait).
 # Завершённые этапы: `✓ готово — <результат>` (не голое ✓), чтобы не путать с зависанием.
 # Правки экрана — lib/autopilot_dashboard_view.py (автоперезагрузка).
 ./scripts/autopilot_dashboard.sh
