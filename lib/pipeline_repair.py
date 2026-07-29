@@ -430,6 +430,73 @@ def diagnose_chunk(
     return unique
 
 
+def _delete_manifest_sidecar(merge_path: Path) -> None:
+    try:
+        from clip_timeline import manifest_path_for
+
+        manifest_path_for(merge_path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _merge_stage_dir(merge_path: Path) -> Path:
+    return merge_path.parent / ".merge_stage" / merge_path.stem
+
+
+def _has_resume_parts(merge_path: Path) -> bool:
+    stage = _merge_stage_dir(merge_path)
+    if not stage.is_dir():
+        return False
+    return any(stage.glob("_part_*.mp4"))
+
+
+def _expected_merge_duration(
+    path: Path,
+    record_type: str,
+    camera: str,
+    import_store: _ImportStoreLike | None,
+) -> float | None:
+    if import_store is None or not record_type or not camera:
+        return None
+    try:
+        entry = import_store.get_merge_entry(
+            record_type=record_type,
+            camera=camera,
+            filename=path.name,
+        )
+    except Exception:
+        return None
+    if not entry:
+        return None
+    raw = entry.get("expected_duration_sec")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _merge_meets_coverage(
+    path: Path,
+    *,
+    record_type: str,
+    expected_sec: float | None,
+) -> bool:
+    """True when PA_*/EV_* on disk is ≥ coverage threshold of expected duration."""
+    if expected_sec is None or expected_sec <= 0 or not path.is_file():
+        return False
+    from import_70mai import is_valid_merge_output
+
+    return is_valid_merge_output(
+        path,
+        "ffprobe",
+        expected_sec,
+        record_type=record_type,
+    )
+
+
 def remediate(
     issues: list[HealthIssue],
     *,
@@ -465,6 +532,53 @@ def remediate(
         except IndexError:
             camera, record_type = "", ""
         detail = f"delete {path}"
+        expected = _expected_merge_duration(
+            path, record_type, camera, import_store
+        )
+        keep_full = (
+            record_type in SINGLE_VIDEO_TYPES
+            and _merge_meets_coverage(
+                path, record_type=record_type, expected_sec=expected
+            )
+        )
+        keep_parts = (
+            record_type in SINGLE_VIDEO_TYPES and _has_resume_parts(path)
+        )
+        if keep_full or keep_parts:
+            reason = (
+                f"full merge ≥{COVERAGE_THRESHOLD:.0%} of expected"
+                if keep_full
+                else "valid .merge_stage/_part_* for resume"
+            )
+            if dry_run:
+                line = (
+                    f"[repair] would keep {path.name} ({reason}); "
+                    f"force import resume only"
+                )
+            else:
+                line = (
+                    f"[repair] keep {path.name} ({reason}) — "
+                    f"no delete; import can resume"
+                )
+                if import_store is not None and record_type and camera:
+                    import_store.invalidate_merge(
+                        record_type=record_type,
+                        camera=camera,
+                        filename=path.name,
+                    )
+            actions.append(line)
+            log(line)
+            if temp_dir:
+                append_repair_log(
+                    temp_dir,
+                    action="keep_for_resume" if not dry_run else "would_keep",
+                    detail=f"{detail}; {reason}",
+                    record_type=record_type,
+                    camera=camera,
+                    code="rebuild_merge",
+                )
+            continue
+
         if dry_run:
             line = f"[repair] would rebuild: {path.name} ({record_type}/{camera})"
             actions.append(line)
@@ -501,26 +615,10 @@ def remediate(
                 camera=camera,
                 filename=path.name,
             )
-            if record_type in SINGLE_VIDEO_TYPES:
-                n = import_store.compact_event_state(record_type)
-                if n:
-                    line = (
-                        f"[repair] compacted {n} stale import-state "
-                        f"entries for {record_type}"
-                    )
-                    actions.append(line)
-                    log(line)
+            # Avoid compact_event_state here: it can drop pending rows that
+            # track in-progress Event/Parking mega-merges / stage resume.
 
     return actions
-
-
-def _delete_manifest_sidecar(merge_path: Path) -> None:
-    try:
-        from clip_timeline import manifest_path_for
-
-        manifest_path_for(merge_path).unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 def capped_compose_duration(

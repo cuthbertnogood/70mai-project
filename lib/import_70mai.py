@@ -1847,6 +1847,12 @@ def stage_clips_locally(
                 f"  [copy] {clip.camera} {idx}/{total}: ok in "
                 f"{format_duration(time.monotonic() - t0)}"
             )
+            if on_clip is not None:
+                # Post-copy heartbeat: long SD→SSD copies otherwise look idle.
+                try:
+                    on_clip(idx, total, clip.path.name)
+                except Exception:
+                    pass
             if _staged_matches_source(
                 dest,
                 clip.path,
@@ -3128,9 +3134,8 @@ def _run_copy_merge_pipeline(
             def _on_clip(idx: int, total: int, name: str, _out=out_path.name) -> None:
                 if merge_reporter is None:
                     return
-                # Avoid flooding status JSON on huge Event/Parking merges.
-                if total > 20 and idx not in (1, total) and idx % 5 != 0:
-                    return
+                # Heartbeat every clip so watchdog/dashboard see copy activity
+                # (Parking/Event can take minutes per file; stall must not fire).
                 merge_reporter.update_copy(
                     active=True,
                     file=_out,

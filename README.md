@@ -129,7 +129,9 @@ cd /Users/cuthbert/work_local/70mai_project
 
 По умолчанию типы: **Normal Event Parking**.
 
-**Синхронизация камер (Normal, Event, Parking):** import пишет рядом с **каждым** merge timeline-manifest (`<merge>.timeline.json`); compose **всегда** выравнивает Front/Back по общим слотам (Event/Parking — slot, Normal — wall-clock внутри окна поездки) и заменяет пропавшую/короткую камеру чёрным + тишиной. Compose берёт только клипы **окна текущей поездки**. Без manifest compose не стартует — нужен re-import. Логи: `Slots/Black fill`, `Window clips`, `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
+**Parking / Event = один ролик:** все клипы типа за месяцы склеиваются в **один** 2-cam ролик (~длительность суммы клипов, часто ~2 ч), не «окно поездки по wall-clock». В логе merge `… final (30s)` / `1m 30s` — это **heartbeat прогресса** final concat, не длина файла.
+
+**Синхронизация камер (Normal, Event, Parking):** import пишет рядом с **каждым** merge timeline-manifest (`<merge>.timeline.json`); compose **всегда** выравнивает Front/Back по общим слотам (Event/Parking — slot, Normal — wall-clock внутри окна поездки) и заменяет пропавшую/короткую камеру чёрным + тишиной. Compose берёт только клипы **окна текущей поездки** (Normal); Event/Parking — все слоты манифеста. Без manifest compose не стартует — нужен re-import. Логи: `Slots/Black fill`, `Window clips`, `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
 
 **YouTube — название и клипы:** при upload title = `70mai | {тип} | {начало} — {конец}` (тип: *простые записи* / *запись события* / *запись парковки*). В **описании и комментарии** — тот же список: `Клип N: дата время — дата время`. OAuth после обновления кода: удалить token и войти снова (нужен scope для comment + update). Уже залитое видео:
 
@@ -145,7 +147,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | Флаг | Default | Смысл |
 |------|---------|--------|
 | `--wait` | off | Ждать SD |
-| `--force-restart` / `--restart` | off | Убить предыдущий автопилот и взять lock |
+| `--force-restart` / `--restart` | off | Убить предыдущий автопилот и взять lock. **Не** жать mid-import (`[copy]`) / mid-upload (`Upload part_`) — потеряешь resumable progress |
 | `--types …` | Normal Event Parking | Что заливать |
 | `--profile` | `balanced` | `balanced` / `draft` / `quality` / `hevc` |
 | `--chunk-minutes` | `120` | Длина ролика (~мин) |
@@ -171,12 +173,20 @@ cd /Users/cuthbert/work_local/70mai_project
 
 | Проблема | Поведение |
 |----------|-----------|
-| **Watchdog stall (2 ч)** | Считает прогресс по росту `trip_*.mp4` / `part_*.mp4`, свежести `publish_all.log` / `autopilot_status.json`, процессам `import_70mai` / `publish_70mai`. Не убивает длинный import/encode без реального простоя. Env: `WATCH_STALL_SEC`, `WATCH_LOG_ACTIVE_SEC`. |
+| **Watchdog stall (2 ч)** | Прогресс: `trip_*.mp4` / `part_*.mp4` / `.merge_stage` bytes; свежесть `publish_all.log` / `autopilot_status.json`; живые `import`/`publish`. Copy heartbeat на каждый `ok in`. Env: `WATCH_STALL_SEC`, `WATCH_LOG_ACTIVE_SEC`. |
+| **Watchdog не убивает live work** | Если log/status свежие и жив import/ffmpeg/upload — cleanup **не** kill; второй watchdog ждёт. Default `WATCH_STOP_ON_SUCCESS=0` (крутить, пока есть pending). Force: `WATCH_FORCE_KILL=1`. Один instance: atomic mkdir lock. |
 | **Мало места перед compose** | `guard_free_disk`: ждёт фоновый upload → prune merged + composed для уже залитых trips → retry до 4× (30 с). В **chunk mode** prune только после `chunk_uploaded` (не по trip_parts внутри незалитого чанка). При неудаче chunk помечается failed, автопилот идёт дальше (`--continue-on-error`). |
-| **Kill import / watchdog restart** | Import resume: готовые SSD merges + `chunk_merges_ready` → пропускает re-copy. Event/Parking slot-timeline: **не** фильтровать manifest по wall-clock окну поездки (месяцы клипов → один ролик). |
+| **Kill import / watchdog restart** | Import resume: готовые SSD merges + `chunk_merges_ready` → пропускает re-copy. Event/Parking slot-timeline: **не** фильтровать manifest по wall-clock окну поездки (месяцы клипов → один ролик). Repair **не** удаляет PA_*/EV_* при валидных `_part_*` или merge ≥98% — только force import resume. |
 | **Upload OK, state не успел** | После `video_id` от YouTube state пишется на SD+host **до** удаления composed mp4 (`on_video_id` checkpoint). Comment 403 не откатывает upload. |
 | **Проверка длины на YouTube** | После upload: `videos.list(contentDetails)` vs ffprobe локального mp4 (≥98%). Сразу после заливки YouTube часто отдаёт `P0D` (ещё processing) — ждём до ~15 мин с повтором. Короткий ролик → fail; `video_id` сохраняется в state до verify, чтобы не перезаливать. |
 | **Prefetch / BackgroundStep** | Фоновый prefetch import **снят**; `--no-prefetch-import` — no-op для совместимости со старыми watchdog-командами. |
+
+### Чеклист (операции)
+
+1. Питание + `WATCH_AWAKE=1` (default) / `caffeinate` — крышка только на AC.
+2. **Не** `--force-restart`, пока в логе `[copy]` / `Upload part_`.
+3. Смотреть: `tail -f video/Output/.publish_tmp/publish_all.log` или `./scripts/autopilot_dashboard.sh`.
+4. После Parking upload — state `uploaded=true` и длина на YouTube ≥98% локального `part_01.mp4`.
 
 ---
 

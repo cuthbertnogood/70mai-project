@@ -67,8 +67,14 @@ class WatchdogStallTests(unittest.TestCase):
             "status_file_recent",
             "pipeline_children_active",
             "autopilot_has_recent_activity",
+            "live_pipeline_busy",
+            "clear_dead_autopilot_lock",
         ):
             self.assertIn(f"{name}()", text, msg=f"missing {name}")
+        self.assertIn('STOP_ON_SUCCESS="${WATCH_STOP_ON_SUCCESS:-0}"', text)
+        self.assertIn("WATCH_LOCK_DIR=", text)
+        self.assertIn("Skipping kill of live import", text)
+        self.assertIn(".merge_stage", text)
 
 
 if __name__ == "__main__":

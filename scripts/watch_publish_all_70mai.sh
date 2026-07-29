@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Watchdog: restart autopilot on crash; stop when it exits cleanly (default).
+# Watchdog: restart autopilot on crash; keep looping while work may remain (default).
 #
 #   ./scripts/watch_publish_all_70mai.sh --skip-import
 #   WATCH_RESTART_SEC=120 ./scripts/watch_publish_all_70mai.sh --wait
 #
 # Env:
 #   WATCH_RESTART_SEC=60       sleep before restart after failure
-#   WATCH_STOP_ON_SUCCESS=1    exit watchdog when autopilot returns 0 (default)
+#   WATCH_STOP_ON_SUCCESS=0    exit watchdog when autopilot returns 0 (default 0:
+#                              keep watching for pending Parking/Event/Normal)
 #   WATCH_ONCE=1               single run, no restart loop
 #   WATCH_STALL_SEC=7200       kill if no import/compose/upload activity (default 2h)
 #   WATCH_LOG_ACTIVE_SEC=600   log/status/pipeline child resets stall timer (default 10m)
 #   WATCH_AWAKE=1              lid-close awake via pmset+caffeinate (default on)
+#   WATCH_FORCE_KILL=1         allow cleanup to kill live import/ffmpeg/upload
 #
 # Logs:
 #   video/Output/.publish_tmp/publish_all.log          — autopilot
@@ -35,10 +37,12 @@ WATCH_LOCK="$LOG_DIR/.publish_all_watchdog.lock"
 AUTOPILOT="$ROOT/scripts/publish_all_70mai.sh"
 
 RESTART_SEC="${WATCH_RESTART_SEC:-60}"
-STOP_ON_SUCCESS="${WATCH_STOP_ON_SUCCESS:-1}"
+STOP_ON_SUCCESS="${WATCH_STOP_ON_SUCCESS:-0}"
 WATCH_ONCE="${WATCH_ONCE:-0}"
 STALL_SEC="${WATCH_STALL_SEC:-7200}"
 LOG_ACTIVE_SEC="${WATCH_LOG_ACTIVE_SEC:-600}"
+WATCH_FORCE_KILL="${WATCH_FORCE_KILL:-0}"
+WATCH_LOCK_DIR="${WATCH_LOCK}.d"
 
 mkdir -p "$LOG_DIR"
 
@@ -143,7 +147,39 @@ kill_stale_autopilot_holder() {
   rm -f "$AUTOPILOT_LOCK"
 }
 
+live_pipeline_busy() {
+  # Recent log + live import/publish/ffmpeg ⇒ do not kill mid-copy/upload.
+  autopilot_log_recent || status_file_recent || return 1
+  pipeline_children_active && return 0
+  local pid cmd
+  while read -r pid cmd; do
+    [[ -z "$pid" ]] && continue
+    if [[ "$cmd" == *ffmpeg* ]] && [[ "$cmd" == *".publish_tmp"* || "$cmd" == *"/chunk_"*"/trip_"* || "$cmd" == *"video/Output"* || "$cmd" == *".merge_stage"* ]]; then
+      return 0
+    fi
+  done < <(ps ax -o pid=,command= 2>/dev/null || true)
+  return 1
+}
+
+clear_dead_autopilot_lock() {
+  [[ -f "$AUTOPILOT_LOCK" ]] || return 0
+  local pid
+  pid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK" 2>/dev/null || true)"
+  if pid_alive "$pid"; then
+    return 0
+  fi
+  if [[ -n "$pid" ]]; then
+    log "Removing stale autopilot lock (pid $pid not running)"
+  fi
+  rm -f "$AUTOPILOT_LOCK"
+}
+
 cleanup_before_autopilot() {
+  if [[ "$WATCH_FORCE_KILL" != "1" ]] && live_pipeline_busy; then
+    log "Skipping kill of live import/ffmpeg/publish (log/status activity within ${LOG_ACTIVE_SEC}s)"
+    clear_dead_autopilot_lock
+    return 0
+  fi
   kill_stale_ffmpeg
   kill_stale_import_70mai
   kill_stale_publish_70mai
@@ -155,21 +191,35 @@ clear_stale_autopilot_lock() {
 }
 
 acquire_watch_lock() {
-  if [[ -f "$WATCH_LOCK" ]]; then
-    local pid
+  # Atomic mkdir lock (portable; macOS has no flock). Stale dir if pid dead.
+  if mkdir "$WATCH_LOCK_DIR" 2>/dev/null; then
+    echo "$$" >"$WATCH_LOCK"
+    echo "$$" >"$WATCH_LOCK_DIR/pid"
+    return 0
+  fi
+  local pid
+  pid="$(tr -d '[:space:]' <"$WATCH_LOCK_DIR/pid" 2>/dev/null || true)"
+  if [[ -z "$pid" ]]; then
     pid="$(tr -d '[:space:]' <"$WATCH_LOCK" 2>/dev/null || true)"
-    if pid_alive "$pid"; then
-      log "ERROR: another watchdog running (pid $pid, lock $WATCH_LOCK)"
-      exit 1
-    fi
-    log "Removing stale watchdog lock (pid ${pid:-?} not running)"
-    rm -f "$WATCH_LOCK"
+  fi
+  if pid_alive "$pid"; then
+    log "ERROR: another watchdog running (pid $pid, lock $WATCH_LOCK_DIR)"
+    exit 1
+  fi
+  log "Removing stale watchdog lock (pid ${pid:-?} not running)"
+  rm -rf "$WATCH_LOCK_DIR"
+  rm -f "$WATCH_LOCK"
+  if ! mkdir "$WATCH_LOCK_DIR" 2>/dev/null; then
+    log "ERROR: could not acquire watchdog lock $WATCH_LOCK_DIR"
+    exit 1
   fi
   echo "$$" >"$WATCH_LOCK"
+  echo "$$" >"$WATCH_LOCK_DIR/pid"
 }
 
 release_watch_lock() {
   rm -f "$WATCH_LOCK"
+  rm -rf "$WATCH_LOCK_DIR"
 }
 
 CHILD_PID=""
@@ -185,7 +235,7 @@ on_signal() {
       kill -KILL "$CHILD_PID" 2>/dev/null || true
     fi
   fi
-  cleanup_before_autopilot
+  WATCH_FORCE_KILL=1 cleanup_before_autopilot
   exit 130
 }
 
@@ -204,7 +254,10 @@ compose_progress_bytes() {
   for f in \
     "$LOG_DIR"/chunk_*/trip_*.mp4 \
     "$LOG_DIR"/*/chunk_*/trip_*.mp4 \
-    "$LOG_DIR"/*/part_*.mp4
+    "$LOG_DIR"/*/part_*.mp4 \
+    video/Output/*/*/.merge_stage/*/_part_*.mp4 \
+    video/Output/*/*/.merge_stage/*/*.MP4 \
+    video/Output/*/*/.merge_stage/*/*.mp4
   do
     [[ -f "$f" ]] || continue
     sz=$(stat -f%z "$f" 2>/dev/null || echo 0)
@@ -248,6 +301,41 @@ autopilot_has_recent_activity() {
 }
 
 run_autopilot() {
+  if [[ "$WATCH_FORCE_KILL" != "1" ]] && live_pipeline_busy; then
+    log "Live import/upload still writing log — waiting (no kill, no second autopilot)"
+    clear_dead_autopilot_lock
+    local last_change now progress_sz last_progress_sz
+    last_progress_sz="$(compose_progress_bytes)"
+    last_change="$(date +%s)"
+    while true; do
+      sleep 30
+      progress_sz="$(compose_progress_bytes)"
+      if [[ "$progress_sz" != "$last_progress_sz" ]]; then
+        last_progress_sz="$progress_sz"
+        last_change="$(date +%s)"
+      fi
+      if autopilot_has_recent_activity; then
+        last_change="$(date +%s)"
+      fi
+      now="$(date +%s)"
+      if (( now - last_change > STALL_SEC )); then
+        log "Live pipeline stalled (${STALL_SEC}s) — force cleanup"
+        WATCH_FORCE_KILL=1 cleanup_before_autopilot
+        return 3
+      fi
+      local apid
+      apid="$(tr -d '[:space:]' <"$AUTOPILOT_LOCK" 2>/dev/null || true)"
+      if [[ -n "$apid" ]] && pid_alive "$apid"; then
+        continue
+      fi
+      if live_pipeline_busy || pipeline_children_active; then
+        continue
+      fi
+      log "Live pipeline finished"
+      return 0
+    done
+  fi
+
   cleanup_before_autopilot
   log "Starting: $AUTOPILOT --force-restart $*"
   set +e
@@ -274,7 +362,7 @@ run_autopilot() {
       kill -TERM "$child" 2>/dev/null || true
       sleep 5
       pid_alive "$child" && kill -KILL "$child" 2>/dev/null || true
-      cleanup_before_autopilot
+      WATCH_FORCE_KILL=1 cleanup_before_autopilot
       wait "$child" 2>/dev/null || true
       CHILD_PID=""
       return 3

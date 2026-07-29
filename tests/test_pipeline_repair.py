@@ -199,6 +199,76 @@ class PipelineRepairTests(unittest.TestCase):
             self.assertFalse(merge.exists())
             store.invalidate_merge.assert_called_once()
             self.assertTrue(any("deleted" in a or "rebuilt" in a for a in actions))
+            store.compact_event_state.assert_not_called()
+
+    def test_remediate_keeps_merge_with_resume_parts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            merge = root / "Parking" / "Front" / "PA_20250810-085033_021325_F.mp4"
+            merge.parent.mkdir(parents=True)
+            merge.write_bytes(b"x" * 100)
+            stage = merge.parent / ".merge_stage" / merge.stem
+            stage.mkdir(parents=True)
+            (stage / "_part_0.mp4").write_bytes(b"part" * 50)
+            store = mock.Mock()
+            issues = [
+                HealthIssue(
+                    code="merge_short",
+                    record_type="Parking",
+                    camera="Front",
+                    severity="blocker",
+                    message="short",
+                    remediation="rebuild_merge",
+                    path=merge,
+                )
+            ]
+            actions = remediate(
+                issues,
+                video_dir=root,
+                temp_dir=root / ".publish_tmp",
+                import_store=store,
+                dry_run=False,
+            )
+            self.assertTrue(merge.exists())
+            self.assertTrue((stage / "_part_0.mp4").exists())
+            store.invalidate_merge.assert_called_once()
+            store.compact_event_state.assert_not_called()
+            self.assertTrue(any("keep" in a for a in actions))
+
+    def test_remediate_keeps_full_coverage_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            merge = root / "Parking" / "Front" / "PA_good.mp4"
+            merge.parent.mkdir(parents=True)
+            merge.write_bytes(b"0" * 20_000)
+            store = mock.Mock()
+            store.get_merge_entry.return_value = {
+                "expected_duration_sec": 7309.0
+            }
+            issues = [
+                HealthIssue(
+                    code="compose_gap",
+                    record_type="Parking",
+                    camera="Front",
+                    severity="blocker",
+                    message="false gap",
+                    remediation="rebuild_merge",
+                    path=merge,
+                )
+            ]
+            with mock.patch(
+                "import_70mai.is_valid_merge_output", return_value=True
+            ):
+                actions = remediate(
+                    issues,
+                    video_dir=root,
+                    temp_dir=root / ".publish_tmp",
+                    import_store=store,
+                    dry_run=False,
+                )
+            self.assertTrue(merge.exists())
+            self.assertTrue(any("keep" in a and "98%" in a for a in actions))
+            store.compact_event_state.assert_not_called()
 
     def test_capped_compose_duration(self) -> None:
         self.assertEqual(
