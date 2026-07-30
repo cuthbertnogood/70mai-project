@@ -34,9 +34,28 @@ cd /Users/cuthbert/work_local/70mai_project
 | `./scripts/generate_card_reports.sh` | Отчёт по карте (MD/CSV) |
 | `./scripts/run-tests.sh` | Unit-тесты (`tests/`) |
 | `./scripts/smoke-test.sh` | **Smoke после правок** — тесты + синтаксис скриптов + `--help` CLI |
+| `./scripts/bench_1h_run.sh` | **Тест ~1h** с SD: import → compose → private YouTube + `timing.jsonl` |
+| `./scripts/bench_1h_dashboard.sh` | Дашборд для 1h-bench (те же пути, что у run) |
 | `./run scripts/update_youtube_metadata.py` | Обновить title/description/comment у уже залитых роликов |
 
 Python — в `lib/`, тесты — в `tests/`. Вручную: `./run publish_70mai.py …`.
+
+### Bench 1h (узкие места)
+
+Тайминг по фазам → `video/Output/.publish_tmp/bench_1h/{timing.jsonl,summary.md,bench.log}`.
+
+```bash
+# terminal 1
+./scripts/bench_1h_dashboard.sh
+# terminal 2
+./scripts/bench_1h_run.sh
+# plan only
+./scripts/bench_1h_run.sh --dry-run
+# fixed window
+./scripts/bench_1h_run.sh --from "2026-07-18 11:12" --to "2026-07-18 12:12"
+```
+
+По умолчанию: Normal Front+Back, первая сессия ≥60 мин на карте, profile `balanced`, YouTube `private`.
 
 ---
 
