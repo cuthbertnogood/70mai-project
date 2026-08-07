@@ -32,7 +32,7 @@ from plan_estimate import (
     format_youtube_quota_note,
     build_plan,
 )
-from publish_70mai import chunk_uploaded, trip_uploaded
+from publish_70mai import chunk_uploaded, prune_stale_parts_for_plan, trip_uploaded
 from publish_state import AuthStore, StateStore
 
 _log_sink = None
@@ -574,6 +574,7 @@ def aggregate_plan(
             ffprobe=ffprobe,
             chunk_minutes=chunk_minutes,
             session_gap=session_gap,
+            state_store=store,
         )
         all_trips.extend(trips)
         all_chunks.extend(chunks)
@@ -585,12 +586,14 @@ def aggregate_plan(
 
 def chunk_is_done(state: dict, chunk) -> bool:
     """True if this ~2h chunk was already uploaded (chunk state or all trips)."""
-    if chunk_uploaded(state, chunk.record_type, chunk.index):
+    if chunk_uploaded(state, chunk.record_type, chunk.index, chunk=chunk):
         return True
     if not chunk.trips:
         return False
     return all(
-        trip_uploaded(state, chunk.record_type, chunk.index, trip_idx)
+        trip_uploaded(
+            state, chunk.record_type, chunk.index, trip_idx, chunk=chunk
+        )
         for trip_idx, _ in enumerate(chunk.trips, start=1)
     )
 
@@ -677,6 +680,7 @@ def pending_trips(
     ffprobe: str,
     chunk_minutes: float,
     session_gap: float,
+    state_store: StateStore | None = None,
 ) -> tuple[list, list, dict[str, float], int, int]:
     trips, chunks, dur_by_type = build_plan(
         source,
@@ -686,6 +690,16 @@ def pending_trips(
         session_gap=session_gap,
         ffprobe=ffprobe,
     )
+    reasons = prune_stale_parts_for_plan(state, chunks)
+    if reasons:
+        log(
+            f"Publish state mismatch: {len(reasons)} chunk(s) on SD marked "
+            "uploaded but wall_start differs — re-queued"
+        )
+        for reason in reasons:
+            log(f"  Stale publish state: dropped {reason}")
+        if state_store is not None:
+            state_store.save(state)
     # Count pending *chunks* (one YouTube video each, ~target chunk_minutes).
     total = len(chunks)
     pending = sum(1 for chunk in chunks if not chunk_is_done(state, chunk))

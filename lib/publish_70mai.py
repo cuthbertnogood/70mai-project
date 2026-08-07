@@ -158,11 +158,13 @@ def prune_uploaded_trips(
     total = 0
     for chunk in chunks:
         if chunk_mode and not chunk_uploaded(
-            state, chunk.record_type, chunk.index
+            state, chunk.record_type, chunk.index, chunk=chunk
         ):
             continue
         for trip_idx, trip in enumerate(chunk.trips, start=1):
-            if not trip_uploaded(state, chunk.record_type, chunk.index, trip_idx):
+            if not trip_uploaded(
+                state, chunk.record_type, chunk.index, trip_idx, chunk=chunk
+            ):
                 continue
             freed = prune_merged_for_trip(
                 video_dir, chunk.record_type, trip.start, trip.end
@@ -188,9 +190,11 @@ def prune_uploaded_composed(
     total = 0
     for chunk in chunks:
         record_type = chunk.record_type
-        if chunk_mode and not chunk_uploaded(state, record_type, chunk.index):
+        if chunk_mode and not chunk_uploaded(
+            state, record_type, chunk.index, chunk=chunk
+        ):
             continue
-        if chunk_uploaded(state, record_type, chunk.index):
+        if chunk_uploaded(state, record_type, chunk.index, chunk=chunk):
             part_path = compose_part_path(temp_dir, record_type, chunk.index)
             if part_path.is_file():
                 try:
@@ -205,7 +209,9 @@ def prune_uploaded_composed(
                 except OSError:
                     pass
         for trip_idx, _trip in enumerate(chunk.trips, start=1):
-            if not trip_uploaded(state, record_type, chunk.index, trip_idx):
+            if not trip_uploaded(
+                state, record_type, chunk.index, trip_idx, chunk=chunk
+            ):
                 continue
             trip_path = resolve_compose_trip_path(
                 temp_dir, record_type, chunk.index, trip_idx
@@ -350,10 +356,10 @@ def type_fully_uploaded(state: dict, record_type: str, chunks: list) -> bool:
             )
         )
     for chunk in type_chunks:
-        if chunk_uploaded(state, record_type, chunk.index):
+        if chunk_uploaded(state, record_type, chunk.index, chunk=chunk):
             continue
         if chunk.trips and all(
-            trip_uploaded(state, record_type, chunk.index, i)
+            trip_uploaded(state, record_type, chunk.index, i, chunk=chunk)
             for i, _ in enumerate(chunk.trips, start=1)
         ):
             continue
@@ -526,24 +532,102 @@ def save_state(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def chunk_uploaded(state: dict, record_type: str, chunk_index: int) -> bool:
-    for part in state.get("parts", []):
-        if part.get("record_type") == record_type and part.get("index") == chunk_index:
-            return bool(part.get("uploaded"))
-    return False
+WALL_START_MATCH_TOLERANCE_SEC = 2.0
+SINGLE_VIDEO_DURATION_TOLERANCE_SEC = 30.0
+SINGLE_VIDEO_DURATION_TOLERANCE_FRAC = 0.05
+
+
+def _parse_state_wall_start(raw: object) -> datetime | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            return parse_datetime(text)
+        except (ValueError, TypeError):
+            return None
+
+
+def chunk_state_matches(chunk: ChunkPlan, part: dict) -> bool:
+    """True when a publish ``parts`` row describes the same footage as *chunk*.
+
+    Index alone is not enough: after SD wipe/re-record or copying ``.70mai/``,
+    chunk 1 may still be marked uploaded for a different ``wall_start``.
+    Legacy rows without ``wall_start`` / ``trip_indices`` do not match.
+    """
+    if part.get("record_type") != chunk.record_type:
+        return False
+    if part.get("index") != chunk.index:
+        return False
+
+    wall = _parse_state_wall_start(part.get("wall_start"))
+    if wall is None:
+        return False
+    if abs((wall - chunk.start).total_seconds()) > WALL_START_MATCH_TOLERANCE_SEC:
+        return False
+
+    stored_indices = part.get("trip_indices")
+    if not isinstance(stored_indices, list):
+        return False
+    plan_indices = [t.index for t in chunk.trips]
+    if stored_indices != plan_indices:
+        return False
+
+    if chunk.record_type in SINGLE_VIDEO_TYPES:
+        stored_dur = part.get("duration_sec")
+        if stored_dur is None:
+            return False
+        try:
+            stored_sec = float(stored_dur)
+        except (TypeError, ValueError):
+            return False
+        plan_sec = float(chunk.duration_sec)
+        tol = max(
+            SINGLE_VIDEO_DURATION_TOLERANCE_SEC,
+            plan_sec * SINGLE_VIDEO_DURATION_TOLERANCE_FRAC,
+        )
+        if abs(stored_sec - plan_sec) > tol:
+            return False
+    return True
+
+
+def chunk_uploaded(
+    state: dict,
+    record_type: str,
+    chunk_index: int,
+    *,
+    chunk: ChunkPlan | None = None,
+) -> bool:
+    part = get_chunk_state(state, record_type, chunk_index)
+    if not part or not part.get("uploaded"):
+        return False
+    if chunk is not None and not chunk_state_matches(chunk, part):
+        return False
+    return True
 
 
 def trip_uploaded(
-    state: dict, record_type: str, chunk_index: int, trip_index: int
+    state: dict,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+    *,
+    chunk: ChunkPlan | None = None,
 ) -> bool:
-    for part in state.get("trip_parts", []):
-        if (
-            part.get("record_type") == record_type
-            and part.get("chunk_index") == chunk_index
-            and part.get("trip_index") == trip_index
-        ):
-            return bool(part.get("uploaded"))
-    return False
+    part = get_trip_state(state, record_type, chunk_index, trip_index)
+    if not part or not part.get("uploaded"):
+        return False
+    if chunk is not None:
+        # Per-trip rows lack wall_start; trust them only when the chunk-level
+        # part (if present) matches the current plan, or no chunk part exists.
+        chunk_part = get_chunk_state(state, record_type, chunk_index)
+        if chunk_part is not None and not chunk_state_matches(chunk, chunk_part):
+            return False
+    return True
 
 
 def get_trip_state(
@@ -569,12 +653,17 @@ def get_chunk_state(
 
 
 def is_row_uploaded(
-    state: dict, record_type: str, chunk_index: int, trip_index: int
+    state: dict,
+    record_type: str,
+    chunk_index: int,
+    trip_index: int,
+    *,
+    chunk: ChunkPlan | None = None,
 ) -> bool:
     """True when trip or whole chunk (Event/Parking) is uploaded."""
     return trip_uploaded(
-        state, record_type, chunk_index, trip_index
-    ) or chunk_uploaded(state, record_type, chunk_index)
+        state, record_type, chunk_index, trip_index, chunk=chunk
+    ) or chunk_uploaded(state, record_type, chunk_index, chunk=chunk)
 
 
 def get_upload_entry(
@@ -845,6 +934,65 @@ def mark_chunk_state(
             break
     if not replaced:
         parts.append(entry)
+
+
+def prune_stale_parts_for_plan(
+    state: dict,
+    chunks: list[ChunkPlan],
+) -> list[str]:
+    """Drop uploaded state rows that do not match the current plan.
+
+    Surgical: only removes mismatched ``parts`` / related ``trip_parts``.
+    Returns human-readable drop reasons (empty if nothing changed).
+    """
+    by_key: dict[tuple[str, int], ChunkPlan] = {
+        (c.record_type, c.index): c for c in chunks
+    }
+    reasons: list[str] = []
+    stale_chunk_keys: set[tuple[str, int]] = set()
+    kept_parts: list[dict] = []
+
+    for part in state.get("parts", []):
+        if not part.get("uploaded"):
+            kept_parts.append(part)
+            continue
+        record_type = str(part.get("record_type") or "")
+        try:
+            index = int(part.get("index"))
+        except (TypeError, ValueError):
+            kept_parts.append(part)
+            continue
+        chunk = by_key.get((record_type, index))
+        if chunk is None:
+            # Index not in current plan — leave alone (other type / old extra).
+            kept_parts.append(part)
+            continue
+        if chunk_state_matches(chunk, part):
+            kept_parts.append(part)
+            continue
+        stale_chunk_keys.add((record_type, index))
+        wall = part.get("wall_start") or "?"
+        plan_wall = chunk.start.isoformat(timespec="seconds")
+        reasons.append(
+            f"{record_type} chunk {index} "
+            f"(wall_start {wall} ≠ plan {plan_wall})"
+        )
+
+    if not reasons:
+        return []
+
+    state["parts"] = kept_parts
+    if stale_chunk_keys:
+        state["trip_parts"] = [
+            tp
+            for tp in state.get("trip_parts", [])
+            if (
+                str(tp.get("record_type") or ""),
+                int(tp.get("chunk_index") or -1),
+            )
+            not in stale_chunk_keys
+        ]
+    return reasons
 
 
 def run_estimate(args: argparse.Namespace, ffprobe: str) -> tuple[list, list[ChunkPlan], dict]:
@@ -1231,7 +1379,7 @@ def publish_and_upload_trips(
                 f"in chunk {chunk.index} (overall {overall_i}/{overall_total}) ==="
             )
 
-        if trip_uploaded(state, record_type, chunk.index, trip_idx):
+        if trip_uploaded(state, record_type, chunk.index, trip_idx, chunk=chunk):
             entry = get_trip_state(state, record_type, chunk.index, trip_idx)
             vid = entry.get("video_id") if entry else None
             if vid:
@@ -1999,7 +2147,9 @@ def main() -> None:
                 f"{format_duration(chunk.duration_sec)} | {chunk.trip_labels} ==="
             )
 
-            if args.resume and chunk_uploaded(state, record_type, chunk.index):
+            if args.resume and chunk_uploaded(
+                state, record_type, chunk.index, chunk=chunk
+            ):
                 log("  Skip (already uploaded per state)")
                 continue
 
@@ -2043,7 +2193,7 @@ def main() -> None:
 
             if args.compose_only:
                 log(f"  Compose-only: {output}")
-                if chunk_uploaded(state, record_type, chunk.index):
+                if chunk_uploaded(state, record_type, chunk.index, chunk=chunk):
                     # Local rebuild for verification — do not reset the
                     # already-uploaded chunk's state or drop its video_id.
                     log(
