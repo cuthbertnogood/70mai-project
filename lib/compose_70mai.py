@@ -63,6 +63,16 @@ PROFILES: dict[str, dict[str, int | bool | str]] = {
         "use_vt_scale": False,
         "codec": "h264",
     },
+    # Fast YouTube upload when HEVC HW unavailable (720p, 3 Mbps H.264).
+    "youtube": {
+        "hw": True,
+        "hw_quality": 30,
+        "width": 720,
+        "fps": 20,
+        "hw_decode": True,
+        "use_vt_scale": False,
+        "codec": "h264",
+    },
     "quality": {
         "hw": True,
         "hw_quality": 75,
@@ -986,7 +996,8 @@ def resolve_codec(codec: str, hw_quality: int, *, hw: bool) -> tuple[str, int]:
     if hevc_encoder_available():
         return codec, hw_quality
     log("HEVC encoder unavailable on this Mac — falling back to h264_videotoolbox")
-    return "h264", max(hw_quality, 65)
+    # Keep balanced-equivalent bitrate (5 Mbps), not 6.5 Mbps bump.
+    return "h264", max(hw_quality, 50)
 
 
 def append_hwaccel_args(cmd: list[str], *, keep_hw_frames: bool = True) -> None:

@@ -902,7 +902,7 @@ def main() -> int:
     parser.add_argument(
         "--profile",
         default="balanced",
-        help="Compose profile: balanced | draft | quality | hevc (default: balanced)",
+        help="Compose profile: balanced | draft | quality | hevc | youtube (default: from 70mai_runtime.json)",
     )
     parser.add_argument(
         "--prune-merged",
@@ -953,6 +953,11 @@ def main() -> int:
         help="Legacy no-op (background prefetch import removed; sync import per chunk)",
     )
     args = parser.parse_args()
+
+    from runtime_config import autopilot_settings
+
+    if "--profile" not in sys.argv:
+        args.profile = str(autopilot_settings(force=True).get("profile") or args.profile)
 
     from project_env import ensure_venv_python
 
@@ -1333,6 +1338,11 @@ def main() -> int:
                                 return ec
 
                     # One YouTube video ≈ this chunk (trips concat if several short ones).
+                    if "--profile" not in sys.argv:
+                        live_profile = autopilot_settings(force=True).get("profile")
+                        if live_profile:
+                            args.profile = str(live_profile)
+
                     publish_cmd = [
                         python,
                         "lib/publish_70mai.py",

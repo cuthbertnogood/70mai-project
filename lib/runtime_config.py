@@ -42,7 +42,7 @@ DEFAULTS: dict[str, Any] = {
         "import_merge_retry_max": 3,
         "import_merge_retry_delay_sec": 15.0,
         "min_free_gb": 20.0,
-        "profile": "balanced",
+        "profile": "youtube",
         "prune_merged": "after-compose",
         "sd_poll_sec": 15.0,
     },

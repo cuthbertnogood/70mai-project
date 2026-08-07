@@ -82,7 +82,7 @@ Watchdog `./scripts/watch_publish_all_70mai.sh` подхватывает Parking
 ### Ускорение пайплайна (Jul 2026)
 
 - **Import:** 2 параллельных ffmpeg concat, фоновый прогрев page cache следующего чанка, общий ffprobe-кэш (`.probe_cache.json`) для plan/import/publish. Concat **без** `-probesize 1M` (у 70mai `moov` в конце файла — иначе part схлопывался до ~30s). Перед ffprobe — быстрый walk атомов (`mp4_has_moov_atom`), чтобы не зависать на битом `mdat`.
-- **Compose:** hw decode включён по умолчанию (fastest-first fallback), профиль `hevc` (~3.5 Mbps ≈ H.264 6.5 Mbps → upload в ~1.9× быстрее) с авто-фолбэком на h264, `-prio_speed 1`.
+- **Compose:** hw decode по умолчанию, профиль **`youtube`** в автопилоте (720p/20fps/3 Mbps H.264; `hevc` ~3.5 Mbps если HW есть). Fallback hevc→h264 без раздувания битрейта. Bench: `scripts/bench_hevc_no_lock.sh`, мониторинг: `scripts/monitor_autopilot_perf.py`.
 - **Publish:** конвейер compose(N+1) ∥ upload(N) (выкл: `--no-overlap`), disk guard `--min-free-gb`, `--prune-merged after-upload|after-compose` (merged-файлы удаляются после использования; исходники остаются на SD).
 
 ### Автопилот (один скрипт, без Cursor)

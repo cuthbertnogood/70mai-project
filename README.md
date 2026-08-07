@@ -36,6 +36,8 @@ cd /Users/cuthbert/work_local/70mai_project
 | `./scripts/smoke-test.sh` | **Smoke после правок** — тесты + синтаксис скриптов + `--help` CLI |
 | `./scripts/bench_1h_run.sh` | **Тест ~1h** с SD: import → compose → private YouTube + `timing.jsonl` |
 | `./scripts/bench_1h_dashboard.sh` | Дашборд для 1h-bench (те же пути, что у run) |
+| `./scripts/bench_hevc_no_lock.sh` | Bench compose+upload hevc **без lock** (параллельно с автопилотом) |
+| `./scripts/monitor_autopilot_perf.py` | Снимки метрик в `perf_monitor.jsonl` (copy/merge/encode/upload) |
 | `./run scripts/update_youtube_metadata.py` | Обновить title/description/comment у уже залитых роликов |
 
 Python — в `lib/`, тесты — в `tests/`. Вручную: `./run publish_70mai.py …`.
@@ -55,7 +57,20 @@ Python — в `lib/`, тесты — в `tests/`. Вручную: `./run publish
 ./scripts/bench_1h_run.sh --from "2026-07-18 11:12" --to "2026-07-18 12:12"
 ```
 
-По умолчанию: Normal Front+Back, первая сессия ≥60 мин на карте, profile `balanced`, YouTube `private`.
+По умолчанию: Normal Front+Back, первая сессия ≥60 мин на карте, profile `balanced` (bench), YouTube `private`. Автопилот: profile **`youtube`** в `70mai_runtime.json` (720p/20fps/3 Mbps H.264 — быстрый upload; `hevc` если HW доступен).
+
+**Мониторинг узких мест:**
+
+```bash
+# terminal 1 — live snapshots каждые 30s
+./scripts/monitor_autopilot_perf.py
+
+# terminal 2 — отчёт balanced vs hevc + live stats
+python3 анализ/generate_bottleneck_report.py
+python3 анализ/analyze_performance.py   # исторический отчёт по publish_all.log
+```
+
+Артефакты: `video/Output/.publish_tmp/perf_monitor.jsonl`, `анализ/bottleneck_report.md`.
 
 ---
 
@@ -169,7 +184,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | `--wait` | off | Ждать SD |
 | `--force-restart` / `--restart` | off | Убить предыдущий автопилот и взять lock. **Не** жать mid-import (`[copy]`) / mid-upload (`Upload part_`) — потеряешь resumable progress |
 | `--types …` | Normal Event Parking | Что заливать |
-| `--profile` | `balanced` | `balanced` / `draft` / `quality` / `hevc` |
+| `--profile` | `youtube` | `balanced` / `draft` / `quality` / `hevc` / `youtube` (default в `70mai_runtime.json`) |
 | `--chunk-minutes` | `120` | Длина ролика (~мин) |
 | `--min-free-gb` | `20` | Не compose, если мало места |
 | `--prune-merged` | `after-compose` | Удалять 10‑мин склейки: `after-compose` / `after-upload` / `off`. После полной заливки автопилот ещё раз чистит merges + `.merge_stage` + compose tmp |
@@ -184,7 +199,7 @@ cd /Users/cuthbert/work_local/70mai_project
 
 ```bash
 cd /Users/cuthbert/work_local/70mai_project
-./scripts/watch_publish_all_70mai.sh --wait --profile balanced --min-free-gb 20
+./scripts/watch_publish_all_70mai.sh --wait --profile youtube --min-free-gb 20
 ```
 
 **Очистка SSD после успешного upload** (merges / `.merge_stage` / `part_*.mp4`; клипы на SD не трогает):
