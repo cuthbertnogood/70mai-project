@@ -19,11 +19,11 @@
   - Разбора сложных багов перед фиксом
 
 ### Файлы
-- `grill-me/SKILL.md`
-- `grilling/SKILL.md`
+- В репо: `skills/grill-me/`, `skills/grilling/` (источник / копия)
+- Глобально для Cursor: `~/.cursor/skills/grill-me/`, `~/.cursor/skills/grilling/`
 - `.../agents/openai.yaml` (метаданные)
 
-Эту файлы взяты напрямую из репозитория и скопированы в проект (как рекомендует автор для tinkerers).
+Cursor подхватывает skills только из `~/.cursor/skills/` (личное) и `.cursor/skills/` (проект). Копия в корневом `skills/` сама по себе не активируется.
 
 ## diagnosing-bugs
 
