@@ -232,3 +232,5 @@ Watchdog (`watch_publish_all_70mai.sh`) — см. **Auto-recovery** выше. К
 Upload считается успешным даже если YouTube comment (403 OAuth scope) не прошёл — state сохраняется, ролик не перезаливается.
 
 Статус на карте: `/.70mai/` (publish state, OAuth, inventory). При смене физической карты (новый `card_id.txt`) autopilot очищает publish/import state на SD и локальный кэш (`autopilot_plan.json`, `import_*.state.json`); OAuth (`auth/`) сохраняется.
+
+Uploaded-статус привязан не только к номеру чанка, а к **`wall_start` + `trip_indices`** (для Event/Parking ещё и `duration_sec`). Если на карте другой период съёмки при тех же индексах chunk 1/2/3 (перезапись, скопированный `.70mai/`, старый state), autopilot пишет `Publish state mismatch` / `Stale publish state: dropped …` и ставит такие чанки обратно в очередь — без полного сброса OAuth.
