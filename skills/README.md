@@ -1,52 +1,30 @@
 # Skills (mattpocock/skills)
 
-Установленные навыки из https://github.com/mattpocock/skills
+Навыки из https://github.com/mattpocock/skills
 
-## grill-me + grilling
+**Важно:** Cursor читает skills только из `~/.cursor/skills/` (глобально) и `.cursor/skills/` (проект). Копии в этом каталоге `skills/` — источник/зеркало, сами по себе не активируются.
 
-**grill-me** — relentless interview для sharpen плана или дизайна.
-Запускает сессию grilling.
+## Установлено глобально (`~/.cursor/skills/`)
 
-**grilling** — базовый движок: задаёт вопросы один за другим, разбирает ветви решений, ждёт подтверждения перед действиями.
+| Skill | Вызов | Назначение |
+|-------|--------|------------|
+| **grill-me** | `/grill-me` | Relentless interview плана/дизайна |
+| **grilling** | (движок) | Вопрос за вопросом; за ним стоят grill-* |
+| **grill-with-docs** | `/grill-with-docs` | То же + `CONTEXT.md` / ADR via domain-modeling |
+| **domain-modeling** | `/domain-modeling` | Глоссарий и ADR по ходу решений |
+| **diagnosing-bugs** | `/diagnosing-bugs` | Дисциплинированный debug loop |
+| **tdd** | `/tdd` | Red-green-refactor |
+| **handoff** | `/handoff` | Сжать чат в handoff для нового агента |
+| **setup-matt-pocock-skills** | `/setup-matt-pocock-skills` | Один раз на репо: tracker, labels, docs layout |
 
-### Как использовать
-- Скажи: `Запусти grill-me` + описание задачи/плана
-- Или: `/grill-me` + контекст
-- Идеально для:
-  - Планирования новых фич в 70mai
-  - Рефакторинга пайплайна
-  - Принятия архитектурных решений
-  - Разбора сложных багов перед фиксом
+### Рекомендуемый порядок в 70mai
 
-### Файлы
-- В репо: `skills/grill-me/`, `skills/grilling/` (источник / копия)
-- Глобально для Cursor: `~/.cursor/skills/grill-me/`, `~/.cursor/skills/grilling/`
-- `.../agents/openai.yaml` (метаданные)
+1. Один раз: `/setup-matt-pocock-skills`
+2. Перед фичей: `/grill-with-docs` (предпочтительнее голого `/grill-me`)
+3. Баги пайплайна: `/diagnosing-bugs`
+4. Реализация: `/tdd`
+5. Смена чата / context > 40%: `/handoff`
 
-Cursor подхватывает skills только из `~/.cursor/skills/` (личное) и `.cursor/skills/` (проект). Копия в корневом `skills/` сама по себе не активируется.
+## Файлы в репо
 
-## diagnosing-bugs
-
-**diagnosing-bugs** — Disciplined diagnosis loop для hard bugs и performance regressions.
-
-Фазы:
-1. Build a tight feedback loop (самая важная!)
-2. Reproduce + minimise
-3. Hypothesise (3–5 ranked гипотез)
-4. Instrument
-5. Fix + regression test
-6. Cleanup + post-mortem
-
-### Когда использовать
-- Скажи: `diagnose this`, `debug this`, `/diagnosing-bugs`
-- Или агент сам подхватит при сообщении "сломалось", "падает", "медленно", "ошибка"
-
-Идеально для:
-- Отладки пайплайна 70mai (import, publish, ffmpeg, staging)
-- Performance regressions
-- Flaky bugs
-- Сложных багов, где нет очевидного виновника
-
-Есть шаблон: `scripts/hitl-loop.template.sh` (для human-in-the-loop случаев).
-
-Рекомендуется также рассмотреть `grill-with-docs` и `setup-matt-pocock-skills` позже, если нужно больше инструментов.
+Зеркало тех же skills в `skills/<name>/` (включая `agents/openai.yaml` где есть).
