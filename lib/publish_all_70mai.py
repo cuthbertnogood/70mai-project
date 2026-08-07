@@ -1161,7 +1161,11 @@ def main() -> int:
             for chunk in chunks:
                 for trip_idx, trip in enumerate(chunk.trips, start=1):
                     if not trip_uploaded(
-                        merged_state, chunk.record_type, chunk.index, trip_idx
+                        merged_state,
+                        chunk.record_type,
+                        chunk.index,
+                        trip_idx,
+                        chunk=chunk,
                     ):
                         write_status(
                             args.temp_dir,
@@ -1209,6 +1213,7 @@ def main() -> int:
                     ffprobe=ffprobe or "ffprobe",
                     chunk_minutes=args.chunk_minutes,
                     session_gap=args.session_gap,
+                    state_store=type_store,
                 )
                 if type_pending == 0:
                     log(f"{record_type}: all uploaded, skipping")
@@ -1257,6 +1262,7 @@ def main() -> int:
                             type_store_chk.load(resume=True, quiet=True),
                             record_type,
                             chunk.index,
+                            chunk=chunk,
                         )
                         if state_on_sd and not args.dry_run:
                             from import_state import ImportStateStore
