@@ -499,7 +499,13 @@ def apply_idle_done_status(
 
     detail = "все ролики залиты"
     if finished and finished.get("detail"):
-        detail = str(finished["detail"])
+        raw = str(finished["detail"])
+        if "nothing to do" in raw:
+            detail = "все ролики залиты — нечего загружать"
+        elif "Autopilot done" in raw:
+            detail = "автопилот завершил работу"
+        else:
+            detail = raw
     record_type = str((st or {}).get("record_type") or "")
     chunk_index = int((st or {}).get("chunk_index") or 0)
     trip_index = int((st or {}).get("trip_index") or 1)
@@ -536,6 +542,49 @@ def apply_idle_done_status(
         )
         return out
     return read_status(temp_dir) or st
+
+
+def is_idle_complete(
+    *,
+    temp_dir: Path | None = None,
+    rows: list | None = None,
+    st: dict | None = None,
+    procs: list | None = None,
+) -> bool:
+    """True when all uploads are done and import/compose/upload are not running."""
+    if procs and _pipeline_busy(procs):
+        return False
+    if rows:
+        chunks_done, chunk_total, _ = chunk_summary_counts(rows)
+        if chunk_total > 0 and chunks_done >= chunk_total:
+            return True
+    if temp_dir is not None and parse_autopilot_finished(temp_dir):
+        return True
+    return str((st or {}).get("phase") or "") == "done"
+
+
+def idle_complete_message(
+    *,
+    temp_dir: Path | None = None,
+    rows: list | None = None,
+    st: dict | None = None,
+) -> str:
+    """Short Russian banner when autopilot has nothing left to do."""
+    detail = str((st or {}).get("detail") or "").strip()
+    if detail in ("все ролики залиты — нечего загружать", "nothing to do"):
+        return "✓ Всё завершено — все ролики залиты, активных этапов нет"
+    if detail in ("автопилот завершил работу", "Autopilot done"):
+        return "✓ Автопилот завершил работу — больше ничего не ожидаем"
+    if rows:
+        chunks_done, chunk_total, _ = chunk_summary_counts(rows)
+        if chunk_total > 0 and chunks_done >= chunk_total:
+            return (
+                f"✓ Всё завершено — {chunks_done}/{chunk_total} роликов на YouTube, "
+                "ожидание не требуется"
+            )
+    if temp_dir is not None and parse_autopilot_finished(temp_dir):
+        return "✓ Всё завершено — все ролики залиты, активных этапов нет"
+    return "✓ Всё завершено — ожидание не требуется"
 
 
 _FFMPEG_RECORD_RE = re.compile(
@@ -1583,6 +1632,143 @@ def collect_failure_lines(
     return uniq[-limit:]
 
 
+_UPLOADED_DONE_RE = re.compile(
+    r"Uploaded:\s+https?://(?:www\.)?youtu\.be/(?P<vid>[\w-]+)\s+"
+    r"\((?P<size>[^,]+),\s*(?P<elapsed>[^)]+)\)"
+)
+_YOUTUBE_ID_RE = re.compile(r"youtu\.be/([\w-]+)")
+
+
+def _parse_size_token(text: str) -> int | None:
+    text = text.strip()
+    m = re.match(r"([\d.]+)\s*(GB|MB|KB|B)\b", text, flags=re.I)
+    if not m:
+        return None
+    amount = float(m.group(1))
+    unit = m.group(2).upper()
+    mult = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+    return int(amount * mult.get(unit, 1))
+
+
+def _youtube_id_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    m = _YOUTUBE_ID_RE.search(url)
+    return m.group(1) if m else None
+
+
+def collect_uploaded_rollups(rows: list) -> tuple[float, int, set[str]]:
+    """Sum uploaded footage (sec) and unique YouTube ids from dashboard rows."""
+    by_chunk: dict[tuple[str, int], list] = {}
+    for row in rows:
+        if getattr(row, "status", "") != "done":
+            continue
+        ck = (str(row.record_type), int(row.chunk_index))
+        by_chunk.setdefault(ck, []).append(row)
+    total_sec = 0.0
+    video_ids: set[str] = set()
+    for chunk_rows in by_chunk.values():
+        total_sec += sum(max(0.0, float(r.duration_sec)) for r in chunk_rows)
+        for row in chunk_rows:
+            vid = _youtube_id_from_url(getattr(row, "youtube_url", None))
+            if vid:
+                video_ids.add(vid)
+                break
+    return total_sec, len(by_chunk), video_ids
+
+
+def parse_upload_log_stats(temp_dir: Path) -> dict[str, dict[str, float | int]]:
+    """Last Uploaded: line per video_id → elapsed_sec, size_bytes."""
+    log_path = temp_dir / "publish_all.log"
+    out: dict[str, dict[str, float | int]] = {}
+    try:
+        with log_path.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = _UPLOADED_DONE_RE.search(line)
+                if not m:
+                    continue
+                vid = m.group("vid")
+                elapsed = _parse_duration_token(m.group("elapsed")) or 0.0
+                size_b = _parse_size_token(m.group("size")) or 0
+                out[vid] = {"elapsed_sec": elapsed, "size_bytes": size_b}
+    except OSError:
+        pass
+    return out
+
+
+def summarize_youtube_upload_stats(
+    rows: list,
+    temp_dir: Path,
+) -> dict[str, float | int] | None:
+    """Aggregate uploaded footage vs net YouTube upload time from publish_all.log."""
+    footage_sec, n_videos, video_ids = collect_uploaded_rollups(rows)
+    if n_videos <= 0:
+        return None
+    log_stats = parse_upload_log_stats(temp_dir)
+    upload_sec = 0.0
+    upload_bytes = 0
+    matched = 0
+    for vid in video_ids:
+        entry = log_stats.get(vid)
+        if not entry:
+            continue
+        matched += 1
+        upload_sec += float(entry.get("elapsed_sec") or 0.0)
+        upload_bytes += int(entry.get("size_bytes") or 0)
+    return {
+        "footage_sec": footage_sec,
+        "n_videos": n_videos,
+        "upload_sec": upload_sec,
+        "upload_bytes": upload_bytes,
+        "log_matched": matched,
+    }
+
+
+def format_upload_stats_block(
+    rows: list,
+    temp_dir: Path,
+    *,
+    term_cols: int,
+    idle_complete: bool = False,
+    compact: bool = False,
+) -> list[str]:
+    """Footer: total uploaded footage vs net YouTube upload wall time."""
+    stats = summarize_youtube_upload_stats(rows, temp_dir)
+    if not stats:
+        return []
+    from import_70mai import format_duration
+
+    footage = format_duration(float(stats["footage_sec"]))
+    n = int(stats["n_videos"])
+    upload_sec = float(stats["upload_sec"])
+    upload_txt = format_duration(upload_sec) if upload_sec > 0 else "—"
+    size_txt = ""
+    upload_bytes = int(stats["upload_bytes"])
+    if upload_bytes > 0:
+        from publish_all_70mai import format_gb
+
+        size_txt = f" · {format_gb(upload_bytes)}"
+    header = "── Итог YouTube ──" if idle_complete else "── YouTube ──"
+    if idle_complete:
+        line = (
+            f"{header}  {n} рол. · {footage} видео{size_txt} · "
+            f"загрузка {upload_txt}"
+        )
+    else:
+        line = (
+            f"{header}  залито {n} рол. · {footage} видео{size_txt} · "
+            f"загрузка {upload_txt}"
+        )
+    if int(stats["log_matched"]) < n:
+        line += f" (лог {stats['log_matched']}/{n})"
+    if compact and len(line) > term_cols - 2:
+        line = (
+            f"{header}  {n}р · {footage} · up {upload_txt}"
+            + (f" · {format_gb(upload_bytes)}" if upload_bytes > 0 else "")
+        )
+    return _wrap_line(line, term_cols)
+
+
 def format_failures_block(
     temp_dir: Path,
     *,
@@ -2310,6 +2496,7 @@ def format_process_detail_block(
     prefetch: PrefetchImportState | None = None,
     log_fallback: dict[str, str] | None = None,
     compact: bool = False,
+    idle_complete: bool = False,
 ) -> list[str]:
     """Multi-line process supervisor block for the dashboard."""
     wd = resolve_watchdog_snapshot(temp_dir, procs)
@@ -2346,6 +2533,12 @@ def format_process_detail_block(
         line = "proc: " + " · ".join(bits)
         if not wd.alive and not procs:
             line += " · ⚠ ./scripts/watch_publish_all_70mai.sh --wait"
+        elif idle_complete and not any(
+            p.role in ("import", "publish", "prefetch")
+            or (p.role == "ffmpeg" and "encode" in (p.tip or ""))
+            for p in procs
+        ):
+            line += " · простаивает (всё залито)"
         return [line]
 
     lines = ["процессы:"]
@@ -2422,6 +2615,8 @@ def format_process_detail_block(
 
     if not procs and not wd.alive:
         lines.append("  ⚠ автопилот остановлен — ./scripts/watch_publish_all_70mai.sh --wait")
+    elif idle_complete and not _pipeline_busy(procs):
+        lines.append("  ✓ автопилот простаивает — все ролики залиты, активных этапов нет")
 
     return lines
 
@@ -4057,6 +4252,9 @@ def _format_pipeline_block(
     compact: bool = False,
 ) -> list[str]:
     """One line per pipeline step: copy / merge / compose / upload + status."""
+    idle_complete = is_idle_complete(
+        temp_dir=temp_dir, rows=rows, st=st, procs=procs
+    )
     phase = str((st or {}).get("phase") or "").strip()
     conveyors = (st or {}).get("conveyors") if isinstance(st, dict) else None
     if not isinstance(conveyors, dict):
@@ -4087,17 +4285,22 @@ def _format_pipeline_block(
         else:
             phase = ""
 
-    copy_on = bool(copy.get("active")) and not stale
-    merge_on = bool(merge.get("active")) and not stale
-    compose_on = (not stale) and (
+    if stale and idle_complete:
+        stale = False
+
+    copy_on = bool(copy.get("active")) and not stale and not idle_complete
+    merge_on = bool(merge.get("active")) and not stale and not idle_complete
+    compose_on = (not stale) and (not idle_complete) and (
         phase == "compose"
         or (active_row is not None and active_row.status == "compose")
     )
-    upload_on = (not stale) and (
+    upload_on = (not stale) and (not idle_complete) and (
         phase == "upload"
         or (active_row is not None and active_row.status == "upload")
     )
-    import_on = (not stale) and (phase == "import" or copy_on or merge_on)
+    import_on = (not stale) and (not idle_complete) and (
+        phase == "import" or copy_on or merge_on
+    )
     done_on = phase == "done" or (
         active_row is not None and active_row.status == "done"
     )
@@ -4110,6 +4313,12 @@ def _format_pipeline_block(
         active_row is not None and active_row.status == "upload"
     )
     video_done = done_on
+
+    if idle_complete:
+        phase = "done"
+        active_row = None
+        copy_on = merge_on = compose_on = upload_on = import_on = False
+        copy_done = merge_done = compose_done = video_done = True
 
     def _short_lane(info: dict) -> str:
         file_name = str(info.get("file") or "").strip()
@@ -4238,7 +4447,7 @@ def _format_pipeline_block(
         )
         if not compose_detail_line and detail:
             compose_detail_line = detail[:72]
-    elif (not stale) and (not compose_done) and (not upload_on):
+    elif (not stale) and (not compose_done) and (not upload_on) and not idle_complete:
         compose_extra, compose_wait_lines = format_compose_wait(
             temp_dir=temp_dir,
             video_dir=video_dir,
@@ -4383,10 +4592,16 @@ def _format_pipeline_block(
         elif prefetch_on and log_fallback:
             out.append("prefetch: publish_all.log (фоновый import следующего чанка)")
         elif stale:
-            if video_done:
-                out.append("готово — нечего заливать")
+            if video_done or idle_complete:
+                out.append(
+                    idle_complete_message(temp_dir=temp_dir, rows=rows, st=st)
+                    if idle_complete
+                    else "готово — нечего заливать"
+                )
             else:
                 out.append("idle — status.json устарел (см. proc)")
+        elif idle_complete:
+            out.append(idle_complete_message(temp_dir=temp_dir, rows=rows, st=st))
         if diag:
             out.append(f"диагноз: {diag}")
         return out
@@ -4438,10 +4653,16 @@ def _format_pipeline_block(
     elif prefetch_on and log_fallback:
         lines.append("prefetch: publish_all.log (фоновый import следующего чанка)")
     elif stale:
-        if video_done:
-            lines.append("готово — нечего заливать")
+        if video_done or idle_complete:
+            lines.append(
+                idle_complete_message(temp_dir=temp_dir, rows=rows, st=st)
+                if idle_complete
+                else "готово — нечего заливать"
+            )
         else:
             lines.append("idle — status.json устарел (см. proc)")
+    elif idle_complete:
+        lines.append(idle_complete_message(temp_dir=temp_dir, rows=rows, st=st))
     if diag:
         lines.append(f"диагноз: {diag}")
     return lines

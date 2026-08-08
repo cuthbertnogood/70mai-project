@@ -1073,7 +1073,7 @@ def main() -> int:
                     chunk_index=1,
                     trip_index=1,
                     phase="done",
-                    detail="nothing to do",
+                    detail="все ролики залиты — нечего загружать",
                     percent=100.0,
                 )
             except Exception:

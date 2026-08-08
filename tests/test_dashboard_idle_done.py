@@ -18,6 +18,8 @@ if str(LIB) not in sys.path:
 
 from autopilot_dashboard import (  # noqa: E402
     apply_idle_done_status,
+    idle_complete_message,
+    is_idle_complete,
     parse_autopilot_finished,
     resolve_live_status,
     _format_pipeline_block,
@@ -100,15 +102,39 @@ class DashboardIdleDoneTests(unittest.TestCase):
     def test_pipeline_block_no_compose_wait_when_done(self) -> None:
         st = {
             "phase": "done",
-            "detail": "nothing to do",
+            "detail": "все ролики залиты — нечего загружать",
             "percent": 100.0,
             "ts": datetime.now().isoformat(timespec="seconds"),
         }
         lines = _format_pipeline_block(st, [], stale=False)
         text = "\n".join(lines)
         self.assertIn("✓ готово", text)
+        self.assertIn("Всё завершено", text)
         self.assertNotIn("покрытие:", text)
         self.assertNotIn("условие:", text)
+
+    def test_is_idle_complete_when_all_chunks_done(self) -> None:
+        from autopilot_dashboard import TripRow
+
+        rows = [
+            TripRow(
+                key="Normal:1:1",
+                record_type="Normal",
+                chunk_index=1,
+                trip_index=1,
+                label="t1",
+                duration_sec=60.0,
+                status="done",
+            )
+        ]
+        self.assertTrue(is_idle_complete(rows=rows, procs=[]))
+
+    def test_idle_complete_message_russian(self) -> None:
+        msg = idle_complete_message(
+            st={"detail": "все ролики залиты — нечего загружать"},
+        )
+        self.assertIn("Всё завершено", msg)
+        self.assertIn("активных этапов нет", msg)
 
 
 if __name__ == "__main__":

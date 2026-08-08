@@ -58,6 +58,9 @@ def render(dash: Any) -> None:
 
     st = d.resolve_live_status(dash.temp_dir, rows=dash.rows)
     procs = d.list_pipeline_processes(temp_dir=dash.temp_dir)
+    idle_complete = d.is_idle_complete(
+        temp_dir=dash.temp_dir, rows=dash.rows, st=st, procs=procs
+    )
     prefetch = d.resolve_prefetch_import(dash.temp_dir, procs)
     # Age alone: old status.json must not drive ► markers (procs may be zombies).
     stale = d._status_is_stale(st)
@@ -79,7 +82,9 @@ def render(dash: Any) -> None:
     pending_chunks = max(0, chunk_total - chunks_done)
     if pending_chunks > 0:
         summary += f"  todo:{pending_chunks}р"
-    if active_rows:
+    if idle_complete:
+        summary += "  |  ✓ всё залито — нечего ждать"
+    elif active_rows:
         parts = []
         seen_active_chunks: set[tuple[str, int]] = set()
         for ar in active_rows:
@@ -155,6 +160,12 @@ def render(dash: Any) -> None:
     )
 
     lines: list[str] = []
+    if idle_complete:
+        for hl in d._wrap_line(
+            d.idle_complete_message(temp_dir=dash.temp_dir, rows=dash.rows, st=st),
+            term_cols,
+        ):
+            lines.append(hl)
     for hl in d._wrap_line(summary, term_cols):
         lines.append(hl)
     for cl in d._format_pipeline_block(
@@ -182,6 +193,7 @@ def render(dash: Any) -> None:
         prefetch=prefetch,
         log_fallback=log_fallback,
         compact=compact,
+        idle_complete=idle_complete,
     )
     if compact and age:
         if proc_lines:
@@ -243,7 +255,7 @@ def render(dash: Any) -> None:
                     dash.temp_dir, record_type=row.record_type
                 )
             if stale and row.status in ("compose", "upload", "import", "stall"):
-                stage = "ожидание"
+                stage = "ожидание" if not idle_complete else "✓ залито"
         num = d.chunk_display_num(row)
         trip_lines.append(
             d._trip_compact_line(
@@ -285,6 +297,15 @@ def render(dash: Any) -> None:
             term_cols=term_cols,
             import_alive=import_alive,
             video_dir=dash.video_dir,
+            compact=compact,
+        )
+    )
+    lines.extend(
+        d.format_upload_stats_block(
+            dash.rows,
+            dash.temp_dir,
+            term_cols=term_cols,
+            idle_complete=idle_complete,
             compact=compact,
         )
     )
