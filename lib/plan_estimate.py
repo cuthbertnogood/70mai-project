@@ -205,12 +205,20 @@ def trips_from_clips(
     trips: list[Trip] = []
     for idx, session in enumerate(sessions, start=1):
         duration = sum(c.duration or 0.0 for c in session)
+        first = session[0]
+        last = session[-1]
+        last_dur = float(last.duration or 0.0)
+        # Trip.end = end of footage, not the last clip's filename timestamp.
+        if last_dur > 0:
+            end = last.timestamp + timedelta(seconds=last_dur)
+        else:
+            end = first.timestamp + timedelta(seconds=duration)
         trips.append(
             Trip(
                 record_type=record_type,
                 index=idx,
-                start=session[0].timestamp,
-                end=session[-1].timestamp,
+                start=first.timestamp,
+                end=end,
                 clip_count=len(session),
                 duration_sec=duration,
             )

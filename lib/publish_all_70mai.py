@@ -625,7 +625,7 @@ def chunk_merges_ready(
     front_entries: list | None = None
     back_entries: list | None = None
     try:
-        from clip_timeline import filter_entries_to_window, load_manifest
+        from clip_timeline import load_manifest
         from clip_timeline import merges_timeline_ready
 
         timeline_ok = merges_timeline_ready(video_dir, record_type)[0]
@@ -652,9 +652,20 @@ def chunk_merges_ready(
                 if slot_dur < trip.duration_sec * min_coverage:
                     return False
                 continue
-            ff = filter_entries_to_window(front_entries, trip.start, trip.end)
-            bf = filter_entries_to_window(back_entries, trip.start, trip.end)
-            if not ff or not bf:
+            # Same metric as compose_2cam: aligned wall-window duration vs plan.
+            from compose_2cam_70mai import build_aligned_lanes
+
+            aligned = build_aligned_lanes(
+                video_dir,
+                wall_start=trip.start,
+                duration=trip.duration_sec,
+                record_type=record_type,
+                wall_end=trip.end,
+            )
+            if aligned is None:
+                return False
+            aligned_total = float(aligned[2])
+            if aligned_total + 0.5 < trip.duration_sec * min_coverage:
                 return False
             continue
         try:
