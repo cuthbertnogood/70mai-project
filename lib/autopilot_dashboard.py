@@ -555,8 +555,30 @@ def _parse_publish_cli(cmd: str) -> tuple[str, int] | None:
     return record_type, chunk_index
 
 
+def _is_ffmpeg_concat_demuxer(cmd: str) -> bool:
+    """True for import-style file concat, not 2-cam ``filter_complex`` concat=.
+
+    Aligned compose builds Front/Back lanes with ``concat=n=…`` inside
+    ``-filter_complex``. That must still count as encode, otherwise the
+    dashboard treats live compose as merge-concat / upload and blanks the row.
+    """
+    lower = cmd.lower()
+    if re.search(r"-f\s+concat\b", lower):
+        return True
+    if "concat:" in lower:  # concat protocol
+        return True
+    if "filter_complex" in lower and "concat=" in lower:
+        return False
+    if "vstack" in lower or "hstack" in lower:
+        return False
+    # Bare "concat" outside filter_complex (legacy merge scripts).
+    return "concat" in lower
+
+
 def _parse_ffmpeg_compose(cmd: str) -> dict | None:
-    if "ffmpeg" not in cmd.lower() or "concat" in cmd.lower():
+    if "ffmpeg" not in cmd.lower():
+        return None
+    if _is_ffmpeg_concat_demuxer(cmd):
         return None
     m_rec = _FFMPEG_RECORD_RE.search(cmd)
     if not m_rec:
@@ -1834,7 +1856,7 @@ def _classify_proc(cmd: str) -> tuple[str, str] | None:
         )
         tip = m.group(1) if m else role
         if role == "ffmpeg":
-            if "concat" in cmd:
+            if _is_ffmpeg_concat_demuxer(cmd):
                 tip = "ffmpeg concat"
             elif "-i" in cmd:
                 tip = "ffmpeg encode"

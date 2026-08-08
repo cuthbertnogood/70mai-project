@@ -47,6 +47,33 @@ class StatusReconcileTests(unittest.TestCase):
         self.assertEqual(parsed["chunk_index"], 1)
         self.assertEqual(parsed["trip_index"], 2)
 
+    def test_parse_ffmpeg_aligned_filter_concat_is_compose(self) -> None:
+        """2-cam encode uses concat= inside filter_complex — not merge concat."""
+        cmd = (
+            "ffmpeg -hwaccel videotoolbox -i video/Output/Normal/Front/NO_x_F.mp4 "
+            "-i video/Output/Normal/Back/NO_x_B.mp4 "
+            "-filter_complex "
+            "[0:v]scale=720:404[fp0];[1:v]scale=720:404[bp0];"
+            "[fp0][bp0]concat=n=2:v=1:a=0[fplane];"
+            "[fplane][bp0]vstack=inputs=2[vout] "
+            "-map [vout] -c:v h264_videotoolbox "
+            "video/Output/.publish_tmp/Normal/chunk_03/trip_03.mp4"
+        )
+        parsed = _parse_ffmpeg_compose(cmd)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["phase"], "compose")
+        self.assertEqual(parsed["record_type"], "Normal")
+        self.assertEqual(parsed["chunk_index"], 3)
+        self.assertEqual(parsed["trip_index"], 3)
+
+    def test_parse_ffmpeg_concat_demuxer_not_compose(self) -> None:
+        cmd = (
+            "ffmpeg -f concat -safe 0 -i /tmp/list.txt -c copy "
+            "video/Output/Normal/Front/NO_merged_F.mp4"
+        )
+        self.assertIsNone(_parse_ffmpeg_compose(cmd))
+
     def test_refresh_stale_compose_from_live_proc(self) -> None:
         import tempfile
 

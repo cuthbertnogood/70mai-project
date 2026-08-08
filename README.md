@@ -224,6 +224,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | **Kill import / watchdog restart** | Import resume: готовые SSD merges + `chunk_merges_ready` → пропускает re-copy только при **Trip coverage ≥98%** (тот же порог, что compose; для Normal — aligned wall duration, не «есть ли хоть один entry»). `Trip.end` = конец footage (last clip start + duration), не timestamp последнего файла. Event/Parking slot-timeline: **не** фильтровать manifest по wall-clock окну поездки (месяцы клипов → один ролик). Repair **не** удаляет PA_*/EV_* при валидных `_part_*` или merge ≥98% — только force import resume. |
 | **Upload OK, state не успел** | После `video_id` от YouTube state пишется на SD+host **до** удаления composed mp4 (`on_video_id` checkpoint). Comment 403 не откатывает upload. |
 | **Проверка длины на YouTube** | После upload: `videos.list(contentDetails)` vs ffprobe локального mp4 (≥98%). Сразу после заливки YouTube часто отдаёт `P0D` (ещё processing) — ждём до ~15 мин с повтором. Короткий ролик → fail; `video_id` сохраняется в state до verify, чтобы не перезаливать. |
+| **Dashboard: compose как upload** | 2-cam encode в `filter_complex` содержит `concat=n=…`. Дашборд отличает это от merge `-f concat` и показывает **compose** + правильный `trip_NN`, а не ложный upload/trip 1. |
 | **Prefetch / BackgroundStep** | Фоновый prefetch import **снят**; `--no-prefetch-import` — no-op для совместимости со старыми watchdog-командами. |
 
 ### Чеклист (операции)
