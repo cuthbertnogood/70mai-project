@@ -535,7 +535,7 @@ def upload_video(
     title: str,
     description: str = "",
     tags: list[str] | None = None,
-    privacy: str = "private",
+    privacy: str = "unlisted",
     category_id: str = "22",
     credentials_path: Path = DEFAULT_CREDENTIALS,
     token_path: Path = DEFAULT_TOKEN,
@@ -904,6 +904,21 @@ def fetch_youtube_duration_sec(
     return parse_youtube_duration(iso)
 
 
+def fetch_video_privacy(
+    video_id: str,
+    *,
+    credentials_path: Path = DEFAULT_CREDENTIALS,
+    token_path: Path = DEFAULT_TOKEN,
+) -> str:
+    """Return privacyStatus for a video (private | unlisted | public)."""
+    youtube = get_youtube_service(credentials_path, token_path)
+    response = youtube.videos().list(part="status", id=video_id).execute()
+    items = response.get("items") or []
+    if not items:
+        raise YouTubeUploadError(f"YouTube video not found: {video_id}")
+    return str((items[0].get("status") or {}).get("privacyStatus") or "unknown")
+
+
 def verify_youtube_video_duration(
     video_id: str,
     expected_sec: float,
@@ -990,29 +1005,88 @@ def update_video_metadata(
     ).execute()
 
 
+def fetch_youtube_channel_id(
+    *,
+    credentials_path: Path = DEFAULT_CREDENTIALS,
+    token_path: Path = DEFAULT_TOKEN,
+) -> str:
+    """Return the authenticated user's YouTube channel id."""
+    youtube = get_youtube_service(credentials_path, token_path)
+    response = youtube.channels().list(part="id", mine=True).execute()
+    items = response.get("items") or []
+    if not items:
+        raise YouTubeUploadError("No YouTube channel found for OAuth account")
+    return items[0]["id"]
+
+
+def _http_error_status(exc: BaseException) -> int | None:
+    resp = getattr(exc, "resp", None)
+    status = getattr(resp, "status", None)
+    return int(status) if status is not None else None
+
+
 def post_video_comment(
     video_id: str,
     text: str,
     *,
     credentials_path: Path = DEFAULT_CREDENTIALS,
     token_path: Path = DEFAULT_TOKEN,
+    channel_id: str | None = None,
+    max_attempts: int = 6,
+    poll_sec: float = 20.0,
 ) -> str:
-    """Post a top-level comment on a video. Returns comment thread id."""
+    """Post a top-level comment on a video. Returns comment thread id.
+
+    YouTube rejects commentThreads.insert on private videos (403 forbidden).
+    Use privacy unlisted or public for uploads that need clip-list comments.
+    """
     if not text.strip():
         raise YouTubeUploadError("Comment text is empty")
     youtube = get_youtube_service(credentials_path, token_path)
+    if channel_id is None:
+        channel_id = fetch_youtube_channel_id(
+            credentials_path=credentials_path,
+            token_path=token_path,
+        )
     body = {
         "snippet": {
+            "channelId": channel_id,
             "videoId": video_id,
             "topLevelComment": {"snippet": {"textOriginal": text}},
         }
     }
-    response = (
-        youtube.commentThreads()
-        .insert(part="snippet", body=body)
-        .execute()
-    )
-    return response["id"]
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = (
+                youtube.commentThreads()
+                .insert(part="snippet", body=body)
+                .execute()
+            )
+            return response["id"]
+        except Exception as exc:
+            last_exc = exc
+            status = _http_error_status(exc)
+            if status == 403:
+                privacy = fetch_video_privacy(
+                    video_id,
+                    credentials_path=credentials_path,
+                    token_path=token_path,
+                )
+                if privacy == "private":
+                    raise YouTubeUploadError(
+                        "YouTube comments are not allowed on private videos; "
+                        "use --privacy unlisted or public"
+                    ) from exc
+            if status not in (403, 500, 503) or attempt >= max_attempts:
+                raise
+            log(
+                f"  YouTube comment retry in {poll_sec:.0f}s "
+                f"(attempt {attempt}/{max_attempts})"
+            )
+            time.sleep(poll_sec)
+    assert last_exc is not None
+    raise last_exc
 
 
 def apply_youtube_metadata(
@@ -1103,7 +1177,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("video", type=Path, help="MP4 file to upload")
     parser.add_argument("--title", required=True)
     parser.add_argument("--description", default="")
-    parser.add_argument("--privacy", default="private", choices=("private", "unlisted", "public"))
+    parser.add_argument("--privacy", default="unlisted", choices=("private", "unlisted", "public"))
     parser.add_argument("--tags", default="", help="Comma-separated tags")
     parser.add_argument("--credentials", type=Path, default=DEFAULT_CREDENTIALS)
     parser.add_argument("--token", type=Path, default=DEFAULT_TOKEN)

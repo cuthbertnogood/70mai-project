@@ -916,6 +916,12 @@ def main() -> int:
         help="Compose profile: balanced | draft | quality | hevc | youtube (default: from 70mai_runtime.json)",
     )
     parser.add_argument(
+        "--privacy",
+        choices=("private", "unlisted", "public"),
+        default=None,
+        help="YouTube privacy (default: from 70mai_runtime.json; unlisted allows clip-list comments)",
+    )
+    parser.add_argument(
         "--prune-merged",
         choices=("off", "after-compose", "after-upload"),
         default="after-compose",
@@ -969,6 +975,8 @@ def main() -> int:
 
     if "--profile" not in sys.argv:
         args.profile = str(autopilot_settings(force=True).get("profile") or args.profile)
+    if args.privacy is None:
+        args.privacy = str(autopilot_settings(force=True).get("privacy") or "unlisted")
 
     from project_env import ensure_venv_python
 
@@ -1353,6 +1361,10 @@ def main() -> int:
                         live_profile = autopilot_settings(force=True).get("profile")
                         if live_profile:
                             args.profile = str(live_profile)
+                    if "--privacy" not in sys.argv:
+                        live_privacy = autopilot_settings(force=True).get("privacy")
+                        if live_privacy:
+                            args.privacy = str(live_privacy)
 
                     publish_cmd = [
                         python,
@@ -1382,6 +1394,8 @@ def main() -> int:
                         type_title,
                         "--profile",
                         args.profile,
+                        "--privacy",
+                        args.privacy,
                         "--prune-merged",
                         args.prune_merged,
                         "--min-free-gb",

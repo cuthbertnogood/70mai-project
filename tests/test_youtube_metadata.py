@@ -106,8 +106,17 @@ class YouTubeUpdateApiTests(unittest.TestCase):
         youtube = MagicMock()
         youtube.commentThreads().insert().execute.return_value = {"id": "thread1"}
         with patch.object(youtube_upload, "get_youtube_service", return_value=youtube):
-            thread_id = youtube_upload.post_video_comment("abc123", "hello")
+            with patch.object(
+                youtube_upload,
+                "fetch_youtube_channel_id",
+                return_value="UC_test",
+            ):
+                thread_id = youtube_upload.post_video_comment("abc123", "hello")
         self.assertEqual(thread_id, "thread1")
+        insert_call = youtube.commentThreads().insert.call_args
+        body = insert_call.kwargs.get("body") or insert_call[1].get("body")
+        self.assertEqual(body["snippet"]["channelId"], "UC_test")
+        self.assertEqual(body["snippet"]["videoId"], "abc123")
 
 
 if __name__ == "__main__":

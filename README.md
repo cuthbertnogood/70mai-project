@@ -57,7 +57,7 @@ Python — в `lib/`, тесты — в `tests/`. Вручную: `./run publish
 ./scripts/bench_1h_run.sh --from "2026-07-18 11:12" --to "2026-07-18 12:12"
 ```
 
-По умолчанию: Normal Front+Back, первая сессия ≥60 мин на карте, profile `balanced` (bench), YouTube `private`. Автопилот: profile **`youtube`** в `70mai_runtime.json` (720p/20fps/3 Mbps H.264 — быстрый upload; `hevc` если HW доступен).
+По умолчанию: Normal Front+Back, первая сессия ≥60 мин на карте, profile `balanced` (bench), YouTube **`unlisted`** (нужно для комментария со списком клипов; `private` блокирует API). Автопилот: profile **`youtube`** + privacy **`unlisted`** в `70mai_runtime.json` (720p/20fps/3 Mbps H.264 — быстрый upload; `hevc` если HW доступен).
 
 **Мониторинг узких мест:**
 
@@ -168,7 +168,7 @@ cd /Users/cuthbert/work_local/70mai_project
 
 **Синхронизация камер (Normal, Event, Parking):** import пишет рядом с **каждым** merge timeline-manifest (`<merge>.timeline.json`); compose **всегда** выравнивает Front/Back по общим слотам (Event/Parking — slot, Normal — wall-clock внутри окна поездки) и заменяет пропавшую/короткую камеру чёрным + тишиной. Compose берёт только клипы **окна текущей поездки** (Normal); Event/Parking — все слоты манифеста. Без manifest compose не стартует — нужен re-import. Имена merge хранят end как `%H%M%S` без даты: при пересечении полуночи `parse_merged_file` / Event-аналог делают `end += 1 day` (иначе prune/compose видят `end < start`). Логи: `Slots/Black fill`, `Window clips`, `[sync] output duration`. Подробнее — [GOALS.md](GOALS.md).
 
-**YouTube — название и клипы:** при upload title = `70mai | {тип} | {начало} — {конец}` (тип: *простые записи* / *запись события* / *запись парковки*). В **описании и комментарии** — тот же список: `Клип N: дата время — дата время`. OAuth после обновления кода: удалить token и войти снова (нужен scope для comment + update). Уже залитое видео:
+**YouTube — название и клипы:** при upload title = `70mai | {тип} | {начало} — {конец}` (тип: *простые записи* / *запись события* / *запись парковки*). В **описании и комментарии** — тот же список: `Клип N: дата время — дата время`. Комментарий через API работает только при **`unlisted` или `public`** (`private` → 403). Default autopilot: `privacy: unlisted` в `70mai_runtime.json`. OAuth после обновления кода: удалить token и войти снова (нужен scope для comment + update). Уже залитое видео:
 
 ```bash
 ./run scripts/update_youtube_metadata.py --types Parking
@@ -185,6 +185,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | `--force-restart` / `--restart` | off | Убить предыдущий автопилот и взять lock. **Не** жать mid-import (`[copy]`) / mid-upload (`Upload part_`) — потеряешь resumable progress |
 | `--types …` | Normal Event Parking | Что заливать |
 | `--profile` | `youtube` | `balanced` / `draft` / `quality` / `hevc` / `youtube` (default в `70mai_runtime.json`) |
+| `--privacy` | `unlisted` | YouTube privacy: `unlisted` (default, комментарии OK) / `private` / `public` |
 | `--chunk-minutes` | `120` | Длина ролика (~мин) |
 | `--min-free-gb` | `20` | Не compose, если мало места |
 | `--prune-merged` | `after-compose` | Удалять 10‑мин склейки: `after-compose` / `after-upload` / `off`. После полной заливки автопилот ещё раз чистит merges + `.merge_stage` + compose tmp |
@@ -244,7 +245,7 @@ tail -f video/Output/.publish_tmp/bad_clips.jsonl
 
 Watchdog (`watch_publish_all_70mai.sh`) — см. **Auto-recovery** выше. Кратко: import/compose/upload activity, не только legacy `chunk_*/trip_*.mp4`.
 
-Upload считается успешным даже если YouTube comment (403 OAuth scope) не прошёл — state сохраняется, ролик не перезаливается.
+Upload считается успешным даже если YouTube comment не прошёл (например `private` или processing) — state сохраняется, ролик не перезаливается.
 
 Статус на карте: `/.70mai/` (publish state, OAuth, inventory). При смене физической карты (новый `card_id.txt`) autopilot очищает publish/import state на SD и локальный кэш (`autopilot_plan.json`, `import_*.state.json`); OAuth (`auth/`) сохраняется.
 
