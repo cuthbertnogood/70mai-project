@@ -101,11 +101,20 @@ def build_status_payload(
     except Exception:
         pass
 
+    sd_card = {"present": False, "trips": []}
+    try:
+        from autopilot_sd_table import build_sd_card_payload
+
+        sd_card = build_sd_card_payload(source or sd, types)
+    except Exception:
+        pass
+
     return {
         "run": run_state,
         "diagnostics": _read_diagnostics(temp_dir),
         "sd_present": sd is not None,
         "sd_path": str(sd) if sd else None,
+        "sd_card": sd_card,
         "live": live,
         "summary": {
             "chunks_done": chunks_done,
@@ -149,9 +158,16 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   <title>Autopilot</title>
   <style>
     :root { font-family: system-ui, sans-serif; background: #0f1419; color: #e7ecf3; }
-    body { margin: 0; padding: 1rem 1.25rem 2rem; max-width: 1100px; }
+    body { margin: 0; padding: 1rem 1.25rem 2rem; max-width: 1680px; }
     h1 { margin: 0 0 .25rem; font-size: 1.4rem; }
+    h2 { margin: 0 0 .5rem; font-size: 1rem; color: #8b9bb4; font-weight: 600; }
     .sub { color: #8b9bb4; margin-bottom: 1rem; }
+    .layout { display: grid; grid-template-columns: 1fr minmax(320px, 420px); gap: 1.25rem; align-items: start; }
+    @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+    .sd-panel { background: #1a2332; border-radius: 8px; padding: .75rem 1rem; position: sticky; top: .5rem; max-height: calc(100vh - 2rem); overflow: auto; }
+    .sd-meta { font-size: .78rem; color: #8b9bb4; margin-bottom: .6rem; line-height: 1.45; }
+    .sd-table { font-size: .78rem; }
+    .sd-table th, .sd-table td { padding: .3rem .35rem; }
     .bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
     button { border: 0; border-radius: 6px; padding: .45rem .9rem; cursor: pointer; font-weight: 600; }
     button.stop { background: #c0392b; color: #fff; }
@@ -189,11 +205,23 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <button class="quit" id="btn-quit">Quit</button>
   </div>
   <div class="cards" id="cards"></div>
+  <div class="layout">
+    <div class="main-col">
   <table>
     <thead><tr><th>Ролик</th><th>Тип</th><th>Trip</th><th>Статус</th><th>Прогресс</th><th>YouTube</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <div class="failures" id="failures" hidden></div>
+    </div>
+    <aside class="sd-panel">
+      <h2>Флешка (SD)</h2>
+      <div class="sd-meta" id="sd-meta">—</div>
+      <table class="sd-table">
+        <thead><tr><th>Тип</th><th>Поездка</th><th>Длит.</th><th>Место</th><th>Клипы</th></tr></thead>
+        <tbody id="sd-trips"></tbody>
+      </table>
+    </aside>
+  </div>
   <script>
     const msg = document.getElementById('msg');
     const phaseLabels = {
@@ -271,6 +299,29 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         fail.innerHTML = '<strong>Сбои</strong><br>' + data.failures.map(esc).join('<br>');
       } else {
         fail.hidden = true;
+      }
+      const sd = data.sd_card || {};
+      const sdMeta = document.getElementById('sd-meta');
+      if (!sd.present) {
+        sdMeta.textContent = 'Карта не подключена';
+        document.getElementById('sd-trips').innerHTML = '';
+      } else {
+        const d = sd.disk || {};
+        sdMeta.innerHTML = [
+          esc(sd.path || ''),
+          d.total ? `свободно ${esc(d.free || '—')} / ${esc(d.total)}` : '',
+          sd.video_total && sd.video_total !== '—' ? `видео на карте: ${esc(sd.video_total)}` : '',
+          sd.updated_at ? `инвентарь: ${esc(sd.updated_at)}` : '',
+        ].filter(Boolean).join('<br>');
+        document.getElementById('sd-trips').innerHTML = (sd.trips || []).map(t =>
+          `<tr>
+            <td>${esc(t.record_type)}</td>
+            <td title="${esc(t.start || '')} → ${esc(t.end || '')}">${esc(t.label)}</td>
+            <td>${esc(t.duration)}</td>
+            <td>${esc(t.size)}</td>
+            <td>${esc(String(t.clip_count))}</td>
+          </tr>`
+        ).join('') || '<tr><td colspan="5">нет данных</td></tr>';
       }
     }
     async function tick() {

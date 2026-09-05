@@ -44,7 +44,7 @@ tail -f video/Output/.publish_tmp/publish_all.log
 ./scripts/autopilot_dashboard.sh
 ```
 
-**Веб-Dashboard** (`127.0.0.1:8787`): карта, Import, Compose, Upload. Кнопки **Stop** (конец прогона), **Skip** (отложить Chunk), **Repair**, **Quit**. При crash Autopilot сам перезапускает пайплайн (кроме Stop).
+**Веб-Dashboard** (`127.0.0.1:8787`): слева — прогон (Import / Compose / Upload); **справа — таблица SD** (поездки, длительность, место на карте). Кнопки **Stop**, **Skip**, **Repair**, **Quit**.
 
 Нужны: Mac, Python 3.10+, ffmpeg, SD-карта 70mai (обычно `/Volumes/Untitled`).
 
