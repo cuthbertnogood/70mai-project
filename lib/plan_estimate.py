@@ -174,12 +174,45 @@ def load_autopilot_plan(temp_dir: Path) -> list[ChunkPlan] | None:
     return chunks
 
 
-def probe_clips(clips: list[Clip], ffprobe: str) -> list[Clip]:
+def probe_clips(
+    clips: list[Clip],
+    ffprobe: str,
+    *,
+    history_dir: Path | None = None,
+) -> list[Clip]:
     if not clips:
         return []
 
-    def probe_one(clip: Clip) -> Clip:
-        duration = probe_duration(clip.path, ffprobe)
+    from import_70mai import (
+        DEFAULT_BAD_CLIPS_DIR,
+        clip_unreadable_reason,
+        probe_duration_safe,
+        quarantine_corrupt_clip,
+    )
+
+    hist = history_dir or DEFAULT_BAD_CLIPS_DIR
+
+    def probe_one(clip: Clip) -> Clip | None:
+        reason = clip_unreadable_reason(clip.path, ffprobe)
+        if reason:
+            quarantine_corrupt_clip(
+                clip.path,
+                reason=reason,
+                record_type=clip.record_type,
+                camera=clip.camera,
+                history_dir=hist,
+            )
+            return None
+        duration = probe_duration_safe(clip.path, ffprobe)
+        if duration is None:
+            quarantine_corrupt_clip(
+                clip.path,
+                reason="ffprobe duration unavailable",
+                record_type=clip.record_type,
+                camera=clip.camera,
+                history_dir=hist,
+            )
+            return None
         return Clip(
             path=clip.path,
             record_type=clip.record_type,
@@ -193,7 +226,9 @@ def probe_clips(clips: list[Clip], ffprobe: str) -> list[Clip]:
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = [pool.submit(probe_one, c) for c in clips]
         for fut in as_completed(futures):
-            probed.append(fut.result())
+            clip = fut.result()
+            if clip is not None:
+                probed.append(clip)
     probed.sort(key=lambda c: (c.timestamp, c.sequence))
     return probed
 

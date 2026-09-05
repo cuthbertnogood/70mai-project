@@ -174,7 +174,7 @@ cd /Users/cuthbert/work/cursor/70mai_project
 - compose tmp: `.publish_tmp/{Normal|Event|Parking}/chunk_NN/trip_NN.mp4`
 - блок «Локальные файлы» — один путь; внизу «Сбои»
 - Parking: после 3× short — [i]gnore/[r]etry
-- битый клип → quarantine `*.MP4.bad`; история в `bad_clips.jsonl`
+- битый клип на SD → **удаление** (история в `bad_clips.jsonl`); legacy `*.MP4.bad` чистятся при старте
 - compose % в шапке — **по ролику** (chunk), не сбрасывается на следующей поездке
 - Front+Back ≥98%; блок «процессы» — pid, uptime, merge_stage
 - правки экрана — `lib/autopilot_dashboard_view.py` (автоперезагрузка)

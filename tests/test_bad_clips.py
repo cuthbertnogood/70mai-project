@@ -17,12 +17,13 @@ from import_70mai import (
     drop_unreadable_clips,
     mp4_has_moov_atom,
     quarantine_corrupt_clip,
+    remove_legacy_bad_clips_on_sd,
     sd_bad_clips_log_path,
 )
 
 
 class BadClipsTests(unittest.TestCase):
-    def test_quarantine_renames_mp4(self) -> None:
+    def test_quarantine_renames_mp4_on_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             src = root / "PA20250903-095947-043342F.MP4"
@@ -46,6 +47,26 @@ class BadClipsTests(unittest.TestCase):
             self.assertEqual(entry["action"], "quarantined")
             self.assertEqual(entry["name"], "PA20250903-095947-043342F.MP4")
             self.assertEqual(entry["record_type"], "Parking")
+
+    def test_quarantine_deletes_on_sd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            src = front / "NO20260814-223441-071132F.MP4"
+            src.write_bytes(b"not-a-real-mp4")
+            hist = root / "hist"
+            dest = quarantine_corrupt_clip(
+                src,
+                reason="moov missing",
+                record_type="Normal",
+                camera="Front",
+                history_dir=hist,
+            )
+            self.assertIsNone(dest)
+            self.assertFalse(src.exists())
+            entry = json.loads(bad_clips_log_path(hist).read_text(encoding="utf-8").strip())
+            self.assertEqual(entry["action"], "deleted_sd")
 
     def test_drop_unreadable_keeps_good(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -155,6 +176,15 @@ class BadClipsTests(unittest.TestCase):
                 host.read_text(encoding="utf-8"),
                 sd.read_text(encoding="utf-8"),
             )
+
+    def test_remove_legacy_bad_clips_on_sd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Event" / "Front"
+            front.mkdir(parents=True)
+            (front / "x.MP4.bad").write_bytes(b"legacy")
+            self.assertEqual(remove_legacy_bad_clips_on_sd(root), 1)
+            self.assertFalse((front / "x.MP4.bad").exists())
 
     def test_count_bad_files_on_sd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

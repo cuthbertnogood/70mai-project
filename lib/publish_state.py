@@ -45,7 +45,7 @@ import/import_*.state.json         — per-file merge status (host video/Output/
 import/CARD_SUMMARY.txt            — human-readable card overview + YouTube URLs
 import/CARD_STORAGE.txt            — video/non-video sizes on card + disk free
 import/card_storage.json           — same (machine-readable)
-import/bad_clips.jsonl             — quarantined corrupt clips (*.MP4.bad) history
+import/bad_clips.jsonl             — corrupt clips removed from SD (history only)
 
 Insert this SD card on any Mac with the project + run:
   ./scripts/publish_all_70mai.sh --wait
@@ -59,8 +59,8 @@ What autopilot does:
   picked up automatically on the next day's run.
 
 Autopilot creates this folder on first use (OAuth from ~/.config/70mai/ or project).
-Raw clips stay on the card; corrupt ones are renamed to *.MP4.bad (see
-import/bad_clips.jsonl). Merged/composed MP4s are temporary on the host and
+Raw clips stay on the card; corrupt ones are **deleted** on SD (see
+import/bad_clips.jsonl). Legacy ``*.MP4.bad`` files are removed on autopilot start.
 deleted after upload.
 
 Every YouTube link for every clip: see import/CARD_SUMMARY.txt or the

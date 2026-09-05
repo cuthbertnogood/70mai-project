@@ -1116,6 +1116,11 @@ def main() -> int:
             log(f"SD card changed: {last_sd_source} → {source}")
         last_sd_source = source
 
+        if not args.dry_run:
+            from import_70mai import remove_legacy_bad_clips_on_sd
+
+            remove_legacy_bad_clips_on_sd(source)
+
         ffprobe = shutil.which("ffprobe")
         if not ffprobe and not args.dry_run:
             log("ffprobe not found")

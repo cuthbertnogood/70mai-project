@@ -1486,7 +1486,7 @@ def infer_sd_root_from_clip(path: Path) -> Path | None:
 
 
 def count_bad_files_on_sd(source: Path | None) -> int:
-    """Count ``*.MP4.bad`` (and ``*.bad``) quarantined clips on the card."""
+    """Count legacy ``*.bad`` quarantine files still on the card (pre-delete policy)."""
     if source is None or not source.is_dir():
         return 0
     total = 0
@@ -1500,6 +1500,34 @@ def count_bad_files_on_sd(source: Path | None) -> int:
             except OSError:
                 continue
     return total
+
+
+def remove_legacy_bad_clips_on_sd(source: Path) -> int:
+    """Delete leftover ``*.bad`` files from older runs (recorder cannot remove them)."""
+    if not source.is_dir():
+        return 0
+    removed = 0
+    for record_type in _RECORD_TYPE_DIRS:
+        for camera in _CAMERA_DIRS:
+            folder = source / record_type / camera
+            if not folder.is_dir():
+                continue
+            try:
+                entries = list(folder.iterdir())
+            except OSError:
+                continue
+            for path in entries:
+                if not path.is_file() or not path.name.endswith(".bad"):
+                    continue
+                try:
+                    path.unlink()
+                    removed += 1
+                    log(f"  [bad] removed legacy {record_type}/{camera}/{path.name}")
+                except OSError as exc:
+                    log(f"  [bad] could not remove legacy {path.name}: {exc}")
+    if removed:
+        log(f"  [bad] cleaned {removed} legacy .bad file(s) from SD")
+    return removed
 
 
 def count_bad_clip_records(history_dir: Path | None = None) -> int:
@@ -1662,9 +1690,10 @@ def quarantine_corrupt_clip(
     camera: str = "",
     history_dir: Path | None = None,
 ) -> Path | None:
-    """Move clip aside (``.MP4`` → ``.MP4.bad``) so scan/merge skip it.
+    """Drop a corrupt clip so scan/merge skip it.
 
-    Does not try to repair — skip and continue. Returns quarantine path or None.
+    On the SD card the file is **deleted** (not renamed) so the dashcam can
+    reclaim space. On host staging paths, rename to ``.MP4.bad``.
     """
     if not path.exists():
         append_bad_clip_record(
@@ -1680,6 +1709,35 @@ def quarantine_corrupt_clip(
         size_before = path.stat().st_size
     except OSError:
         size_before = None
+
+    on_sd = infer_sd_root_from_clip(path) is not None
+    if on_sd:
+        try:
+            path.unlink()
+        except OSError as exc:
+            log(f"  [bad] delete failed for {path.name}: {exc}")
+            append_bad_clip_record(
+                path=path,
+                reason=f"{reason} (delete failed: {exc})",
+                action="delete_failed",
+                record_type=record_type,
+                camera=camera,
+                history_dir=history_dir,
+                size=size_before,
+            )
+            return None
+        log(f"  [bad] deleted {path.name} from SD ({reason})")
+        append_bad_clip_record(
+            path=path,
+            reason=reason,
+            action="deleted_sd",
+            record_type=record_type,
+            camera=camera,
+            history_dir=history_dir,
+            size=size_before,
+        )
+        return None
+
     dest = path.with_name(path.name + ".bad")
     if dest.exists():
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
