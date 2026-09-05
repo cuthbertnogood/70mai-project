@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Tests for Autopilot web Dashboard HTTP server."""
+
+from __future__ import annotations
+
+import json
+import socket
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+
+from autopilot_web import AutopilotWebServer, build_status_payload
+
+
+class AutopilotWebTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.temp_dir = Path(self._tmp.name)
+        self.video_dir = self.temp_dir / "video"
+        self.video_dir.mkdir(parents=True)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _free_port(self) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+
+    def test_build_status_payload_minimal(self) -> None:
+        payload = build_status_payload(
+            temp_dir=self.temp_dir,
+            video_dir=self.video_dir,
+            types=["Normal"],
+            source=None,
+            min_free_gb=20.0,
+        )
+        self.assertIn("run", payload)
+        self.assertIn("summary", payload)
+        self.assertIn("rows", payload)
+
+    def test_server_binds_loopback_only(self) -> None:
+        quit_event = threading.Event()
+        port = self._free_port()
+        server = AutopilotWebServer(
+            host="127.0.0.1",
+            port=port,
+            temp_dir=self.temp_dir,
+            video_dir=self.video_dir,
+            types=["Normal"],
+            min_free_gb=20.0,
+            on_control=lambda action, data: "ok",
+            quit_event=quit_event,
+        )
+        server.start()
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=2) as conn:
+                conn.sendall(b"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                data = conn.recv(4096)
+            self.assertIn(b"200", data)
+            body = data.split(b"\r\n\r\n", 1)[-1]
+            parsed = json.loads(body.decode("utf-8"))
+            self.assertIn("summary", parsed)
+        finally:
+            server.stop()
+
+    def test_control_post_stop(self) -> None:
+        seen: list[str] = []
+        quit_event = threading.Event()
+        port = self._free_port()
+
+        def on_control(action: str, data: dict) -> str:
+            seen.append(action)
+            return f"handled {action}"
+
+        server = AutopilotWebServer(
+            host="127.0.0.1",
+            port=port,
+            temp_dir=self.temp_dir,
+            video_dir=self.video_dir,
+            types=["Normal"],
+            min_free_gb=20.0,
+            on_control=on_control,
+            quit_event=quit_event,
+        )
+        server.start()
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/control",
+                data=json.dumps({"action": "stop"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            self.assertTrue(body.get("ok"))
+            self.assertEqual(seen, ["stop"])
+        finally:
+            server.stop()
+
+
+class PublishAllControlTests(unittest.TestCase):
+    def test_handle_chunk_control_stop(self) -> None:
+        import publish_all_70mai as pa
+        from autopilot_control import EXIT_USER_STOP, write_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            write_command(temp_dir, "stop")
+            ec, repair = pa.handle_chunk_control(
+                temp_dir,
+                record_type="Normal",
+                chunk_index=1,
+            )
+            self.assertEqual(ec, EXIT_USER_STOP)
+            self.assertFalse(repair)
+
+    def test_handle_chunk_skip_defers_without_uploaded(self) -> None:
+        import publish_all_70mai as pa
+        from autopilot_control import EXIT_SKIP_CHUNK, is_chunk_deferred, write_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            write_command(
+                temp_dir,
+                "skip",
+                record_type="Parking",
+                chunk_index=1,
+            )
+            ec, repair = pa.handle_chunk_control(
+                temp_dir,
+                record_type="Parking",
+                chunk_index=1,
+            )
+            self.assertEqual(ec, EXIT_SKIP_CHUNK)
+            self.assertFalse(repair)
+            self.assertTrue(
+                is_chunk_deferred(
+                    temp_dir,
+                    record_type="Parking",
+                    chunk_index=1,
+                )
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

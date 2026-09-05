@@ -11,8 +11,12 @@ The named application that discovers a 70mai SD card and orchestrates Import, Co
 _Avoid_: publish_all (when meaning the product), pipeline (unqualified)
 
 **Dashboard**:
-The web view of one Autopilot run (card discovery, Import, Compose, Upload) from which the operator can stop, skip, or repair that run.
+The localhost web view of one Autopilot run (card discovery, Import, Compose, Upload) from which the operator can stop, skip, or repair that run; the process stays alive after the run until Quit.
 _Avoid_: upload status (when meaning the whole run), status page, admin panel
+
+**Deferred Chunk**:
+A Chunk excluded from the current Autopilot run without marking it uploaded; the next Autopilot run picks it up again.
+_Avoid_: skipped upload, mark-uploaded
 
 ### Footage / planning
 

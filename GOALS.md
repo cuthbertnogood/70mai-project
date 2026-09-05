@@ -104,10 +104,14 @@ Watchdog `./scripts/watch_publish_all_70mai.sh` подхватывает Parking
 - **Resume встроен** (state + `sessions/*.upload.json` на SD); **автоперезапуск при падении upload — нет** — после kill/crash: `./scripts/publish_all_70mai.sh --skip-import` или **`./scripts/watch_publish_all_70mai.sh --skip-import`** (watchdog с restart)
 - `monitor_compose.sh` — отдельный watchdog только для compose (ffmpeg), не для upload и не внутри autopilot
 
+## Autopilot + веб-Dashboard
+
+**`scripts/autopilot.sh`** — one-shot оркестратор с веб-Dashboard на `127.0.0.1`: ожидание SD → import → compose → YouTube → экран результата до Quit. Управление: Stop / Skip / Repair. Движок — тот же `publish_all_70mai.py`; TTY-дашборд (`autopilot_dashboard.sh`) остаётся для отладки.
+
 ## Что не входит в текущие цели (пока)
 
-- Веб-интерфейс.
 - Автоматический запуск по подключению карты (можно добавить отдельно).
+- Доступ к Dashboard из LAN.
 
 ## Backlog — позже
 

@@ -26,6 +26,16 @@ from pathlib import Path
 
 from import_70mai import format_duration, format_log_line, log as _console_log
 from import_70mai import EXIT_MERGE_NEEDS_USER
+from autopilot_control import (
+    EXIT_REPAIR_RETRY,
+    EXIT_SKIP_CHUNK,
+    EXIT_USER_STOP,
+    consume_control,
+    control_targets_chunk,
+    defer_chunk,
+    is_chunk_deferred,
+    peek_control,
+)
 from plan_estimate import (
     DEFAULT_SESSION_GAP,
     SINGLE_VIDEO_TYPES,
@@ -388,6 +398,10 @@ def run_step(
     *,
     log_path: Path,
     dry_run: bool,
+    control: bool = False,
+    temp_dir: Path | None = None,
+    record_type: str = "",
+    chunk_index: int | None = None,
 ) -> int:
     append_log(log_path, " ".join(cmd))
     log(f"\n>>> {' '.join(cmd)}")
@@ -399,13 +413,98 @@ def run_step(
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = lib_dir if not existing else f"{lib_dir}:{existing}"
     with log_path.open("a", encoding="utf-8") as handle:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             stdout=handle,
             stderr=subprocess.STDOUT,
             env=env,
         )
-    return proc.returncode
+        if not control or temp_dir is None:
+            return proc.wait()
+        while proc.poll() is None:
+            ctrl = peek_control(temp_dir)
+            cmd_name = str(ctrl.get("command") or "")
+            if cmd_name == "stop":
+                consume_control(temp_dir)
+                _terminate_subprocess(proc)
+                return EXIT_USER_STOP
+            if cmd_name == "skip" and chunk_index is not None:
+                if control_targets_chunk(
+                    ctrl,
+                    record_type=record_type,
+                    chunk_index=chunk_index,
+                ):
+                    consume_control(temp_dir)
+                    defer_chunk(
+                        temp_dir,
+                        record_type=record_type,
+                        chunk_index=chunk_index,
+                    )
+                    _terminate_subprocess(proc)
+                    log(
+                        f"  Skip chunk {chunk_index} ({record_type}) — "
+                        "deferred to next Autopilot run"
+                    )
+                    return EXIT_SKIP_CHUNK
+            if cmd_name == "repair":
+                consume_control(temp_dir)
+                _terminate_subprocess(proc)
+                log(f"  Repair requested — retry chunk {chunk_index}")
+                return EXIT_REPAIR_RETRY
+            time.sleep(0.5)
+        return int(proc.returncode or 0)
+
+
+def _terminate_subprocess(proc: subprocess.Popen[str]) -> None:
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        proc.wait(timeout=3)
+
+
+def handle_chunk_control(
+    temp_dir: Path,
+    *,
+    record_type: str,
+    chunk_index: int,
+) -> tuple[int | None, bool]:
+    """Return (exit_code, repair_now). exit_code set → abort run_once."""
+    ctrl = peek_control(temp_dir)
+    if not ctrl:
+        return None, False
+    cmd_name = str(ctrl.get("command") or "")
+    if cmd_name == "stop":
+        consume_control(temp_dir)
+        return EXIT_USER_STOP, False
+    if cmd_name == "skip":
+        if control_targets_chunk(
+            ctrl,
+            record_type=record_type,
+            chunk_index=chunk_index,
+        ):
+            consume_control(temp_dir)
+            defer_chunk(
+                temp_dir,
+                record_type=record_type,
+                chunk_index=chunk_index,
+            )
+            log(
+                f"  Skip chunk {chunk_index} ({record_type}) — "
+                "deferred to next Autopilot run"
+            )
+            return EXIT_SKIP_CHUNK, False
+    if cmd_name == "repair":
+        consume_control(temp_dir)
+        return None, True
+    return None, False
 
 
 def build_import_cmd(
@@ -473,6 +572,7 @@ def run_import_with_retries(
     repair: str,
     force_import: bool,
     repair_store,
+    control: bool = False,
 ) -> int:
     import_cmd = build_import_cmd(
         python,
@@ -507,7 +607,17 @@ def run_import_with_retries(
                 uploaded=False,
                 mode=repair,
             )
-        ec = run_step(import_cmd, log_path=log_path, dry_run=dry_run)
+        ec = run_step(
+            import_cmd,
+            log_path=log_path,
+            dry_run=dry_run,
+            control=control,
+            temp_dir=temp_dir,
+            record_type=record_type,
+            chunk_index=chunk.index,
+        )
+        if ec in (EXIT_USER_STOP, EXIT_SKIP_CHUNK):
+            return ec
         if ec == 0:
             break
         if ec == EXIT_MERGE_NEEDS_USER:
@@ -969,6 +1079,11 @@ def main() -> int:
         action="store_true",
         help="Legacy no-op (background prefetch import removed; sync import per chunk)",
     )
+    parser.add_argument(
+        "--control",
+        action="store_true",
+        help="Poll autopilot_control.json for Stop/Skip/Repair (web Dashboard)",
+    )
     args = parser.parse_args()
 
     from runtime_config import autopilot_settings
@@ -1259,167 +1374,211 @@ def main() -> int:
                         )
                         continue
 
-                    log("")
-                    log(
-                        f"=== Ролик {record_type} chunk {chunk.index}: "
-                        f"{format_duration(chunk.duration_sec)} | "
-                        f"{chunk.trip_labels} ==="
-                    )
-                    log(
-                        f"  Window: {chunk.start:%Y-%m-%d %H:%M:%S} → "
-                        f"{chunk.end:%Y-%m-%d %H:%M:%S}"
-                    )
-
-                    force_import = False
-                    repair_store = None
-                    if not args.skip_import and args.repair != "off":
-                        from pipeline_repair import diagnose_and_repair
-                        from publish_70mai import chunk_uploaded as _chunk_uploaded
-
-                        type_store_chk = StateStore(
-                            source,
-                            args.temp_dir,
-                            record_type,
-                            state_on_sd=state_on_sd,
-                        )
-                        already_up = _chunk_uploaded(
-                            type_store_chk.load(resume=True, quiet=True),
-                            record_type,
-                            chunk.index,
-                            chunk=chunk,
-                        )
-                        if state_on_sd and not args.dry_run:
-                            from import_state import ImportStateStore
-
-                            repair_store = ImportStateStore(
-                                source,
-                                record_type,
-                                state_on_sd=True,
-                                local_dir=args.temp_dir,
-                                chunk_minutes=IMPORT_CHUNK_MINUTES,
-                                gap_seconds=args.session_gap,
-                            )
-                        ok_publish, _issues, actions = diagnose_and_repair(
-                            source,
-                            args.video_dir,
-                            chunk,
-                            temp_dir=args.temp_dir,
-                            import_store=repair_store,
-                            uploaded=already_up,
-                            mode=args.repair,
-                        )
-                        if not ok_publish and args.repair == "auto":
-                            force_import = True
-                            if actions:
-                                log(
-                                    f"  [repair] {len(actions)} action(s) — "
-                                    "forcing import rebuild"
-                                )
-                        elif not ok_publish and args.repair == "diagnose":
-                            log(
-                                "  [repair] diagnose-only: blockers found — "
-                                "import will still run if merges not ready"
-                            )
-
-                    if not args.skip_import:
-                        merges_ok = (
-                            not force_import
-                            and chunk_merges_ready(args.video_dir, chunk)
-                        )
-                        if merges_ok:
-                            log(
-                                "  SSD merges already cover this window — "
-                                "skip import (reuse, no SD copy)"
-                            )
-                        else:
-                            ec = run_import_with_retries(
-                                chunk,
-                                python=python,
-                                source=source,
-                                record_type=record_type,
-                                video_dir=args.video_dir,
-                                session_gap=args.session_gap,
-                                state_on_sd=state_on_sd,
-                                temp_dir=args.temp_dir,
-                                log_path=args.log,
-                                dry_run=args.dry_run,
-                                repair=args.repair,
-                                force_import=force_import,
-                                repair_store=repair_store,
-                            )
-                            if ec == EXIT_MERGE_NEEDS_USER:
-                                return ec
-                            if ec != 0:
-                                log(
-                                    f"Import failed for chunk {chunk.index} "
-                                    f"(exit {ec}) — see {args.log}"
-                                )
-                                return ec
-
-                    # One YouTube video ≈ this chunk (trips concat if several short ones).
-                    if "--profile" not in sys.argv:
-                        live_profile = autopilot_settings(force=True).get("profile")
-                        if live_profile:
-                            args.profile = str(live_profile)
-                    if "--privacy" not in sys.argv:
-                        live_privacy = autopilot_settings(force=True).get("privacy")
-                        if live_privacy:
-                            args.privacy = str(live_privacy)
-
-                    publish_cmd = [
-                        python,
-                        "lib/publish_70mai.py",
-                        "--source",
-                        str(source),
-                        "--types",
-                        record_type,
-                        "--video-dir",
-                        str(args.video_dir),
-                        "--temp-dir",
-                        str(args.temp_dir),
-                        "--chunk-minutes",
-                        str(args.chunk_minutes),
-                        "--chunk",
-                        str(chunk.index),
-                        "--resume",
-                        "--resume-upload",
-                        "--continue-on-error",
-                        "--state-on-sd" if state_on_sd else "--no-state-on-sd",
-                        "--credentials",
-                        str(creds),
-                        "--token",
-                        str(token),
-                        "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
-                        "--title",
-                        type_title,
-                        "--profile",
-                        args.profile,
-                        "--privacy",
-                        args.privacy,
-                        "--prune-merged",
-                        args.prune_merged,
-                        "--min-free-gb",
-                        str(args.min_free_gb),
-                        "--repair",
-                        args.repair,
-                    ]
-                    if args.upload_chunk_mb is not None:
-                        publish_cmd.extend(
-                            ["--upload-chunk-mb", str(args.upload_chunk_mb)]
-                        )
-                    if args.no_overlap:
-                        publish_cmd.append("--no-overlap")
-                    ec = run_step(
-                        publish_cmd,
-                        log_path=args.log,
-                        dry_run=args.dry_run,
-                    )
-                    if ec != 0:
-                        failed = 1
+                    if args.control and is_chunk_deferred(
+                        args.temp_dir,
+                        record_type=record_type,
+                        chunk_index=chunk.index,
+                    ):
                         log(
-                            f"Publish [{record_type}] chunk {chunk.index} "
-                            f"finished with errors (exit {ec}) — see {args.log}"
+                            f"  Skip chunk {chunk.index} ({record_type}) — "
+                            "deferred from earlier in this run"
                         )
+                        continue
+
+                    repair_now = False
+                    while True:
+                        if args.control:
+                            ctrl_ec, repair_now_ctrl = handle_chunk_control(
+                                args.temp_dir,
+                                record_type=record_type,
+                                chunk_index=chunk.index,
+                            )
+                            repair_now = repair_now or repair_now_ctrl
+                            if ctrl_ec == EXIT_USER_STOP:
+                                return EXIT_USER_STOP
+                            if ctrl_ec == EXIT_SKIP_CHUNK:
+                                break
+
+                        log("")
+                        log(
+                            f"=== Ролик {record_type} chunk {chunk.index}: "
+                            f"{format_duration(chunk.duration_sec)} | "
+                            f"{chunk.trip_labels} ==="
+                        )
+                        log(
+                            f"  Window: {chunk.start:%Y-%m-%d %H:%M:%S} → "
+                            f"{chunk.end:%Y-%m-%d %H:%M:%S}"
+                        )
+
+                        force_import = bool(repair_now)
+                        repair_store = None
+                        if not args.skip_import and args.repair != "off":
+                            from pipeline_repair import diagnose_and_repair
+                            from publish_70mai import chunk_uploaded as _chunk_uploaded
+
+                            type_store_chk = StateStore(
+                                source,
+                                args.temp_dir,
+                                record_type,
+                                state_on_sd=state_on_sd,
+                            )
+                            already_up = _chunk_uploaded(
+                                type_store_chk.load(resume=True, quiet=True),
+                                record_type,
+                                chunk.index,
+                                chunk=chunk,
+                            )
+                            if state_on_sd and not args.dry_run:
+                                from import_state import ImportStateStore
+
+                                repair_store = ImportStateStore(
+                                    source,
+                                    record_type,
+                                    state_on_sd=True,
+                                    local_dir=args.temp_dir,
+                                    chunk_minutes=IMPORT_CHUNK_MINUTES,
+                                    gap_seconds=args.session_gap,
+                                )
+                            ok_publish, _issues, actions = diagnose_and_repair(
+                                source,
+                                args.video_dir,
+                                chunk,
+                                temp_dir=args.temp_dir,
+                                import_store=repair_store,
+                                uploaded=already_up,
+                                mode=args.repair,
+                            )
+                            if not ok_publish and args.repair == "auto":
+                                force_import = True
+                                if actions:
+                                    log(
+                                        f"  [repair] {len(actions)} action(s) — "
+                                        "forcing import rebuild"
+                                    )
+                            elif not ok_publish and args.repair == "diagnose":
+                                log(
+                                    "  [repair] diagnose-only: blockers found — "
+                                    "import will still run if merges not ready"
+                                )
+
+                        if not args.skip_import:
+                            merges_ok = (
+                                not force_import
+                                and chunk_merges_ready(args.video_dir, chunk)
+                            )
+                            if merges_ok:
+                                log(
+                                    "  SSD merges already cover this window — "
+                                    "skip import (reuse, no SD copy)"
+                                )
+                            else:
+                                ec = run_import_with_retries(
+                                    chunk,
+                                    python=python,
+                                    source=source,
+                                    record_type=record_type,
+                                    video_dir=args.video_dir,
+                                    session_gap=args.session_gap,
+                                    state_on_sd=state_on_sd,
+                                    temp_dir=args.temp_dir,
+                                    log_path=args.log,
+                                    dry_run=args.dry_run,
+                                    repair=args.repair,
+                                    force_import=force_import,
+                                    repair_store=repair_store,
+                                    control=args.control,
+                                )
+                                if ec in (EXIT_USER_STOP, EXIT_SKIP_CHUNK):
+                                    if ec == EXIT_USER_STOP:
+                                        return EXIT_USER_STOP
+                                    break
+                                if ec == EXIT_REPAIR_RETRY:
+                                    repair_now = True
+                                    continue
+                                if ec == EXIT_MERGE_NEEDS_USER:
+                                    return ec
+                                if ec != 0:
+                                    log(
+                                        f"Import failed for chunk {chunk.index} "
+                                        f"(exit {ec}) — see {args.log}"
+                                    )
+                                    return ec
+
+                        if "--profile" not in sys.argv:
+                            live_profile = autopilot_settings(force=True).get("profile")
+                            if live_profile:
+                                args.profile = str(live_profile)
+                        if "--privacy" not in sys.argv:
+                            live_privacy = autopilot_settings(force=True).get("privacy")
+                            if live_privacy:
+                                args.privacy = str(live_privacy)
+
+                        publish_cmd = [
+                            python,
+                            "lib/publish_70mai.py",
+                            "--source",
+                            str(source),
+                            "--types",
+                            record_type,
+                            "--video-dir",
+                            str(args.video_dir),
+                            "--temp-dir",
+                            str(args.temp_dir),
+                            "--chunk-minutes",
+                            str(args.chunk_minutes),
+                            "--chunk",
+                            str(chunk.index),
+                            "--resume",
+                            "--resume-upload",
+                            "--continue-on-error",
+                            "--state-on-sd" if state_on_sd else "--no-state-on-sd",
+                            "--credentials",
+                            str(creds),
+                            "--token",
+                            str(token),
+                            "--auth-on-sd" if auth_on_sd else "--no-auth-on-sd",
+                            "--title",
+                            type_title,
+                            "--profile",
+                            args.profile,
+                            "--privacy",
+                            args.privacy,
+                            "--prune-merged",
+                            args.prune_merged,
+                            "--min-free-gb",
+                            str(args.min_free_gb),
+                            "--repair",
+                            args.repair,
+                        ]
+                        if args.upload_chunk_mb is not None:
+                            publish_cmd.extend(
+                                ["--upload-chunk-mb", str(args.upload_chunk_mb)]
+                            )
+                        if args.no_overlap:
+                            publish_cmd.append("--no-overlap")
+                        ec = run_step(
+                            publish_cmd,
+                            log_path=args.log,
+                            dry_run=args.dry_run,
+                            control=args.control,
+                            temp_dir=args.temp_dir,
+                            record_type=record_type,
+                            chunk_index=chunk.index,
+                        )
+                        if ec == EXIT_USER_STOP:
+                            return EXIT_USER_STOP
+                        if ec == EXIT_SKIP_CHUNK:
+                            break
+                        if ec == EXIT_REPAIR_RETRY:
+                            repair_now = True
+                            continue
+                        if ec != 0:
+                            failed = 1
+                            log(
+                                f"Publish [{record_type}] chunk {chunk.index} "
+                                f"finished with errors (exit {ec}) — see {args.log}"
+                            )
+                        break
 
             log("")
             from publish_70mai import cleanup_after_successful_uploads, free_disk_gb

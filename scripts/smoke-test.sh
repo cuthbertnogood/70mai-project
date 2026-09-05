@@ -20,6 +20,7 @@ for sh in \
   scripts/bench_1h_run.sh \
   scripts/bench_1h_dashboard.sh \
   scripts/publish_all_70mai.sh \
+  scripts/autopilot.sh \
   scripts/watch_publish_all_70mai.sh \
   scripts/autopilot_dashboard.sh \
   scripts/run-tests.sh \

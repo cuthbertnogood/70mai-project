@@ -28,8 +28,9 @@ cd /Users/cuthbert/work_local/70mai_project
 
 | Скрипт | Зачем |
 |--------|--------|
-| `./scripts/publish_all_70mai.sh` | **Автопилот** — import → compose → YouTube |
-| `./scripts/watch_publish_all_70mai.sh` | То же + авто-рестарт при падении (stall: import/compose/upload activity, не только `trip_*.mp4`) |
+| `./scripts/publish_all_70mai.sh` | **Автопилот (CLI)** — import → compose → YouTube |
+| `./scripts/autopilot.sh` | **Autopilot** — то же + веб-Dashboard на `127.0.0.1:8787` (Stop/Skip/Repair/Quit) |
+| `./scripts/watch_publish_all_70mai.sh` | CLI + авто-рестарт при падении (не совмещать с `autopilot.sh`) |
 | `./scripts/autopilot_dashboard.sh` | Живой статус (второй терминал) |
 | `./scripts/generate_card_reports.sh` | Отчёт по карте (MD/CSV) |
 | `./scripts/run-tests.sh` | Unit-тесты (`tests/`) |
@@ -71,6 +72,25 @@ python3 анализ/analyze_performance.py   # исторический отч�
 ```
 
 Артефакты: `video/Output/.publish_tmp/perf_monitor.jsonl`, `анализ/bottleneck_report.md`.
+
+---
+
+## Autopilot (веб-Dashboard)
+
+One-shot с браузером на localhost:
+
+```bash
+./scripts/autopilot.sh
+# без открытия браузера (SSH):
+./scripts/autopilot.sh --no-browser
+# аргументы publish_all после --
+./scripts/autopilot.sh -- --skip-import
+```
+
+- Dashboard: `http://127.0.0.1:8787/` — весь прогон (карта / Import / Compose / Upload).
+- **Stop** — конец прогона (без рестарта); **Skip** — отложить текущий Chunk (не `mark-uploaded`); **Repair** — `--repair auto`; **Quit** — выход после готово/stop/ошибка.
+- Не запускать вместе с `watch_publish_all_70mai.sh`.
+- TTY-дашборд: `./scripts/autopilot_dashboard.sh` (отдельный терминал, только просмотр).
 
 ---
 
