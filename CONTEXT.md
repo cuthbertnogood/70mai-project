@@ -10,6 +10,10 @@ Dashcam SD → compose → YouTube publish pipeline.
 The named application that discovers a 70mai SD card and orchestrates Import, Compose, and Upload without replacing those stages.
 _Avoid_: publish_all (when meaning the product), pipeline (unqualified)
 
+**Dashboard**:
+The status view of one Autopilot run: card discovery, Import, Compose, and Upload.
+_Avoid_: upload status (when meaning the whole run), status page
+
 ### Footage / planning
 
 **Trip**:
