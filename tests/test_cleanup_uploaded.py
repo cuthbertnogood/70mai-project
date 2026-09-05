@@ -58,6 +58,9 @@ class CleanupUploadedTests(unittest.TestCase):
                     {
                         "record_type": "Parking",
                         "index": 1,
+                        "wall_start": start.isoformat(),
+                        "trip_indices": [1],
+                        "duration_sec": 100.0,
                         "uploaded": True,
                         "video_id": "abc",
                     }

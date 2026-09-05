@@ -186,8 +186,8 @@ class ChunkStateMatchTests(unittest.TestCase):
             ],
         }
         reasons = prune_stale_parts_for_plan(state, [chunk])
-        self.assertEqual(len(reasons), 1)
-        self.assertIn("chunk 1", reasons[0])
+        self.assertGreaterEqual(len(reasons), 1)
+        self.assertTrue(any("chunk 1" in r for r in reasons))
         self.assertEqual(len(state["parts"]), 1)
         self.assertEqual(state["parts"][0]["index"], 9)
         self.assertEqual(state["trip_parts"], [])

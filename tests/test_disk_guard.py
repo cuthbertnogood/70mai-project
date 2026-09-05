@@ -45,6 +45,7 @@ class DiskGuardTests(unittest.TestCase):
             trip_path.parent.mkdir(parents=True)
             trip_path.write_bytes(b"x" * 1000)
             state: dict = {"trip_parts": []}
+            chunk = _chunk()
             mark_trip_state(
                 state,
                 record_type="Normal",
@@ -53,8 +54,9 @@ class DiskGuardTests(unittest.TestCase):
                 video_id="abc",
                 uploaded=True,
                 output_path=trip_path,
+                wall_start=chunk.trips[0].start,
             )
-            freed = prune_uploaded_composed(temp, state, [_chunk()])
+            freed = prune_uploaded_composed(temp, state, [chunk])
             self.assertGreaterEqual(freed, 1000)
             self.assertFalse(trip_path.is_file())
 
