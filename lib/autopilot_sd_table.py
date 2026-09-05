@@ -86,13 +86,21 @@ def _trip_rows_from_inventory(
             end = parse_datetime(end_s)
         except ValueError:
             continue
-        matched = _clips_for_window(all_clips, start, end)
+        # Event/Parking: trip end in inventory is timeline length (start + duration),
+        # not the last clip timestamp — clips can span weeks on the card.
+        if record_type in SINGLE_VIDEO_TYPES:
+            matched = all_clips
+        else:
+            matched = _clips_for_window(all_clips, start, end)
         size_bytes = sum(_clip_bytes(c.path) for c in matched)
         dur = float(trip.get("duration_sec") or 0.0)
         if record_type in SINGLE_VIDEO_TYPES:
             label = "все клипы"
         else:
             label = f"trip {idx} · {start:%m-%d %H:%M}"
+        clip_count = len(matched)
+        if record_type in SINGLE_VIDEO_TYPES and not clip_count:
+            clip_count = int(trip.get("clip_count") or 0)
         rows.append(
             {
                 "record_type": record_type,
@@ -102,7 +110,7 @@ def _trip_rows_from_inventory(
                 "end": end.strftime("%Y-%m-%d %H:%M:%S"),
                 "duration_sec": round(dur, 1),
                 "duration": trip.get("duration") or format_duration(dur),
-                "clip_count": len(matched) or int(trip.get("clip_count") or 0),
+                "clip_count": clip_count,
                 "size_bytes": size_bytes,
                 "size": format_file_size(size_bytes),
             }

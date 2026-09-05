@@ -64,6 +64,42 @@ class AutopilotSdTableTests(unittest.TestCase):
             self.assertEqual(payload["trips"][0]["duration_sec"], 2400.0)
             self.assertEqual(payload["trips"][0]["size_bytes"], 500_000)
 
+    def test_event_counts_all_clips_not_timeline_window(self) -> None:
+        """Event/Parking clips span the card; inventory trip end is timeline length only."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Event" / "Front"
+            front.mkdir(parents=True)
+            for name in (
+                "EV20260308-213106-000001F.MP4",
+                "EV20260815-232924-000002F.MP4",
+            ):
+                (front / name).write_bytes(b"x" * 100)
+            inv_dir = sd_import_dir(root)
+            inv_dir.mkdir(parents=True)
+            inv = {
+                "updated_at": "2026-08-15T00:00:00Z",
+                "record_types": {
+                    "Event": {
+                        "trips": [
+                            {
+                                "index": 1,
+                                "start": "2026-03-08 21:31:06",
+                                "end": "2026-03-08 23:00:37",
+                                "duration_sec": 5371.0,
+                                "duration": "1h 29m 31s",
+                                "clip_count": 2,
+                            }
+                        ]
+                    }
+                },
+            }
+            (inv_dir / "card_inventory.json").write_text(
+                json.dumps(inv), encoding="utf-8"
+            )
+            payload = build_sd_card_payload(root, ["Event"], ttl_sec=0)
+            self.assertEqual(payload["trips"][0]["clip_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
