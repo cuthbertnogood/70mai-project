@@ -68,6 +68,28 @@ def write_result(path: Path, data: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def trace_summary(temp_dir: Path) -> list[dict[str, Any]]:
+    path = temp_dir / "perf_trace.jsonl"
+    rows: list[dict[str, Any]] = []
+    if not path.is_file():
+        return rows
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("event") == "stage_end":
+            rows.append(
+                {
+                    "stage": row.get("stage"),
+                    "chunk_index": row.get("chunk_index"),
+                    "elapsed_sec": row.get("elapsed_sec"),
+                    "returncode": row.get("returncode"),
+                }
+            )
+    return rows[-20:]
+
+
 def run(args: argparse.Namespace) -> int:
     result_path = args.temp_dir / RESULT_FILENAME
     started = time.time()
@@ -75,6 +97,7 @@ def run(args: argparse.Namespace) -> int:
         "status": "running",
         "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "host": host_info(),
+        "trace": trace_summary(args.temp_dir),
     }
     write_result(result_path, result)
 

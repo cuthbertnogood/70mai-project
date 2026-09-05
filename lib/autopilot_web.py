@@ -236,6 +236,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       const profileButton = document.getElementById('btn-profile');
       profileButton.disabled = ['running','restarting','quitting'].includes(phase) ||
         diagnostics.status === 'running';
+      const trace = diagnostics.trace || [];
+      const lastTrace = trace.length ? trace[trace.length - 1] : null;
       const live = data.live || {};
       const cards = [
         ['SD', data.sd_present ? (data.sd_path || 'да') : 'нет'],
@@ -245,6 +247,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         ['Диск свободно', `${data.disk.free_gb} GB`],
         ['Деталь', live.detail || '—'],
         ['Диагностика', diagnostics.message || diagnostics.status || '—'],
+        ['Последний этап', lastTrace ? `${lastTrace.stage} ${lastTrace.elapsed_sec || ''}s` : '—'],
       ];
       document.getElementById('cards').innerHTML = cards.map(([k,v]) =>
         `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(String(v))}</div></div>`

@@ -4,15 +4,47 @@
 
 Детали, OAuth, тюнинг: [детальное_описание.md](детальное_описание.md) · цели: [GOALS.md](GOALS.md).
 
----
+## Запуск
 
-## Один раз
+Все команды — из каталога проекта:
 
 ```bash
-cd /Users/cuthbert/work_local/70mai_project
-scripts/setup-venv.sh
-# OAuth: ~/.config/70mai/youtube_credentials.json  (первый upload — вход в браузере)
+cd /Users/cuthbert/work/cursor/70mai_project
+
+# Один раз: venv + OAuth (~/.config/70mai/youtube_credentials.json; первый upload — вход в браузере)
+./scripts/setup-venv.sh
+
+# Рекомендуется: Autopilot + веб-Dashboard (откроется http://127.0.0.1:8787/)
+./scripts/autopilot.sh
+
+# Без открытия браузера (SSH, уже открыта вкладка)
+./scripts/autopilot.sh --no-browser
+
+# Аргументы publish_all после --
+./scripts/autopilot.sh -- --skip-import
+./scripts/autopilot.sh -- --types Parking
+./scripts/autopilot.sh -- --profile youtube --min-free-gb 20
+
+# Только терминал, без веба (ждать SD: --wait)
+./scripts/publish_all_70mai.sh --wait
+
+# Карта уже вставлена, без ожидания
+./scripts/publish_all_70mai.sh
+
+# Перезапуск, если lock занят другим процессом
+./scripts/publish_all_70mai.sh --force-restart --wait
+
+# План без работы / только Parking / merge уже на диске
+./scripts/publish_all_70mai.sh --dry-run
+./scripts/publish_all_70mai.sh --types Parking
+./scripts/publish_all_70mai.sh --types Parking --skip-import
+
+# Лог и TTY-статус (второй терминал, только просмотр)
+tail -f video/Output/.publish_tmp/publish_all.log
+./scripts/autopilot_dashboard.sh
 ```
+
+**Веб-Dashboard** (`127.0.0.1:8787`): карта, Import, Compose, Upload. Кнопки **Stop** (конец прогона), **Skip** (отложить Chunk), **Repair**, **Quit**. При crash Autopilot сам перезапускает пайплайн (кроме Stop).
 
 Нужны: Mac, Python 3.10+, ffmpeg, SD-карта 70mai (обычно `/Volumes/Untitled`).
 
@@ -20,10 +52,10 @@ scripts/setup-venv.sh
 
 ## Основные скрипты (только эти)
 
-Все команды — из каталога проекта:
+Все команды — из каталога проекта (см. **Запуск** в начале файла).
 
 ```bash
-cd /Users/cuthbert/work_local/70mai_project
+cd /Users/cuthbert/work/cursor/70mai_project
 ```
 
 | Скрипт | Зачем |
@@ -92,26 +124,11 @@ python3 scripts/analyze_host_perf.py -o анализ/host_perf_report.md
 
 ## Autopilot (веб-Dashboard)
 
-One-shot с браузером на localhost:
+Подробные команды — в **Запуск** в начале README.
 
-```bash
-./scripts/autopilot.sh
-# без открытия браузера (SSH):
-./scripts/autopilot.sh --no-browser
-# аргументы publish_all после --
-./scripts/autopilot.sh -- --skip-import
-```
-
-- Dashboard: `http://127.0.0.1:8787/` — весь прогон (карта / Import / Compose / Upload).
-- **Stop** — конец прогона (без рестарта); **Skip** — отложить текущий Chunk (не `mark-uploaded`); **Repair** — `--repair auto`; **Quit** — выход после готово/stop/ошибка.
 - **Профилировать хост** — безопасный локальный compose-тест и hardware-метрики; upload, SD и publish state не затрагиваются.
-- При crash пайплайна Autopilot сам перезапускает прогон (кроме Stop).
-- TTY-дашборд: `./scripts/autopilot_dashboard.sh` (отдельный терминал, только просмотр).
-
-Результат сохраняется в `video/Output/.publish_tmp/autopilot_diagnostics.json`.
-Полный compose-тест выполняется только при наличии локальных ScreenRecording и
-merged Front/Back; иначе Dashboard показывает hardware-информацию и сообщает,
-что нужен тестовый набор.
+- Результат сохраняется в `video/Output/.publish_tmp/autopilot_diagnostics.json`.
+- Полный compose-тест выполняется только при наличии локальных ScreenRecording и merged Front/Back; иначе Dashboard показывает hardware-информацию и сообщает, что нужен тестовый набор.
 
 ---
 
@@ -120,7 +137,7 @@ merged Front/Back; иначе Dashboard показывает hardware-инфор
 После изменений в `lib/`, `scripts/` или `tests/` прогоняй smoke **до** запуска автопилота на карте:
 
 ```bash
-cd /Users/cuthbert/work_local/70mai_project
+cd /Users/cuthbert/work/cursor/70mai_project
 ./scripts/smoke-test.sh
 ```
 
@@ -148,43 +165,19 @@ cd /Users/cuthbert/work_local/70mai_project
 
 ---
 
-## Как запускать
+## Как запускать (TTY-дашборд)
 
-```bash
-cd /Users/cuthbert/work_local/70mai_project
+Команды запуска — в **Запуск** в начале README. Ниже — подсказки по экрану TTY-дашборда (`./scripts/autopilot_dashboard.sh`):
 
-# Рекомендуется: веб-Dashboard + рестарт при crash
-./scripts/autopilot.sh
-
-# Только терминал (без веба)
-./scripts/publish_all_70mai.sh --wait
-
-# Перезапуск, если уже крутится другой автопилот (lock занят)
-./scripts/publish_all_70mai.sh --force-restart --wait
-# то же: --restart; в TTY без флага спросит [y/N]
-
-# Только Parking / только план / без import
-./scripts/publish_all_70mai.sh --types Parking
-./scripts/publish_all_70mai.sh --dry-run
-./scripts/publish_all_70mai.sh --types Parking --skip-import
-
-# Прогресс (отдельное окно): copy/merge/compose/upload; строка prefetch в дашборде — только если в логе/proc ещё виден старый фоновый import (автопилот больше не запускает prefetch);
-# шапка YouTube M/N = ~2h **ролики** (не поездки); в таблице `рM/N` — тот же счётчик; status.json сверяется с ffmpeg/publish CLI (автоисправление типа/chunk);
-# compose tmp: `.publish_tmp/{Normal|Event|Parking}/chunk_NN/trip_NN.mp4` (legacy `chunk_NN/` только чтение);
-# блок «Локальные файлы» — один путь (самая поздняя поездка, open до YouTube); внизу «Сбои»;
-# Parking: сейчас Xs / цель ~7309s; после 3× short — [i]gnore/[r]etry (parts keep).
-# Битый клип (moov/ffprobe) → quarantine `*.MP4.bad`, merge без него; счётчик в «Сбои»;
-# история: host `video/Output/.publish_tmp/bad_clips.jsonl` + SD `/.70mai/import/bad_clips.jsonl`
-# Compose/upload: вторая строка как у copy/merge — % · размер · скорость (Nx / MB/s) · ETA; % compose в шапке/таблице — **по ролику** (chunk), не сбрасывается при старте следующей поездки; в detail — trip N и % текущей поездки.
-# Compose ждёт Front+Back ≥98%; в TUI — живое покрытие % по каждой камере.
-# Блок «процессы»: watchdog/autopilot/import (pid, uptime, флаги), возраст publish_all.log, merge_stage на диске; если всё мертво — подсказка перезапуска.
-# Компактный режим (<46 строк терминала): полный блок этапов (copy/merge/compose/upload); без рамки таблицы и легенды «конвейер».
-# Upload Parking/Event: дашборд читает свежий `Upload part_…` из publish_all.log, если status.json застрял на compose.
-# После «nothing to do» / Autopilot done — status → `phase=done` (не ghost upload@100% и не «ждёт» + compose-wait).
-# Завершённые этапы: `✓ готово — <результат>` (не голое ✓), чтобы не путать с зависанием.
-# Правки экрана — lib/autopilot_dashboard_view.py (автоперезагрузка).
-./scripts/autopilot_dashboard.sh
-```
+- **prefetch** в дашборде — только если в логе/proc ещё виден старый фоновый import
+- шапка YouTube M/N = ~2h **ролики** (не поездки); в таблице `рM/N` — тот же счётчик
+- compose tmp: `.publish_tmp/{Normal|Event|Parking}/chunk_NN/trip_NN.mp4`
+- блок «Локальные файлы» — один путь; внизу «Сбои»
+- Parking: после 3× short — [i]gnore/[r]etry
+- битый клип → quarantine `*.MP4.bad`; история в `bad_clips.jsonl`
+- compose % в шапке — **по ролику** (chunk), не сбрасывается на следующей поездке
+- Front+Back ≥98%; блок «процессы» — pid, uptime, merge_stage
+- правки экрана — `lib/autopilot_dashboard_view.py` (автоперезагрузка)
 
 ### Этапы в дашборде (конвейер)
 
@@ -240,7 +233,7 @@ cd /Users/cuthbert/work_local/70mai_project
 Пример:
 
 ```bash
-cd /Users/cuthbert/work_local/70mai_project
+cd /Users/cuthbert/work/cursor/70mai_project
 ./scripts/autopilot.sh -- --profile youtube --min-free-gb 20
 ```
 
@@ -280,7 +273,7 @@ cd /Users/cuthbert/work_local/70mai_project
 ---
 
 ```bash
-cd /Users/cuthbert/work_local/70mai_project
+cd /Users/cuthbert/work/cursor/70mai_project
 tail -f video/Output/.publish_tmp/publish_all.log
 tail -f video/Output/.publish_tmp/publish_all_watchdog.log
 tail -f video/Output/.publish_tmp/repair_log.jsonl

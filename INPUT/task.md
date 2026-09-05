@@ -1,5 +1,22 @@
 # Autopilot — техническое задание
 
+## Запуск
+
+```bash
+cd /Users/cuthbert/work/cursor/70mai_project
+
+./scripts/setup-venv.sh                    # один раз
+
+./scripts/autopilot.sh                     # веб-Dashboard http://127.0.0.1:8787/
+./scripts/autopilot.sh --no-browser
+./scripts/autopilot.sh -- --skip-import
+
+./scripts/publish_all_70mai.sh --wait      # CLI без веба
+tail -f video/Output/.publish_tmp/publish_all.log
+```
+
+Полный список команд — в [README.md](../README.md) (раздел **Запуск**).
+
 ## Цель
 
 **Autopilot** — приложение-оркестратор: вставил SD-карту 70mai → дождался полного прогона (import → compose → upload на YouTube) → закрыл сессию. Пайплайн не переписывается: движок — существующие `publish_all_70mai.py` / `import_70mai.py` / `publish_70mai.py`.
