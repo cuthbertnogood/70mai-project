@@ -8,7 +8,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 CONTROL_FILENAME = "autopilot_control.json"
 RUN_STATE_FILENAME = "autopilot_run_state.json"
@@ -183,3 +183,42 @@ def control_targets_chunk(
     if ci is not None and int(ci) != chunk_index:
         return False
     return True
+
+
+def handle_chunk_control(
+    temp_dir: Path,
+    *,
+    record_type: str,
+    chunk_index: int,
+    log: Callable[[str], None] | None = None,
+) -> tuple[int | None, bool]:
+    """Return (exit_code, repair_now). exit_code set → abort run_once."""
+    ctrl = peek_control(temp_dir)
+    if not ctrl:
+        return None, False
+    cmd_name = str(ctrl.get("command") or "")
+    if cmd_name == "stop":
+        consume_control(temp_dir)
+        return EXIT_USER_STOP, False
+    if cmd_name == "skip":
+        if control_targets_chunk(
+            ctrl,
+            record_type=record_type,
+            chunk_index=chunk_index,
+        ):
+            consume_control(temp_dir)
+            defer_chunk(
+                temp_dir,
+                record_type=record_type,
+                chunk_index=chunk_index,
+            )
+            if log:
+                log(
+                    f"  Skip chunk {chunk_index} ({record_type}) — "
+                    "deferred to next Autopilot run"
+                )
+            return EXIT_SKIP_CHUNK, False
+    if cmd_name == "repair":
+        consume_control(temp_dir)
+        return None, True
+    return None, False

@@ -53,12 +53,13 @@ class AutopilotWebTests(unittest.TestCase):
         )
         server.start()
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=2) as conn:
-                conn.sendall(b"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-                data = conn.recv(4096)
-            self.assertIn(b"200", data)
-            body = data.split(b"\r\n\r\n", 1)[-1]
-            parsed = json.loads(body.decode("utf-8"))
+            import urllib.request
+
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/status",
+                timeout=5,
+            ) as resp:
+                parsed = json.loads(resp.read().decode("utf-8"))
             self.assertIn("summary", parsed)
         finally:
             server.stop()
@@ -102,13 +103,12 @@ class AutopilotWebTests(unittest.TestCase):
 
 class PublishAllControlTests(unittest.TestCase):
     def test_handle_chunk_control_stop(self) -> None:
-        import publish_all_70mai as pa
-        from autopilot_control import EXIT_USER_STOP, write_command
+        from autopilot_control import EXIT_USER_STOP, handle_chunk_control, write_command
 
         with tempfile.TemporaryDirectory() as tmp:
             temp_dir = Path(tmp)
             write_command(temp_dir, "stop")
-            ec, repair = pa.handle_chunk_control(
+            ec, repair = handle_chunk_control(
                 temp_dir,
                 record_type="Normal",
                 chunk_index=1,
@@ -117,8 +117,12 @@ class PublishAllControlTests(unittest.TestCase):
             self.assertFalse(repair)
 
     def test_handle_chunk_skip_defers_without_uploaded(self) -> None:
-        import publish_all_70mai as pa
-        from autopilot_control import EXIT_SKIP_CHUNK, is_chunk_deferred, write_command
+        from autopilot_control import (
+            EXIT_SKIP_CHUNK,
+            handle_chunk_control,
+            is_chunk_deferred,
+            write_command,
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             temp_dir = Path(tmp)
@@ -128,7 +132,7 @@ class PublishAllControlTests(unittest.TestCase):
                 record_type="Parking",
                 chunk_index=1,
             )
-            ec, repair = pa.handle_chunk_control(
+            ec, repair = handle_chunk_control(
                 temp_dir,
                 record_type="Parking",
                 chunk_index=1,

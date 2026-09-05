@@ -45,10 +45,24 @@ def build_status_payload(
         list_pipeline_processes,
         resolve_live_status,
     )
-    from publish_all_70mai import autopilot_disk_usage, find_sd_card, format_gb
 
     run_state = read_run_state(temp_dir)
-    sd = find_sd_card()
+    sd = None
+    usage_total = 0
+
+    def _format_gb(n: float) -> str:
+        return f"{n / 1e9:.1f} GB"
+
+    try:
+        from publish_all_70mai import autopilot_disk_usage, find_sd_card, format_gb
+
+        sd = find_sd_card()
+        _format_gb = format_gb
+        usage = autopilot_disk_usage(video_dir, temp_dir, types=types)
+        usage_total = float(usage.get("total", 0))
+    except Exception:
+        pass
+
     if sd and not run_state.get("sd_path"):
         run_state = {**run_state, "sd_path": str(sd)}
 
@@ -88,7 +102,6 @@ def build_status_payload(
     except Exception:
         pass
 
-    usage = autopilot_disk_usage(video_dir, temp_dir, types=types)
     return {
         "run": run_state,
         "sd_present": sd is not None,
@@ -102,7 +115,7 @@ def build_status_payload(
         },
         "disk": {
             "free_gb": round(free_disk_gb(Path(".")), 1),
-            "video_total_gb": format_gb(usage.get("total", 0)),
+            "video_total_gb": _format_gb(usage_total),
         },
         "rows": [_row_to_dict(r) for r in rows],
         "failures": failures,

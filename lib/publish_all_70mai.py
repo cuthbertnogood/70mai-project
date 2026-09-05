@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from import_70mai import format_duration, format_log_line, log as _console_log
+from host_perf import HostSampler, append_trace
 from import_70mai import EXIT_MERGE_NEEDS_USER
 from autopilot_control import (
     EXIT_REPAIR_RETRY,
@@ -33,6 +34,7 @@ from autopilot_control import (
     consume_control,
     control_targets_chunk,
     defer_chunk,
+    handle_chunk_control,
     is_chunk_deferred,
     peek_control,
 )
@@ -405,6 +407,8 @@ def run_step(
 ) -> int:
     append_log(log_path, " ".join(cmd))
     log(f"\n>>> {' '.join(cmd)}")
+    trace_path = log_path.with_name("perf_trace.jsonl")
+    stage = Path(cmd[1]).stem if len(cmd) > 1 else "subprocess"
     if dry_run:
         log("(dry-run — skipped)")
         return 0
@@ -419,40 +423,70 @@ def run_step(
             stderr=subprocess.STDOUT,
             env=env,
         )
-        if not control or temp_dir is None:
-            return proc.wait()
-        while proc.poll() is None:
-            ctrl = peek_control(temp_dir)
-            cmd_name = str(ctrl.get("command") or "")
-            if cmd_name == "stop":
-                consume_control(temp_dir)
-                _terminate_subprocess(proc)
-                return EXIT_USER_STOP
-            if cmd_name == "skip" and chunk_index is not None:
-                if control_targets_chunk(
-                    ctrl,
-                    record_type=record_type,
-                    chunk_index=chunk_index,
-                ):
+        started = time.monotonic()
+        append_trace(
+            trace_path,
+            {
+                "event": "stage_start",
+                "stage": stage,
+                "record_type": record_type,
+                "chunk_index": chunk_index,
+                "pid": proc.pid,
+            },
+        )
+        sampler = HostSampler(trace_path, root_pid=proc.pid, disk_path=Path.cwd())
+        sampler.start()
+        result = None
+        try:
+            if not control or temp_dir is None:
+                result = int(proc.wait())
+            while result is None and proc.poll() is None:
+                ctrl = peek_control(temp_dir)
+                cmd_name = str(ctrl.get("command") or "")
+                if cmd_name == "stop":
                     consume_control(temp_dir)
-                    defer_chunk(
-                        temp_dir,
-                        record_type=record_type,
-                        chunk_index=chunk_index,
-                    )
                     _terminate_subprocess(proc)
-                    log(
-                        f"  Skip chunk {chunk_index} ({record_type}) — "
-                        "deferred to next Autopilot run"
-                    )
-                    return EXIT_SKIP_CHUNK
-            if cmd_name == "repair":
-                consume_control(temp_dir)
-                _terminate_subprocess(proc)
-                log(f"  Repair requested — retry chunk {chunk_index}")
-                return EXIT_REPAIR_RETRY
-            time.sleep(0.5)
-        return int(proc.returncode or 0)
+                    result = EXIT_USER_STOP
+                    break
+                if cmd_name == "skip" and chunk_index is not None:
+                    if control_targets_chunk(
+                        ctrl, record_type=record_type, chunk_index=chunk_index
+                    ):
+                        consume_control(temp_dir)
+                        defer_chunk(
+                            temp_dir, record_type=record_type, chunk_index=chunk_index
+                        )
+                        _terminate_subprocess(proc)
+                        log(
+                            f"  Skip chunk {chunk_index} ({record_type}) — "
+                            "deferred to next Autopilot run"
+                        )
+                        result = EXIT_SKIP_CHUNK
+                        break
+                if cmd_name == "repair":
+                    consume_control(temp_dir)
+                    _terminate_subprocess(proc)
+                    log(f"  Repair requested — retry chunk {chunk_index}")
+                    result = EXIT_REPAIR_RETRY
+                    break
+                time.sleep(0.5)
+            if result is None:
+                result = int(proc.returncode or 0)
+            return result
+        finally:
+            sampler.stop()
+            append_trace(
+                trace_path,
+                {
+                    "event": "stage_end",
+                    "stage": stage,
+                    "record_type": record_type,
+                    "chunk_index": chunk_index,
+                    "pid": proc.pid,
+                    "returncode": result,
+                    "elapsed_sec": round(time.monotonic() - started, 3),
+                },
+            )
 
 
 def _terminate_subprocess(proc: subprocess.Popen[str]) -> None:
@@ -468,43 +502,6 @@ def _terminate_subprocess(proc: subprocess.Popen[str]) -> None:
         except OSError:
             pass
         proc.wait(timeout=3)
-
-
-def handle_chunk_control(
-    temp_dir: Path,
-    *,
-    record_type: str,
-    chunk_index: int,
-) -> tuple[int | None, bool]:
-    """Return (exit_code, repair_now). exit_code set → abort run_once."""
-    ctrl = peek_control(temp_dir)
-    if not ctrl:
-        return None, False
-    cmd_name = str(ctrl.get("command") or "")
-    if cmd_name == "stop":
-        consume_control(temp_dir)
-        return EXIT_USER_STOP, False
-    if cmd_name == "skip":
-        if control_targets_chunk(
-            ctrl,
-            record_type=record_type,
-            chunk_index=chunk_index,
-        ):
-            consume_control(temp_dir)
-            defer_chunk(
-                temp_dir,
-                record_type=record_type,
-                chunk_index=chunk_index,
-            )
-            log(
-                f"  Skip chunk {chunk_index} ({record_type}) — "
-                "deferred to next Autopilot run"
-            )
-            return EXIT_SKIP_CHUNK, False
-    if cmd_name == "repair":
-        consume_control(temp_dir)
-        return None, True
-    return None, False
 
 
 def build_import_cmd(
@@ -1392,6 +1389,7 @@ def main() -> int:
                                 args.temp_dir,
                                 record_type=record_type,
                                 chunk_index=chunk.index,
+                                log=log,
                             )
                             repair_now = repair_now or repair_now_ctrl
                             if ctrl_ec == EXIT_USER_STOP:

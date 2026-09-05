@@ -39,6 +39,7 @@ cd /Users/cuthbert/work_local/70mai_project
 | `./scripts/bench_1h_dashboard.sh` | Дашборд для 1h-bench (те же пути, что у run) |
 | `./scripts/bench_hevc_no_lock.sh` | Bench compose+upload hevc **без lock** (параллельно с автопилотом) |
 | `./scripts/monitor_autopilot_perf.py` | Снимки метрик в `perf_monitor.jsonl` (copy/merge/encode/upload) |
+| `python3 scripts/analyze_host_perf.py` | Разбор `perf_trace.jsonl`: этапы, CPU, RAM и диск |
 | `./run scripts/update_youtube_metadata.py` | Обновить title/description/comment у уже залитых роликов |
 
 Python — в `lib/`, тесты — в `tests/`. Вручную: `./run publish_70mai.py …`.
@@ -72,6 +73,21 @@ python3 анализ/analyze_performance.py   # исторический отч�
 ```
 
 Артефакты: `video/Output/.publish_tmp/perf_monitor.jsonl`, `анализ/bottleneck_report.md`.
+
+### Профиль ресурсов хоста
+
+Autopilot автоматически пишет `video/Output/.publish_tmp/perf_trace.jsonl`.
+В trace есть wall time каждого Import/Compose/Upload и снимки каждые 10 секунд:
+CPU дерева процесса, RSS, load average и свободное место на диске.
+
+После тестового прогона:
+
+```bash
+python3 scripts/analyze_host_perf.py -o анализ/host_perf_report.md
+```
+
+Не удаляй `perf_trace.jsonl` до анализа: по нему подбираются профиль encode,
+число merge workers, параллелизм compose/upload и upload chunk size.
 
 ---
 
