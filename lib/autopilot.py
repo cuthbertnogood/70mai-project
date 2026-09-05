@@ -44,6 +44,16 @@ def _open_browser(url: str) -> None:
 def _terminate_pipeline(*, child_pid: int | None = None) -> None:
     from publish_all_70mai import force_takeover_pipeline
 
+    if child_pid is None:
+        try:
+            from publish_all_70mai import _read_lock_pid
+
+            lock_pid = _read_lock_pid()
+            if lock_pid and lock_pid > 0:
+                child_pid = lock_pid
+        except Exception:
+            pass
+
     force_takeover_pipeline(lock_pid=child_pid)
     if child_pid and child_pid > 0:
         try:
@@ -69,6 +79,7 @@ class AutopilotSupervisor:
         min_free_gb: float,
         open_browser: bool,
         publish_args: list[str],
+        dashboard_only: bool = False,
     ) -> None:
         self.temp_dir = temp_dir
         self.video_dir = video_dir
@@ -78,14 +89,16 @@ class AutopilotSupervisor:
         self.min_free_gb = min_free_gb
         self.open_browser = open_browser
         self.publish_args = publish_args
+        self.dashboard_only = dashboard_only
         self.quit_event = threading.Event()
         self.stop_requested = False
         self.child: subprocess.Popen[str] | None = None
         self.diagnostic_child: subprocess.Popen[str] | None = None
         self._source: Path | None = None
         self.temp_dir.mkdir(parents=True, exist_ok=True)
-        clear_control(self.temp_dir)
-        clear_deferred_for_run(self.temp_dir)
+        if not dashboard_only:
+            clear_control(self.temp_dir)
+            clear_deferred_for_run(self.temp_dir)
 
     def handle_control(self, action: str, data: dict) -> str:
         action = (action or "").strip().lower()
@@ -107,7 +120,10 @@ class AutopilotSupervisor:
                 phase = str(read_run_state(self.temp_dir).get("phase") or "")
             except Exception:
                 pass
-            if phase in ("running", "restarting"):
+            if (
+                not self.dashboard_only
+                and phase in ("running", "restarting")
+            ):
                 return "Quit доступен после завершения или Stop"
             self.quit_event.set()
             write_run_state(self.temp_dir, phase="quitting", message="выход")
@@ -281,7 +297,48 @@ class AutopilotSupervisor:
                 time.sleep(0.5)
         return last_exit
 
+    def run_dashboard_only(self) -> int:
+        server = AutopilotWebServer(
+            host=self.host,
+            port=self.port,
+            temp_dir=self.temp_dir,
+            video_dir=self.video_dir,
+            types=self.types,
+            min_free_gb=self.min_free_gb,
+            on_control=self.handle_control,
+            quit_event=self.quit_event,
+            manage_run_state=False,
+        )
+        try:
+            server.start()
+        except OSError as exc:
+            print(f"ERROR: cannot bind {self.host}:{self.port} — {exc}", file=sys.stderr)
+            return 1
+        url = server.url
+        print(f"Autopilot Dashboard (только UI, pipeline не управляется): {url}")
+        if self.open_browser:
+            _open_browser(url)
+        try:
+            from publish_all_70mai import find_sd_card
+
+            self._source = find_sd_card()
+            server.set_source(self._source)
+            while not self.quit_event.is_set():
+                try:
+                    sd = find_sd_card()
+                    if sd:
+                        self._source = sd
+                        server.set_source(sd)
+                except Exception:
+                    pass
+                time.sleep(2)
+        finally:
+            server.stop()
+        return 0
+
     def run(self) -> int:
+        if self.dashboard_only:
+            return self.run_dashboard_only()
         server = AutopilotWebServer(
             host=self.host,
             port=self.port,
@@ -350,6 +407,11 @@ def main() -> int:
     parser.add_argument("--min-free-gb", type=float, default=20.0)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument(
+        "--dashboard-only",
+        action="store_true",
+        help="Только веб-Dashboard (не запускать publish_all; для обновления UI при работающем прогоне)",
+    )
+    parser.add_argument(
         "publish_args",
         nargs=argparse.REMAINDER,
         help="Extra args passed to publish_all_70mai.py (after --)",
@@ -376,6 +438,7 @@ def main() -> int:
         min_free_gb=args.min_free_gb,
         open_browser=not args.no_browser,
         publish_args=publish_args,
+        dashboard_only=args.dashboard_only,
     )
     return sup.run()
 

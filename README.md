@@ -25,6 +25,9 @@ cd /Users/cuthbert/work/cursor/70mai_project
 ./scripts/autopilot.sh -- --types Parking
 ./scripts/autopilot.sh -- --profile youtube --min-free-gb 20
 
+# Обновить веб-UI без остановки encode/upload (второй порт):
+./scripts/autopilot.sh --dashboard-only --no-browser --port 8788
+
 # Только терминал, без веба (ждать SD: --wait)
 ./scripts/publish_all_70mai.sh --wait
 
@@ -44,7 +47,7 @@ tail -f video/Output/.publish_tmp/publish_all.log
 ./scripts/autopilot_dashboard.sh
 ```
 
-**Веб-Dashboard** (`127.0.0.1:8787`): слева — прогон (Import / Compose / Upload); **справа — таблица SD** (поездки, длительность, место на карте). Кнопки **Stop**, **Skip**, **Repair**, **Quit**.
+**Веб-Dashboard** (`127.0.0.1:8787`): слева — прогон (Import / Compose / Upload); **справа — таблица SD** (поездки, длительность, место на карте). Кнопки **Stop**, **Skip**, **Repair**, **Quit**. После обновления кода перезапустите `./scripts/autopilot.sh` или поднимите `--dashboard-only` на другом порту (см. выше).
 
 Нужны: Mac, Python 3.10+, ffmpeg, SD-карта 70mai (обычно `/Volumes/Untitled`).
 

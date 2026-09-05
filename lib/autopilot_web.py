@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -139,6 +140,17 @@ def build_status_payload(
         ],
         "pending_control": peek_control(temp_dir),
     }
+
+
+def _dashboard_html_bytes() -> bytes:
+    return _DASHBOARD_HTML.encode("utf-8")
+
+
+def _reload_dashboard_module():
+    """Pick up HTML/API changes without restarting the Autopilot process."""
+    import importlib
+
+    return importlib.reload(sys.modules[__name__])
 
 
 def _read_diagnostics(temp_dir: Path) -> dict[str, Any]:
@@ -354,6 +366,7 @@ class AutopilotWebServer:
         min_free_gb: float,
         on_control: Callable[[str, dict[str, Any]], str],
         quit_event: threading.Event,
+        manage_run_state: bool = True,
     ) -> None:
         self._host = host
         self._port = port
@@ -363,6 +376,7 @@ class AutopilotWebServer:
         self._min_free_gb = min_free_gb
         self._on_control = on_control
         self._quit_event = quit_event
+        self._manage_run_state = manage_run_state
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._source: Path | None = None
@@ -390,17 +404,19 @@ class AutopilotWebServer:
                 self.wfile.write(body)
 
             def do_GET(self) -> None:
+                aw = _reload_dashboard_module()
                 path = urlparse(self.path).path
                 if path in ("/", "/index.html"):
-                    body = _DASHBOARD_HTML.encode("utf-8")
+                    body = aw._dashboard_html_bytes()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
                     return
                 if path == "/api/status":
-                    payload = build_status_payload(
+                    payload = aw.build_status_payload(
                         temp_dir=outer._temp_dir,
                         video_dir=outer._video_dir,
                         types=outer._types,
@@ -430,12 +446,13 @@ class AutopilotWebServer:
         self._httpd = ThreadingHTTPServer((self._host, self._port), Handler)
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
-        write_run_state(
-            self._temp_dir,
-            phase="waiting_card",
-            message="ожидание 70mai SD",
-            dashboard_url=self.url,
-        )
+        if self._manage_run_state:
+            write_run_state(
+                self._temp_dir,
+                phase="waiting_card",
+                message="ожидание 70mai SD",
+                dashboard_url=self.url,
+            )
 
     def stop(self) -> None:
         if self._httpd is not None:
