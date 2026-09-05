@@ -11,8 +11,8 @@ The named application that discovers a 70mai SD card and orchestrates Import, Co
 _Avoid_: publish_all (when meaning the product), pipeline (unqualified)
 
 **Dashboard**:
-The status view of one Autopilot run: card discovery, Import, Compose, and Upload.
-_Avoid_: upload status (when meaning the whole run), status page
+The web view of one Autopilot run (card discovery, Import, Compose, Upload) from which the operator can stop, skip, or repair that run.
+_Avoid_: upload status (when meaning the whole run), status page, admin panel
 
 ### Footage / planning
 
