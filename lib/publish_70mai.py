@@ -33,6 +33,7 @@ from plan_estimate import (
     DEFAULT_SESSION_GAP,
     SINGLE_VIDEO_TYPES,
     ChunkPlan,
+    Trip,
     append_plan_file,
     build_plan,
     print_stdout_summary,
@@ -610,6 +611,17 @@ def chunk_uploaded(
     return True
 
 
+def trip_state_matches(trip: Trip, part: dict) -> bool:
+    """True when a ``trip_parts`` row describes the same footage as *trip*.
+
+    Legacy rows without ``wall_start`` do not match (same rule as chunk parts).
+    """
+    wall = _parse_state_wall_start(part.get("wall_start"))
+    if wall is None:
+        return False
+    return abs((wall - trip.start).total_seconds()) <= WALL_START_MATCH_TOLERANCE_SEC
+
+
 def trip_uploaded(
     state: dict,
     record_type: str,
@@ -622,10 +634,16 @@ def trip_uploaded(
     if not part or not part.get("uploaded"):
         return False
     if chunk is not None:
-        # Per-trip rows lack wall_start; trust them only when the chunk-level
-        # part (if present) matches the current plan, or no chunk part exists.
         chunk_part = get_chunk_state(state, record_type, chunk_index)
         if chunk_part is not None and not chunk_state_matches(chunk, chunk_part):
+            return False
+        # Bind to footage time — chunk_index+trip_index alone is not enough
+        # after SD re-record / stale .70mai from another period.
+        try:
+            trip = chunk.trips[trip_index - 1]
+        except (IndexError, AttributeError, TypeError):
+            return False
+        if not trip_state_matches(trip, part):
             return False
     return True
 
@@ -880,6 +898,7 @@ def mark_trip_state(
     video_id: str | None,
     uploaded: bool,
     output_path: Path | None,
+    wall_start: datetime | None = None,
 ) -> None:
     parts = state.setdefault("trip_parts", [])
     entry = {
@@ -891,6 +910,8 @@ def mark_trip_state(
         "uploaded": uploaded,
         "output_path": str(output_path) if output_path else None,
     }
+    if wall_start is not None:
+        entry["wall_start"] = wall_start.isoformat()
     replaced = False
     for idx, part in enumerate(parts):
         if (
@@ -942,7 +963,8 @@ def prune_stale_parts_for_plan(
 ) -> list[str]:
     """Drop uploaded state rows that do not match the current plan.
 
-    Surgical: only removes mismatched ``parts`` / related ``trip_parts``.
+    Surgical: removes mismatched ``parts`` and orphan/mismatched ``trip_parts``
+    (including legacy rows without ``wall_start``).
     Returns human-readable drop reasons (empty if nothing changed).
     """
     by_key: dict[tuple[str, int], ChunkPlan] = {
@@ -978,20 +1000,52 @@ def prune_stale_parts_for_plan(
             f"(wall_start {wall} ≠ plan {plan_wall})"
         )
 
+    kept_trip_parts: list[dict] = []
+    for tp in state.get("trip_parts", []):
+        if not tp.get("uploaded"):
+            kept_trip_parts.append(tp)
+            continue
+        record_type = str(tp.get("record_type") or "")
+        try:
+            chunk_index = int(tp.get("chunk_index"))
+            trip_index = int(tp.get("trip_index"))
+        except (TypeError, ValueError):
+            kept_trip_parts.append(tp)
+            continue
+        key = (record_type, chunk_index)
+        if key in stale_chunk_keys:
+            reasons.append(
+                f"{record_type} chunk {chunk_index} trip {trip_index} "
+                "(chunk row stale)"
+            )
+            continue
+        chunk = by_key.get(key)
+        if chunk is None:
+            kept_trip_parts.append(tp)
+            continue
+        try:
+            trip = chunk.trips[trip_index - 1]
+        except IndexError:
+            reasons.append(
+                f"{record_type} chunk {chunk_index} trip {trip_index} "
+                "(trip index not in plan)"
+            )
+            continue
+        if trip_state_matches(trip, tp):
+            kept_trip_parts.append(tp)
+            continue
+        wall = tp.get("wall_start") or "?"
+        plan_wall = trip.start.isoformat(timespec="seconds")
+        reasons.append(
+            f"{record_type} chunk {chunk_index} trip {trip_index} "
+            f"(wall_start {wall} ≠ plan {plan_wall})"
+        )
+
     if not reasons:
         return []
 
     state["parts"] = kept_parts
-    if stale_chunk_keys:
-        state["trip_parts"] = [
-            tp
-            for tp in state.get("trip_parts", [])
-            if (
-                str(tp.get("record_type") or ""),
-                int(tp.get("chunk_index") or -1),
-            )
-            not in stale_chunk_keys
-        ]
+    state["trip_parts"] = kept_trip_parts
     return reasons
 
 
@@ -1535,6 +1589,7 @@ def publish_and_upload_trips(
                 video_id=None,
                 uploaded=False,
                 output_path=part_path,
+                wall_start=trip.start,
             )
             state_store.save(state)
             continue
@@ -1609,6 +1664,7 @@ def publish_and_upload_trips(
                         video_id=video_id,
                         uploaded=True,
                         output_path=part_path,
+                        wall_start=trip.start,
                     )
                     state_store.save(state)
 
@@ -1671,6 +1727,7 @@ def publish_and_upload_trips(
                         video_id=None,
                         uploaded=False,
                         output_path=part_path,
+                        wall_start=trip.start,
                     )
                     state_store.save(state)
                     summary.failed += 1
@@ -1690,6 +1747,7 @@ def publish_and_upload_trips(
                     video_id=video_id,
                     uploaded=True,
                     output_path=part_path if keep else None,
+                    wall_start=trip.start,
                 )
                 if new_playlist:
                     state["playlist_id"] = new_playlist

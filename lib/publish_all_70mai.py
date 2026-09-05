@@ -811,7 +811,7 @@ def pending_trips(
     reasons = prune_stale_parts_for_plan(state, chunks)
     if reasons:
         log(
-            f"Publish state mismatch: {len(reasons)} chunk(s) on SD marked "
+            f"Publish state mismatch: {len(reasons)} row(s) on SD marked "
             "uploaded but wall_start differs — re-queued"
         )
         for reason in reasons:

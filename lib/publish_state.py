@@ -805,20 +805,46 @@ def build_global_trip_upload_map(
     chunks: list,
 ) -> dict[tuple[str, int], dict]:
     """Map (record_type, global_trip_index) -> upload metadata from publish state."""
+    from publish_70mai import (
+        chunk_uploaded,
+        get_chunk_state,
+        get_upload_entry,
+        trip_uploaded,
+    )
+
     result: dict[tuple[str, int], dict] = {}
     for chunk in chunks:
         record_type = chunk.record_type
+        if chunk_uploaded(
+            publish_state, record_type, chunk.index, chunk=chunk
+        ):
+            entry = get_chunk_state(publish_state, record_type, chunk.index) or {}
+            video_id = entry.get("video_id")
+            meta = {
+                "video_id": video_id,
+                "youtube_url": entry.get("youtube_url")
+                or youtube_watch_url(video_id),
+                "chunk_index": chunk.index,
+            }
+            for trip_idx, trip in enumerate(chunk.trips, start=1):
+                result[(record_type, trip.index)] = {
+                    **meta,
+                    "trip_index_in_chunk": trip_idx,
+                }
+            continue
         for trip_idx, trip in enumerate(chunk.trips, start=1):
-            entry = None
-            for part in publish_state.get("trip_parts", []):
-                if (
-                    part.get("record_type") == record_type
-                    and part.get("chunk_index") == chunk.index
-                    and part.get("trip_index") == trip_idx
-                ):
-                    entry = part
-                    break
-            if not entry or not entry.get("uploaded"):
+            if not trip_uploaded(
+                publish_state,
+                record_type,
+                chunk.index,
+                trip_idx,
+                chunk=chunk,
+            ):
+                continue
+            entry = get_upload_entry(
+                publish_state, record_type, chunk.index, trip_idx
+            )
+            if not entry:
                 continue
             video_id = entry.get("video_id")
             result[(record_type, trip.index)] = {

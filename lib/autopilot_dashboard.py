@@ -4875,6 +4875,7 @@ def _plan_mtime_for(temp_dir: Path) -> float | None:
 @dataclass
 class Dashboard:
     rows: list[TripRow] = field(default_factory=list)
+    plan_chunks: list = field(default_factory=list)
     temp_dir: Path = Path("video/Output/.publish_tmp")
     video_dir: Path = Path("video/Output")
     check_disk: Path = Path(".")
@@ -4936,6 +4937,7 @@ class Dashboard:
             state_on_sd=self.state_on_sd,
         )
         self.rows = refreshed.rows
+        self.plan_chunks = refreshed.plan_chunks
         self._plan_mtime = mtime
         return True
 
@@ -4983,13 +4985,17 @@ class Dashboard:
                     label = f"trip {trip.index} {trip.start:%m-%d %H:%M}"
                 key = f"{chunk.record_type}:{chunk.index}:{trip_idx}"
                 uploaded = is_row_uploaded(
-                    state, chunk.record_type, chunk.index, trip_idx
+                    state,
+                    chunk.record_type,
+                    chunk.index,
+                    trip_idx,
+                    chunk=chunk,
                 )
                 entry = get_upload_entry(
                     state, chunk.record_type, chunk.index, trip_idx
                 )
                 url = None
-                if entry:
+                if uploaded and entry:
                     url = entry.get("youtube_url")
                     if not url and entry.get("video_id"):
                         url = youtube_watch_url(entry["video_id"])
@@ -5045,6 +5051,7 @@ class Dashboard:
                 )
         return cls(
             rows=rows,
+            plan_chunks=list(chunks),
             temp_dir=temp_dir,
             video_dir=video_dir,
             check_disk=check_disk,
@@ -5144,8 +5151,21 @@ class Dashboard:
                 and active_phase in ("compose", "upload", "stall", "import", "oauth")
             ):
                 continue
+            plan_chunk = next(
+                (
+                    c
+                    for c in self.plan_chunks
+                    if c.record_type == row.record_type
+                    and c.index == row.chunk_index
+                ),
+                None,
+            )
             if not is_row_uploaded(
-                state, row.record_type, row.chunk_index, row.trip_index
+                state,
+                row.record_type,
+                row.chunk_index,
+                row.trip_index,
+                chunk=plan_chunk,
             ):
                 continue
             entry = get_upload_entry(

@@ -24,6 +24,10 @@ _CACHE_TTL_SEC = 45.0
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
+def clear_sd_table_cache() -> None:
+    _cache.clear()
+
+
 def _clip_bytes(path: Path) -> int:
     try:
         return path.stat().st_size

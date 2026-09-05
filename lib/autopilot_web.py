@@ -150,6 +150,10 @@ def _reload_dashboard_module():
     """Pick up HTML/API changes without restarting the Autopilot process."""
     import importlib
 
+    import autopilot_sd_table as sd_table
+
+    importlib.reload(sd_table)
+    sd_table.clear_sd_table_cache()
     return importlib.reload(sys.modules[__name__])
 
 
@@ -338,7 +342,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     }
     async function tick() {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/status', {cache: 'no-store'});
         render(await r.json());
       } catch (e) {
         document.getElementById('subtitle').textContent = 'Нет связи с Autopilot';

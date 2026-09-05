@@ -102,6 +102,55 @@ class ChunkStateMatchTests(unittest.TestCase):
         state = {"parts": [part], "trip_parts": []}
         self.assertFalse(chunk_uploaded(state, "Normal", 1, chunk=chunk))
 
+    def test_orphan_trip_part_without_wall_start_not_done(self) -> None:
+        """Stale trip_parts alone must not mark a new-period chunk uploaded."""
+        from publish_70mai import trip_uploaded
+
+        chunk = _chunk(
+            3,
+            [_trip(8, "2026-08-15T12:04:52", "2026-08-15T14:15:17")],
+        )
+        state = {
+            "parts": [],
+            "trip_parts": [
+                {
+                    "record_type": "Normal",
+                    "chunk_index": 3,
+                    "trip_index": 1,
+                    "uploaded": True,
+                    "video_id": "hQwMQYuFTck",
+                    "youtube_url": "https://youtu.be/hQwMQYuFTck",
+                }
+            ],
+        }
+        self.assertFalse(trip_uploaded(state, "Normal", 3, 1, chunk=chunk))
+        self.assertFalse(chunk_is_done(state, chunk))
+        reasons = prune_stale_parts_for_plan(state, [chunk])
+        self.assertTrue(reasons)
+        self.assertEqual(state["trip_parts"], [])
+
+    def test_trip_part_matching_wall_start_is_uploaded(self) -> None:
+        from publish_70mai import mark_trip_state, trip_uploaded
+
+        chunk = _chunk(
+            3,
+            [_trip(8, "2026-08-15T12:04:52", "2026-08-15T14:15:17")],
+        )
+        state: dict = {"parts": [], "trip_parts": []}
+        mark_trip_state(
+            state,
+            record_type="Normal",
+            chunk_index=3,
+            trip_index=1,
+            video_id="okVid",
+            uploaded=True,
+            output_path=None,
+            wall_start=chunk.trips[0].start,
+        )
+        self.assertTrue(trip_uploaded(state, "Normal", 3, 1, chunk=chunk))
+        self.assertTrue(chunk_is_done(state, chunk))
+        self.assertEqual(prune_stale_parts_for_plan(state, [chunk]), [])
+
     def test_prune_stale_parts_drops_mismatch_and_saves(self) -> None:
         chunk = _chunk(
             1,
