@@ -2,12 +2,7 @@
 	"folders": [
 		{
 			"path": "."
-		},
-		{
-			"path": "../../../../Volumes/Untitled"
 		}
 	],
-	"settings": {
-		"specstory.cloudSync.enabled": "never"
-	}
+	"settings": {}
 }
