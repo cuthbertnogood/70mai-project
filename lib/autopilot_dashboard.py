@@ -2532,7 +2532,7 @@ def format_process_detail_block(
             bits.append("зависло?")
         line = "proc: " + " · ".join(bits)
         if not wd.alive and not procs:
-            line += " · ⚠ ./scripts/watch_publish_all_70mai.sh --wait"
+            line += " · ⚠ ./scripts/autopilot.sh"
         elif idle_complete and not any(
             p.role in ("import", "publish", "prefetch")
             or (p.role == "ffmpeg" and "encode" in (p.tip or ""))
@@ -2614,7 +2614,7 @@ def format_process_detail_block(
         lines.append(f"  stage: {stage_line}")
 
     if not procs and not wd.alive:
-        lines.append("  ⚠ автопилот остановлен — ./scripts/watch_publish_all_70mai.sh --wait")
+        lines.append("  ⚠ автопилот остановлен — ./scripts/autopilot.sh")
     elif idle_complete and not _pipeline_busy(procs):
         lines.append("  ✓ автопилот простаивает — все ролики залиты, активных этапов нет")
 

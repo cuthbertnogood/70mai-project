@@ -37,6 +37,7 @@ class AutopilotWebTests(unittest.TestCase):
         self.assertIn("run", payload)
         self.assertIn("summary", payload)
         self.assertIn("rows", payload)
+        self.assertIn("diagnostics", payload)
 
     def test_server_binds_loopback_only(self) -> None:
         quit_event = threading.Event()

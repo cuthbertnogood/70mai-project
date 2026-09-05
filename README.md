@@ -28,9 +28,8 @@ cd /Users/cuthbert/work_local/70mai_project
 
 | Скрипт | Зачем |
 |--------|--------|
-| `./scripts/publish_all_70mai.sh` | **Автопилот (CLI)** — import → compose → YouTube |
-| `./scripts/autopilot.sh` | **Autopilot** — то же + веб-Dashboard на `127.0.0.1:8787` (Stop/Skip/Repair/Quit) |
-| `./scripts/watch_publish_all_70mai.sh` | CLI + авто-рестарт при падении (не совмещать с `autopilot.sh`) |
+| `./scripts/autopilot.sh` | **Autopilot** — import → compose → YouTube + веб-Dashboard (`127.0.0.1:8787`) |
+| `./scripts/publish_all_70mai.sh` | Тот же пайплайн в терминале (CLI, без веба) |
 | `./scripts/autopilot_dashboard.sh` | Живой статус (второй терминал) |
 | `./scripts/generate_card_reports.sh` | Отчёт по карте (MD/CSV) |
 | `./scripts/run-tests.sh` | Unit-тесты (`tests/`) |
@@ -105,8 +104,14 @@ One-shot с браузером на localhost:
 
 - Dashboard: `http://127.0.0.1:8787/` — весь прогон (карта / Import / Compose / Upload).
 - **Stop** — конец прогона (без рестарта); **Skip** — отложить текущий Chunk (не `mark-uploaded`); **Repair** — `--repair auto`; **Quit** — выход после готово/stop/ошибка.
-- Не запускать вместе с `watch_publish_all_70mai.sh`.
+- **Профилировать хост** — безопасный локальный compose-тест и hardware-метрики; upload, SD и publish state не затрагиваются.
+- При crash пайплайна Autopilot сам перезапускает прогон (кроме Stop).
 - TTY-дашборд: `./scripts/autopilot_dashboard.sh` (отдельный терминал, только просмотр).
+
+Результат сохраняется в `video/Output/.publish_tmp/autopilot_diagnostics.json`.
+Полный compose-тест выполняется только при наличии локальных ScreenRecording и
+merged Front/Back; иначе Dashboard показывает hardware-информацию и сообщает,
+что нужен тестовый набор.
 
 ---
 
@@ -148,11 +153,11 @@ cd /Users/cuthbert/work_local/70mai_project
 ```bash
 cd /Users/cuthbert/work_local/70mai_project
 
-# Карты ещё нет — ждать вставки
-./scripts/watch_publish_all_70mai.sh --wait
+# Рекомендуется: веб-Dashboard + рестарт при crash
+./scripts/autopilot.sh
 
-# Карта уже вставлена
-./scripts/publish_all_70mai.sh
+# Только терминал (без веба)
+./scripts/publish_all_70mai.sh --wait
 
 # Перезапуск, если уже крутится другой автопилот (lock занят)
 ./scripts/publish_all_70mai.sh --force-restart --wait
@@ -236,7 +241,7 @@ cd /Users/cuthbert/work_local/70mai_project
 
 ```bash
 cd /Users/cuthbert/work_local/70mai_project
-./scripts/watch_publish_all_70mai.sh --wait --profile youtube --min-free-gb 20
+./scripts/autopilot.sh -- --profile youtube --min-free-gb 20
 ```
 
 **Очистка SSD после успешного upload** (merges / `.merge_stage` / `part_*.mp4`; клипы на SD не трогает):
@@ -250,11 +255,13 @@ cd /Users/cuthbert/work_local/70mai_project
 
 ---
 
-## Auto-recovery (автопилот)
+## Auto-recovery
+
+Рестарт при crash и stall встроены в **`./scripts/autopilot.sh`**. Старый watchdog — legacy, см. ниже.
 
 | Проблема | Поведение |
 |----------|-----------|
-| **Watchdog stall (2 ч)** | Прогресс: `trip_*.mp4` / `part_*.mp4` / `.merge_stage` bytes; свежесть `publish_all.log` / `autopilot_status.json`; живые `import`/`publish`. Copy heartbeat на каждый `ok in`. Env: `WATCH_STALL_SEC`, `WATCH_LOG_ACTIVE_SEC`. |
+| **Watchdog stall (2 ч)** | Legacy `watch_publish_all_70mai.sh`: прогресс по `trip_*.mp4` / log / `import`/`publish`. В **autopilot.sh** — свой рестарт child при ненулевом exit (кроме Stop). |
 | **Watchdog не убивает live work** | Если log/status свежие и жив import/ffmpeg/upload — cleanup **не** kill; второй watchdog ждёт. Default `WATCH_STOP_ON_SUCCESS=0` (крутить, пока есть pending). Force: `WATCH_FORCE_KILL=1`. Один instance: atomic mkdir lock (и для watchdog, и для `.publish_all.lock/` + `pid`). |
 | **Мало места перед compose** | `guard_free_disk`: ждёт фоновый upload → prune merged + composed для уже залитых trips → retry до 4× (30 с). Prune merged зовёт `scan_merged_clips(probe=True)` (реальная длительность, не end из имени). В **chunk mode** prune только после `chunk_uploaded` (не по trip_parts внутри незалитого чанка). При неудаче chunk помечается failed, автопилот идёт дальше (`--continue-on-error`). |
 | **Kill import / watchdog restart** | Import resume: готовые SSD merges + `chunk_merges_ready` → пропускает re-copy только при **Trip coverage ≥98%** (тот же порог, что compose; для Normal — aligned wall duration, не «есть ли хоть один entry»). `Trip.end` = конец footage (last clip start + duration), не timestamp последнего файла. Event/Parking slot-timeline: **не** фильтровать manifest по wall-clock окну поездки (месяцы клипов → один ролик). Repair **не** удаляет PA_*/EV_* при валидных `_part_*` или merge ≥98% — только force import resume. |
@@ -280,7 +287,7 @@ tail -f video/Output/.publish_tmp/repair_log.jsonl
 tail -f video/Output/.publish_tmp/bad_clips.jsonl
 ```
 
-Watchdog (`watch_publish_all_70mai.sh`) — см. **Auto-recovery** выше. Кратко: import/compose/upload activity, не только legacy `chunk_*/trip_*.mp4`.
+Watchdog (`watch_publish_all_70mai.sh`) — **legacy**, только если нужен отдельный shell-watchdog без веб-Dashboard. См. **Auto-recovery**.
 
 Upload считается успешным даже если YouTube comment не прошёл (например `private` или processing) — state сохраняется, ролик не перезаливается.
 

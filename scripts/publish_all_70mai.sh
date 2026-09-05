@@ -7,7 +7,7 @@
 #   ./scripts/publish_all_70mai.sh --force-restart --wait  # kill previous run, restart
 #   ./scripts/publish_all_70mai.sh                 # run now if SD mounted
 #   ./scripts/publish_all_70mai.sh --wait --loop   # daemon: re-run after each card session
-#   ./scripts/watch_publish_all_70mai.sh --skip-import  # restart on crash (see script header)
+#   ./scripts/watch_publish_all_70mai.sh --skip-import  # legacy watchdog (prefer autopilot.sh)
 #
 # SD card: .70mai/import/CARD_SUMMARY.txt (trips + merge status),
 #          .70mai/import/CARD_STORAGE.txt (sizes by type + disk free)

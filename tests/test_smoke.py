@@ -17,6 +17,7 @@ if str(LIB) not in sys.path:
 class SmokeImportsTests(unittest.TestCase):
     def test_core_modules_import(self) -> None:
         import autopilot_dashboard  # noqa: F401
+        import autopilot_diagnostics  # noqa: F401
         import card_identity  # noqa: F401
         import import_70mai  # noqa: F401
         import import_state  # noqa: F401

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Watchdog: restart autopilot on crash; keep looping while work may remain (default).
+# LEGACY — prefer ./scripts/autopilot.sh (web Dashboard + встроенный рестарт при crash).
+#
+# Watchdog: restart publish_all on crash; keep looping while work may remain (default).
 #
 #   ./scripts/watch_publish_all_70mai.sh --skip-import
 #   WATCH_RESTART_SEC=120 ./scripts/watch_publish_all_70mai.sh --wait

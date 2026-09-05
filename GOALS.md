@@ -70,7 +70,7 @@ Parking входит в **дефолт autopilot** (`Normal Event Parking`). Н�
 ./scripts/publish_all_70mai.sh --types Parking --skip-import   # если PA уже merged
 ```
 
-Watchdog `./scripts/watch_publish_all_70mai.sh` подхватывает Parking автоматически (без явного `--types`).
+Watchdog `./scripts/watch_publish_all_70mai.sh` — **legacy**; для Parking достаточно `./scripts/autopilot.sh` (типы по умолчанию включают Parking).
 
 **Self-healing (Jul 2026):** короткий/stale `PA_` больше не скипается import’ом (tolerance Event/Parking **0.98**; fingerprint `clip_count`/`last_clip`). Autopilot `--repair auto` диагностирует gap до compose, удаляет битый merge и пересобирает; compose fallback = `min(trip, front, back)`. Stage-merge: независимые parts + один final concat; при fail parts сохраняются; после **3× merge short** — интерактивный выбор ignore/retry (маркер `.accept_short`). Битый клип без `moov` (битый `mdat` на карте) → quarantine `*.MP4.bad`, merge без него; история host + SD (`bad_clips.jsonl`); счётчик в дашборде «Сбои».
 
@@ -101,7 +101,7 @@ Watchdog `./scripts/watch_publish_all_70mai.sh` подхватывает Parking
 - При повторном запуске или на **другом Mac** — продолжает с места остановки (`--resume` автоматически)
 - Локально — только кэш state и временные MP4 (удаляются после upload)
 - Лог: `video/Output/.publish_tmp/publish_all.log` (`tail -f …`)
-- **Resume встроен** (state + `sessions/*.upload.json` на SD); **автоперезапуск при падении upload — нет** — после kill/crash: `./scripts/publish_all_70mai.sh --skip-import` или **`./scripts/watch_publish_all_70mai.sh --skip-import`** (watchdog с restart)
+- **Resume встроен** (state + `sessions/*.upload.json` на SD); рестарт при crash — **`./scripts/autopilot.sh`** (встроенный supervisor). Legacy: `watch_publish_all_70mai.sh`.
 - `monitor_compose.sh` — отдельный watchdog только для compose (ffmpeg), не для upload и не внутри autopilot
 
 ## Autopilot + веб-Dashboard

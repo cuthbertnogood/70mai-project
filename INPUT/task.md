@@ -21,8 +21,6 @@
 | Успех / ошибка / Stop | Dashboard остаётся до **Quit** |
 | Quit | Процесс Autopilot завершается |
 
-**Не** запускать Autopilot под внешним `watch_publish_all_70mai.sh` (двойной рестарт).
-
 ## Dashboard
 
 - **Сеть:** только `127.0.0.1`, без логина.

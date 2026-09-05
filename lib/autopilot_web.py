@@ -103,6 +103,7 @@ def build_status_payload(
 
     return {
         "run": run_state,
+        "diagnostics": _read_diagnostics(temp_dir),
         "sd_present": sd is not None,
         "sd_path": str(sd) if sd else None,
         "live": live,
@@ -131,6 +132,15 @@ def build_status_payload(
     }
 
 
+def _read_diagnostics(temp_dir: Path) -> dict[str, Any]:
+    path = temp_dir / "autopilot_diagnostics.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 _DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -147,6 +157,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     button.stop { background: #c0392b; color: #fff; }
     button.skip { background: #d68910; color: #111; }
     button.repair { background: #2874a6; color: #fff; }
+    button.profile { background: #8e44ad; color: #fff; }
     button.quit { background: #566573; color: #fff; }
     button:disabled { opacity: .45; cursor: not-allowed; }
     .cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: .75rem; margin-bottom: 1rem; }
@@ -174,6 +185,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <button class="stop" id="btn-stop">Stop</button>
     <button class="skip" id="btn-skip">Skip chunk</button>
     <button class="repair" id="btn-repair">Repair</button>
+    <button class="profile" id="btn-profile">Профилировать хост</button>
     <button class="quit" id="btn-quit">Quit</button>
   </div>
   <div class="cards" id="cards"></div>
@@ -206,6 +218,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     document.getElementById('btn-stop').onclick = () => send('stop');
     document.getElementById('btn-skip').onclick = () => send('skip');
     document.getElementById('btn-repair').onclick = () => send('repair');
+    document.getElementById('btn-profile').onclick = () => send('profile');
     document.getElementById('btn-quit').onclick = () => send('quit');
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
     function render(data) {
@@ -219,6 +232,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('btn-stop').disabled = !canControl || phase === 'waiting_card';
       document.getElementById('btn-skip').disabled = !canControl || phase === 'waiting_card';
       document.getElementById('btn-repair').disabled = !canControl || phase === 'waiting_card';
+      const diagnostics = data.diagnostics || {};
+      const profileButton = document.getElementById('btn-profile');
+      profileButton.disabled = ['running','restarting','quitting'].includes(phase) ||
+        diagnostics.status === 'running';
       const live = data.live || {};
       const cards = [
         ['SD', data.sd_present ? (data.sd_path || 'да') : 'нет'],
@@ -227,6 +244,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         ['Trips', `${data.summary.trips_done}/${data.summary.trip_total}`],
         ['Диск свободно', `${data.disk.free_gb} GB`],
         ['Деталь', live.detail || '—'],
+        ['Диагностика', diagnostics.message || diagnostics.status || '—'],
       ];
       document.getElementById('cards').innerHTML = cards.map(([k,v]) =>
         `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(String(v))}</div></div>`

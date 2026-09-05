@@ -59,6 +59,10 @@ class AutopilotControlTests(unittest.TestCase):
         self.assertEqual(ac.EXIT_USER_STOP, 3)
         self.assertEqual(ac.EXIT_SKIP_CHUNK, 4)
 
+    def test_profile_command_is_valid(self) -> None:
+        ac.write_command(self.temp_dir, "profile")
+        self.assertEqual(ac.peek_control(self.temp_dir).get("command"), "profile")
+
     def test_handle_chunk_control_stop(self) -> None:
         ac.write_command(self.temp_dir, "stop")
         ec, repair = ac.handle_chunk_control(

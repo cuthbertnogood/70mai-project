@@ -81,6 +81,7 @@ class AutopilotSupervisor:
         self.quit_event = threading.Event()
         self.stop_requested = False
         self.child: subprocess.Popen[str] | None = None
+        self.diagnostic_child: subprocess.Popen[str] | None = None
         self._source: Path | None = None
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         clear_control(self.temp_dir)
@@ -88,6 +89,16 @@ class AutopilotSupervisor:
 
     def handle_control(self, action: str, data: dict) -> str:
         action = (action or "").strip().lower()
+        if action == "profile":
+            from autopilot_control import read_run_state
+
+            phase = str(read_run_state(self.temp_dir).get("phase") or "")
+            if phase in ("running", "restarting", "quitting"):
+                return "Профилирование доступно после завершения текущего прогона"
+            if self.diagnostic_child and self.diagnostic_child.poll() is None:
+                return "Профилирование уже выполняется"
+            self._spawn_diagnostics()
+            return "Профилирование запущено; результат появится в Dashboard"
         if action == "quit":
             phase = ""
             try:
@@ -170,6 +181,30 @@ class AutopilotSupervisor:
             cwd=str(root),
         )
         return proc
+
+    def _spawn_diagnostics(self) -> None:
+        root = _root()
+        cmd = [
+            sys.executable,
+            str(root / "lib" / "autopilot_diagnostics.py"),
+            "--root",
+            str(root),
+            "--temp-dir",
+            str(self.temp_dir),
+            "--video-dir",
+            str(self.video_dir),
+        ]
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        lib_dir = str(root / "lib")
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = lib_dir if not existing else f"{lib_dir}:{existing}"
+        self.diagnostic_child = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            cwd=str(root),
+        )
 
     def _poll_child_control(self) -> None:
         ctrl = peek_control(self.temp_dir)
@@ -272,6 +307,8 @@ class AutopilotSupervisor:
         finally:
             if self.child and self.child.poll() is None:
                 _terminate_pipeline(child_pid=self.child.pid)
+            if self.diagnostic_child and self.diagnostic_child.poll() is None:
+                self.diagnostic_child.terminate()
         while not self.quit_event.is_set():
             if pipeline_exit == EXIT_USER_STOP:
                 phase = "stopped"

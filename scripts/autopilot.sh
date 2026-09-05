@@ -4,8 +4,6 @@
 #   ./scripts/autopilot.sh
 #   ./scripts/autopilot.sh --no-browser
 #   ./scripts/autopilot.sh -- --skip-import
-#
-# Do not run under watch_publish_all_70mai.sh (double restart).
 
 set -euo pipefail
 

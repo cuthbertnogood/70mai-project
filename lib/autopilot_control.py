@@ -18,7 +18,7 @@ EXIT_USER_STOP = 3
 EXIT_SKIP_CHUNK = 4
 EXIT_REPAIR_RETRY = 5
 
-VALID_COMMANDS = frozenset({"stop", "skip", "repair", "quit"})
+VALID_COMMANDS = frozenset({"stop", "skip", "repair", "quit", "profile"})
 
 
 def control_path(temp_dir: Path) -> Path:
