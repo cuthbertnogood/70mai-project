@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 from autopilot_control import (
     peek_control,
     read_run_state,
-    write_command,
     write_run_state,
 )
 
@@ -23,12 +22,12 @@ DEFAULT_HOST = "127.0.0.1"
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
-  data = asdict(row)
-  for key in ("trip_start", "trip_end"):
-    val = data.get(key)
-    if val is not None and hasattr(val, "isoformat"):
-      data[key] = val.isoformat(sep=" ", timespec="seconds")
-  return data
+    data = asdict(row)
+    for key in ("trip_start", "trip_end"):
+        val = data.get(key)
+        if val is not None and hasattr(val, "isoformat"):
+            data[key] = val.isoformat(sep=" ", timespec="seconds")
+    return data
 
 
 def build_status_payload(
