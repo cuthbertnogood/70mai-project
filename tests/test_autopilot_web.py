@@ -101,51 +101,6 @@ class AutopilotWebTests(unittest.TestCase):
             server.stop()
 
 
-class PublishAllControlTests(unittest.TestCase):
-    def test_handle_chunk_control_stop(self) -> None:
-        from autopilot_control import EXIT_USER_STOP, handle_chunk_control, write_command
-
-        with tempfile.TemporaryDirectory() as tmp:
-            temp_dir = Path(tmp)
-            write_command(temp_dir, "stop")
-            ec, repair = handle_chunk_control(
-                temp_dir,
-                record_type="Normal",
-                chunk_index=1,
-            )
-            self.assertEqual(ec, EXIT_USER_STOP)
-            self.assertFalse(repair)
-
-    def test_handle_chunk_skip_defers_without_uploaded(self) -> None:
-        from autopilot_control import (
-            EXIT_SKIP_CHUNK,
-            handle_chunk_control,
-            is_chunk_deferred,
-            write_command,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            temp_dir = Path(tmp)
-            write_command(
-                temp_dir,
-                "skip",
-                record_type="Parking",
-                chunk_index=1,
-            )
-            ec, repair = handle_chunk_control(
-                temp_dir,
-                record_type="Parking",
-                chunk_index=1,
-            )
-            self.assertEqual(ec, EXIT_SKIP_CHUNK)
-            self.assertFalse(repair)
-            self.assertTrue(
-                is_chunk_deferred(
-                    temp_dir,
-                    record_type="Parking",
-                    chunk_index=1,
-                )
-            )
 
 
 if __name__ == "__main__":

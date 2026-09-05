@@ -59,6 +59,38 @@ class AutopilotControlTests(unittest.TestCase):
         self.assertEqual(ac.EXIT_USER_STOP, 3)
         self.assertEqual(ac.EXIT_SKIP_CHUNK, 4)
 
+    def test_handle_chunk_control_stop(self) -> None:
+        ac.write_command(self.temp_dir, "stop")
+        ec, repair = ac.handle_chunk_control(
+            self.temp_dir,
+            record_type="Normal",
+            chunk_index=1,
+        )
+        self.assertEqual(ec, ac.EXIT_USER_STOP)
+        self.assertFalse(repair)
+
+    def test_handle_chunk_skip_defers(self) -> None:
+        ac.write_command(
+            self.temp_dir,
+            "skip",
+            record_type="Parking",
+            chunk_index=1,
+        )
+        ec, repair = ac.handle_chunk_control(
+            self.temp_dir,
+            record_type="Parking",
+            chunk_index=1,
+        )
+        self.assertEqual(ec, ac.EXIT_SKIP_CHUNK)
+        self.assertFalse(repair)
+        self.assertTrue(
+            ac.is_chunk_deferred(
+                self.temp_dir,
+                record_type="Parking",
+                chunk_index=1,
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
