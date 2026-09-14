@@ -40,6 +40,39 @@ class AutopilotWebTests(unittest.TestCase):
         self.assertIn("diagnostics", payload)
         self.assertIn("sd_card", payload)
 
+    def test_filemap_falls_back_to_find_sd_card(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            (front / "NO20260814-100000-000001F.MP4").write_bytes(b"x" * 10)
+            import autopilot_web as aw
+
+            real_find = None
+            try:
+                from publish_all_70mai import find_sd_card as real_find
+
+                def fake_find():
+                    return root
+
+                import publish_all_70mai as pa
+
+                pa.find_sd_card = fake_find
+                payload = aw.build_file_map_payload(
+                    None,
+                    ["Normal"],
+                    video_dir=self.video_dir,
+                    temp_dir=self.temp_dir,
+                )
+            finally:
+                if real_find is not None:
+                    import publish_all_70mai as pa
+
+                    pa.find_sd_card = real_find
+
+            self.assertTrue(payload["present"])
+            self.assertEqual(payload["total"], 1)
+
     def test_filemap_endpoint(self) -> None:
         quit_event = threading.Event()
         port = self._free_port()

@@ -156,8 +156,16 @@ def build_file_map_payload(
     try:
         from autopilot_file_map import build_file_map_payload as _build_file_map
 
+        sd = source
+        if sd is None:
+            try:
+                from publish_all_70mai import find_sd_card
+
+                sd = find_sd_card()
+            except Exception:
+                pass
         return _build_file_map(
-            source,
+            sd,
             types,
             video_dir=video_dir,
             temp_dir=temp_dir,
