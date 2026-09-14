@@ -106,7 +106,7 @@ def build_status_payload(
     try:
         from autopilot_sd_table import build_sd_card_payload
 
-        sd_card = build_sd_card_payload(source or sd, types)
+        sd_card = build_sd_card_payload(source or sd, types, video_dir=video_dir)
     except Exception:
         pass
 
@@ -184,6 +184,17 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .sd-meta { font-size: .78rem; color: #8b9bb4; margin-bottom: .6rem; line-height: 1.45; }
     .sd-table { font-size: .78rem; }
     .sd-table th, .sd-table td { padding: .3rem .35rem; }
+    .sd-table tr.imp-uploaded td { color: #58d68d; }
+    .sd-table tr.imp-imported td { color: #7fd1ff; }
+    .sd-table tr.imp-partial td { color: #f5b041; }
+    .sd-table tr.imp-failed td { color: #ec7063; }
+    .sd-table tr.imp-pending td, .sd-table tr.imp-none td { color: #8b9bb4; }
+    .dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; margin-right: .35rem; background: currentColor; }
+    .sd-legend { font-size: .72rem; color: #8b9bb4; margin-top: .5rem; display: flex; flex-wrap: wrap; gap: .5rem; }
+    .sd-legend span.imp-uploaded { color: #58d68d; }
+    .sd-legend span.imp-imported { color: #7fd1ff; }
+    .sd-legend span.imp-partial { color: #f5b041; }
+    .sd-legend span.imp-none { color: #8b9bb4; }
     .bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
     button { border: 0; border-radius: 6px; padding: .45rem .9rem; cursor: pointer; font-weight: 600; }
     button.stop { background: #c0392b; color: #fff; }
@@ -236,6 +247,12 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         <thead><tr><th>Тип</th><th>Поездка</th><th>Длит.</th><th>Место</th><th>Клипы</th></tr></thead>
         <tbody id="sd-trips"></tbody>
       </table>
+      <div class="sd-legend" id="sd-legend" hidden>
+        <span class="imp-uploaded"><i class="dot"></i>загружено</span>
+        <span class="imp-imported"><i class="dot"></i>импортировано</span>
+        <span class="imp-partial"><i class="dot"></i>частично</span>
+        <span class="imp-none"><i class="dot"></i>не импортировано</span>
+      </div>
     </aside>
   </div>
   <script>
@@ -318,10 +335,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       }
       const sd = data.sd_card || {};
       const sdMeta = document.getElementById('sd-meta');
+      const sdLegend = document.getElementById('sd-legend');
       if (!sd.present) {
         sdMeta.textContent = 'Карта не подключена';
         document.getElementById('sd-trips').innerHTML = '';
+        sdLegend.hidden = true;
       } else {
+        sdLegend.hidden = !(sd.trips || []).length;
         const d = sd.disk || {};
         sdMeta.innerHTML = [
           esc(sd.path || ''),
@@ -330,9 +350,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           sd.updated_at ? `инвентарь: ${esc(sd.updated_at)}` : '',
         ].filter(Boolean).join('<br>');
         document.getElementById('sd-trips').innerHTML = (sd.trips || []).map(t =>
-          `<tr>
+          `<tr class="imp-${esc(t.import_status || 'none')}" title="${esc(t.import_label || '')}">
             <td>${esc(t.record_type)}</td>
-            <td title="${esc(t.start || '')} → ${esc(t.end || '')}">${esc(t.label)}</td>
+            <td title="${esc(t.start || '')} → ${esc(t.end || '')}"><i class="dot"></i>${esc(t.label)}</td>
             <td>${esc(t.duration)}</td>
             <td>${esc(t.size)}</td>
             <td>${esc(String(t.clip_count))}</td>

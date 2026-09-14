@@ -16,12 +16,24 @@ from import_70mai import (
     scan_clips,
     split_sessions,
 )
-from import_state import sd_inventory_path
+from import_state import sd_import_dir, sd_inventory_path
 from plan_estimate import SINGLE_VIDEO_TYPES
 
 DEFAULT_CLIP_SEC = 60.0
 _CACHE_TTL_SEC = 45.0
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+DONE_MERGE_STATUSES = ("merged", "skipped")
+_STATUS_RANK = {"merged": 3, "skipped": 3, "failed": 2, "planned": 1, "pending": 0}
+_IMPORT_COVERAGE_MIN = 0.98
+_IMPORT_LABELS = {
+    "uploaded": "загружено на YouTube",
+    "imported": "импортировано",
+    "partial": "импорт не закончен",
+    "failed": "ошибка импорта",
+    "pending": "в плане импорта",
+    "none": "не импортировано",
+}
 
 
 def clear_sd_table_cache() -> None:
@@ -56,6 +68,182 @@ def _load_inventory(source: Path) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _merge_window(record_type: str, filename: str) -> tuple[datetime, datetime] | None:
+    """Wall window of a merge output (filename end is the last clip's start)."""
+    from compose_70mai import parse_event_export_file, parse_merged_file
+
+    parse = parse_event_export_file if record_type == "Event" else parse_merged_file
+    try:
+        clip = parse(Path(filename))
+    except ValueError:
+        return None
+    if clip is None:
+        return None
+    return clip.start, clip.end + timedelta(seconds=DEFAULT_CLIP_SEC)
+
+
+def _merge_ledger(source: Path) -> dict[str, list[dict[str, Any]]]:
+    """Merge status per record type from SD import state files + inventory."""
+    best: dict[tuple[str, str, str], str] = {}
+
+    def offer(record_type: str, camera: str, name: str, status: str) -> None:
+        key = (record_type, camera, name)
+        prev = best.get(key)
+        if prev is None or _STATUS_RANK.get(status, 0) > _STATUS_RANK.get(prev, 0):
+            best[key] = status
+
+    try:
+        state_files = sorted(sd_import_dir(source).glob("import_*.state.json"))
+    except OSError:
+        state_files = []
+    for path in state_files:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for key, entry in (data.get("files") or {}).items():
+            parts = str(key).split("/")
+            if len(parts) != 3 or not isinstance(entry, dict):
+                continue
+            offer(parts[0], parts[1], parts[2], str(entry.get("status") or "pending"))
+
+    inv = _load_inventory(source) or {}
+    for record_type, block in (inv.get("record_types") or {}).items():
+        if not isinstance(block, dict):
+            continue
+        for camera, outputs in (block.get("merge_outputs") or {}).items():
+            if not isinstance(outputs, dict):
+                continue
+            for name, info in outputs.items():
+                if isinstance(info, dict):
+                    offer(
+                        record_type,
+                        camera,
+                        name,
+                        str(info.get("status") or "pending"),
+                    )
+
+    ledger: dict[str, list[dict[str, Any]]] = {}
+    for (record_type, camera, name), status in best.items():
+        window = _merge_window(record_type, name)
+        ledger.setdefault(record_type, []).append(
+            {
+                "camera": camera,
+                "status": status,
+                "start": window[0] if window else None,
+                "end": window[1] if window else None,
+            }
+        )
+    return ledger
+
+
+def _ssd_merge_windows(
+    video_dir: Path | None, record_type: str
+) -> dict[str, list[tuple[datetime, datetime]]]:
+    """Merged files present on the host, per camera (no ffprobe)."""
+    if video_dir is None or not video_dir.is_dir():
+        return {}
+    from compose_70mai import scan_merged_clips
+
+    windows: dict[str, list[tuple[datetime, datetime]]] = {}
+    for camera in ("Front", "Back"):
+        try:
+            clips = scan_merged_clips(
+                video_dir, camera, record_type=record_type, probe=False
+            )
+        except OSError:
+            continue
+        if clips:
+            windows[camera] = [
+                (c.start, c.end + timedelta(seconds=DEFAULT_CLIP_SEC)) for c in clips
+            ]
+    return windows
+
+
+def _covered_sec(
+    windows: list[tuple[datetime, datetime]], start: datetime, end: datetime
+) -> float:
+    total = 0.0
+    for w_start, w_end in windows:
+        lo = max(start, w_start)
+        hi = min(end, w_end)
+        if hi > lo:
+            total += (hi - lo).total_seconds()
+    return total
+
+
+def _import_status(
+    entries: list[dict[str, Any]],
+    ssd: dict[str, list[tuple[datetime, datetime]]],
+    *,
+    start: datetime,
+    end: datetime,
+    duration_sec: float,
+    single: bool,
+) -> tuple[str, str]:
+    """Import state of one trip: merge ledger first, SSD files as fallback."""
+    if single:
+        relevant = entries
+    else:
+        relevant = [
+            e
+            for e in entries
+            if e["start"] and e["end"] and e["end"] > start and e["start"] < end
+        ]
+
+    if relevant:
+        done = sum(1 for e in relevant if e["status"] in DONE_MERGE_STATUSES)
+        total = len(relevant)
+        if done == total:
+            return "imported", f"{_IMPORT_LABELS['imported']} ({done}/{total} файлов)"
+        if any(e["status"] == "failed" for e in relevant):
+            return "failed", f"{_IMPORT_LABELS['failed']} ({done}/{total} файлов)"
+        if done:
+            return "partial", f"{_IMPORT_LABELS['partial']} ({done}/{total} файлов)"
+        return "pending", f"{_IMPORT_LABELS['pending']} (0/{total} файлов)"
+
+    if single or not ssd or duration_sec <= 0:
+        return "none", _IMPORT_LABELS["none"]
+
+    pct = min(_covered_sec(w, start, end) for w in ssd.values()) / duration_sec
+    if pct >= _IMPORT_COVERAGE_MIN:
+        return "imported", f"{_IMPORT_LABELS['imported']} (merge на SSD)"
+    if pct > 0.05:
+        return "partial", f"{_IMPORT_LABELS['partial']} (на SSD ~{pct * 100:.0f}%)"
+    return "none", _IMPORT_LABELS["none"]
+
+
+def _annotate_import_status(
+    rows: list[dict[str, Any]],
+    *,
+    entries: list[dict[str, Any]],
+    ssd: dict[str, list[tuple[datetime, datetime]]],
+    single: bool,
+) -> None:
+    for row in rows:
+        if row.get("youtube_url"):
+            row["import_status"] = "uploaded"
+            row["import_label"] = _IMPORT_LABELS["uploaded"]
+            continue
+        try:
+            start = parse_datetime(row["start"])
+            end = parse_datetime(row["end"])
+        except (KeyError, ValueError):
+            row["import_status"] = "none"
+            row["import_label"] = _IMPORT_LABELS["none"]
+            continue
+        status, label = _import_status(
+            entries,
+            ssd,
+            start=start,
+            end=end,
+            duration_sec=float(row.get("duration_sec") or 0.0),
+            single=single,
+        )
+        row["import_status"] = status
+        row["import_label"] = label
 
 
 def _trip_rows_from_inventory(
@@ -117,6 +305,7 @@ def _trip_rows_from_inventory(
                 "clip_count": clip_count,
                 "size_bytes": size_bytes,
                 "size": format_file_size(size_bytes),
+                "youtube_url": trip.get("youtube_url"),
             }
         )
     return rows
@@ -187,6 +376,7 @@ def build_sd_card_payload(
     types: list[str],
     *,
     session_gap: float = 120.0,
+    video_dir: Path | None = None,
     ttl_sec: float = _CACHE_TTL_SEC,
 ) -> dict[str, Any]:
     """Trips on SD with duration and on-card file size (cached)."""
@@ -201,12 +391,13 @@ def build_sd_card_payload(
     if source is None or not source.is_dir():
         return empty
 
-    key = f"{source.resolve()}:{','.join(types)}"
+    key = f"{source.resolve()}:{','.join(types)}:{video_dir or ''}"
     now = time.monotonic()
     cached = _cache.get(key)
     if cached and now - cached[0] < ttl_sec:
         return cached[1]
 
+    ledger = _merge_ledger(source)
     trips: list[dict[str, Any]] = []
     for record_type in types:
         rows = _trip_rows_from_inventory(
@@ -216,6 +407,12 @@ def build_sd_card_payload(
             rows = _trip_rows_from_scan(
                 source, record_type, session_gap=session_gap
             )
+        _annotate_import_status(
+            rows,
+            entries=ledger.get(record_type, []),
+            ssd=_ssd_merge_windows(video_dir, record_type),
+            single=record_type in SINGLE_VIDEO_TYPES,
+        )
         trips.extend(rows)
 
     disk: dict[str, Any] = {}

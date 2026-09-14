@@ -100,6 +100,72 @@ class AutopilotSdTableTests(unittest.TestCase):
             payload = build_sd_card_payload(root, ["Event"], ttl_sec=0)
             self.assertEqual(payload["trips"][0]["clip_count"], 2)
 
+    def test_import_status_from_merge_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            (front / "NO20260814-100000-000001F.MP4").write_bytes(b"x" * 10)
+            (front / "NO20260814-100100-000002F.MP4").write_bytes(b"x" * 10)
+
+            payload = build_sd_card_payload(root, ["Normal"], ttl_sec=0)
+            self.assertEqual(payload["trips"][0]["import_status"], "none")
+
+            state_dir = sd_import_dir(root)
+            state_dir.mkdir(parents=True, exist_ok=True)
+            state = {
+                "files": {
+                    "Normal/Front/NO_20260814-100000_100100_F.mp4": {
+                        "status": "merged"
+                    }
+                }
+            }
+            (state_dir / "import_card.state.json").write_text(
+                json.dumps(state), encoding="utf-8"
+            )
+            payload = build_sd_card_payload(root, ["Normal"], ttl_sec=0)
+            self.assertEqual(payload["trips"][0]["import_status"], "imported")
+
+            state["files"]["Normal/Back/NO_20260814-100000_100100_B.mp4"] = {
+                "status": "pending"
+            }
+            (state_dir / "import_card.state.json").write_text(
+                json.dumps(state), encoding="utf-8"
+            )
+            payload = build_sd_card_payload(root, ["Normal"], ttl_sec=0)
+            self.assertEqual(payload["trips"][0]["import_status"], "partial")
+
+    def test_uploaded_trip_marked_from_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            (front / "NO20260814-100000-000001F.MP4").write_bytes(b"x" * 10)
+            inv_dir = sd_import_dir(root)
+            inv_dir.mkdir(parents=True)
+            inv = {
+                "updated_at": "2026-08-15T00:00:00Z",
+                "record_types": {
+                    "Normal": {
+                        "trips": [
+                            {
+                                "index": 1,
+                                "start": "2026-08-14 10:00:00",
+                                "end": "2026-08-14 10:01:00",
+                                "duration_sec": 60.0,
+                                "clip_count": 1,
+                                "youtube_url": "https://youtu.be/abc",
+                            }
+                        ]
+                    }
+                },
+            }
+            (inv_dir / "card_inventory.json").write_text(
+                json.dumps(inv), encoding="utf-8"
+            )
+            payload = build_sd_card_payload(root, ["Normal"], ttl_sec=0)
+            self.assertEqual(payload["trips"][0]["import_status"], "uploaded")
+
 
 if __name__ == "__main__":
     unittest.main()
