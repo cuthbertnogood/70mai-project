@@ -47,7 +47,7 @@ tail -f video/Output/.publish_tmp/publish_all.log
 ./scripts/autopilot_dashboard.sh
 ```
 
-**Веб-Dashboard** (`127.0.0.1:8787`): слева — прогон (Import / Compose / Upload); **справа — таблица SD** (поездки, длительность, место на карте). Кнопки **Stop**, **Skip**, **Repair**, **Quit**. После обновления кода перезапустите `./scripts/autopilot.sh` или поднимите `--dashboard-only` на другом порту (см. выше).
+**Веб-Dashboard** (`127.0.0.1:8787`): слева — прогон (Import / Compose / Upload); **справа — таблица SD** (поездки, длительность, место на карте). Строки таблицы SD подсвечены по состоянию импорта: зелёный — **загружено** на YouTube, голубой — **импортировано**, оранжевый — **частично** (импорт не закончен или ошибка), серый — **не импортировано**. Кнопки **Stop**, **Skip**, **Repair**, **Quit**. После обновления кода перезапустите `./scripts/autopilot.sh` или поднимите `--dashboard-only` на другом порту (см. выше).
 
 Нужны: Mac, Python 3.10+, ffmpeg, SD-карта 70mai (обычно `/Volumes/Untitled`).
 
@@ -129,6 +129,7 @@ python3 scripts/analyze_host_perf.py -o анализ/host_perf_report.md
 
 Подробные команды — в **Запуск** в начале README.
 
+- **Цвет строк SD** — состояние импорта поездки. Источник: merge-леджер карты (`.70mai/import/import_*.state.json` + `merge_outputs` в `card_inventory.json`), поэтому статус переживает prune merged с SSD. Normal: поездка «импортирована», если все merge-файлы, попадающие в её окно, в статусе `merged`/`skipped`. Event/Parking: по мега-merge (>1 клипа) на каждую камеру — одиночные stale-записи не учитываются. Если леджера нет, используется покрытие merged-файлов в `video/Output/` (≥98%). YouTube-ссылка в инвентаре перекрывает статус на «загружено».
 - **Профилировать хост** — безопасный локальный compose-тест и hardware-метрики; upload, SD и publish state не затрагиваются.
 - Результат сохраняется в `video/Output/.publish_tmp/autopilot_diagnostics.json`.
 - Полный compose-тест выполняется только при наличии локальных ScreenRecording и merged Front/Back; иначе Dashboard показывает hardware-информацию и сообщает, что нужен тестовый набор.

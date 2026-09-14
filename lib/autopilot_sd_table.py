@@ -86,13 +86,15 @@ def _merge_window(record_type: str, filename: str) -> tuple[datetime, datetime] 
 
 def _merge_ledger(source: Path) -> dict[str, list[dict[str, Any]]]:
     """Merge status per record type from SD import state files + inventory."""
-    best: dict[tuple[str, str, str], str] = {}
+    best: dict[tuple[str, str, str], tuple[str, int]] = {}
 
-    def offer(record_type: str, camera: str, name: str, status: str) -> None:
+    def offer(
+        record_type: str, camera: str, name: str, status: str, clip_count: int
+    ) -> None:
         key = (record_type, camera, name)
         prev = best.get(key)
-        if prev is None or _STATUS_RANK.get(status, 0) > _STATUS_RANK.get(prev, 0):
-            best[key] = status
+        if prev is None or _STATUS_RANK.get(status, 0) > _STATUS_RANK.get(prev[0], 0):
+            best[key] = (status, max(clip_count, prev[1] if prev else 0))
 
     try:
         state_files = sorted(sd_import_dir(source).glob("import_*.state.json"))
@@ -107,7 +109,13 @@ def _merge_ledger(source: Path) -> dict[str, list[dict[str, Any]]]:
             parts = str(key).split("/")
             if len(parts) != 3 or not isinstance(entry, dict):
                 continue
-            offer(parts[0], parts[1], parts[2], str(entry.get("status") or "pending"))
+            offer(
+                parts[0],
+                parts[1],
+                parts[2],
+                str(entry.get("status") or "pending"),
+                int(entry.get("clip_count") or 0),
+            )
 
     inv = _load_inventory(source) or {}
     for record_type, block in (inv.get("record_types") or {}).items():
@@ -123,15 +131,17 @@ def _merge_ledger(source: Path) -> dict[str, list[dict[str, Any]]]:
                         camera,
                         name,
                         str(info.get("status") or "pending"),
+                        int(info.get("clip_count") or 0),
                     )
 
     ledger: dict[str, list[dict[str, Any]]] = {}
-    for (record_type, camera, name), status in best.items():
+    for (record_type, camera, name), (status, clip_count) in best.items():
         window = _merge_window(record_type, name)
         ledger.setdefault(record_type, []).append(
             {
                 "camera": camera,
                 "status": status,
+                "clip_count": clip_count,
                 "start": window[0] if window else None,
                 "end": window[1] if window else None,
             }
@@ -185,13 +195,30 @@ def _import_status(
 ) -> tuple[str, str]:
     """Import state of one trip: merge ledger first, SSD files as fallback."""
     if single:
-        relevant = entries
-    else:
-        relevant = [
-            e
+        # Event/Parking merge into one mega-file per camera; the ledger also keeps
+        # stale single-clip rows, so judge by the multi-clip merge only.
+        cameras = {e["camera"] for e in entries}
+        if not cameras:
+            return "none", _IMPORT_LABELS["none"]
+        done_cams = {
+            e["camera"]
             for e in entries
-            if e["start"] and e["end"] and e["end"] > start and e["start"] < end
-        ]
+            if e["status"] in DONE_MERGE_STATUSES and int(e["clip_count"] or 0) > 1
+        }
+        suffix = f" ({len(done_cams)}/{len(cameras)} камер)"
+        if done_cams >= cameras:
+            return "imported", _IMPORT_LABELS["imported"] + suffix
+        if done_cams:
+            return "partial", _IMPORT_LABELS["partial"] + suffix
+        if any(e["status"] == "failed" for e in entries):
+            return "failed", _IMPORT_LABELS["failed"]
+        return "pending", _IMPORT_LABELS["pending"]
+
+    relevant = [
+        e
+        for e in entries
+        if e["start"] and e["end"] and e["end"] > start and e["start"] < end
+    ]
 
     if relevant:
         done = sum(1 for e in relevant if e["status"] in DONE_MERGE_STATUSES)
@@ -204,7 +231,7 @@ def _import_status(
             return "partial", f"{_IMPORT_LABELS['partial']} ({done}/{total} файлов)"
         return "pending", f"{_IMPORT_LABELS['pending']} (0/{total} файлов)"
 
-    if single or not ssd or duration_sec <= 0:
+    if not ssd or duration_sec <= 0:
         return "none", _IMPORT_LABELS["none"]
 
     pct = min(_covered_sec(w, start, end) for w in ssd.values()) / duration_sec
