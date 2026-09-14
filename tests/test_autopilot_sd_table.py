@@ -166,6 +166,45 @@ class AutopilotSdTableTests(unittest.TestCase):
             payload = build_sd_card_payload(root, ["Normal"], ttl_sec=0)
             self.assertEqual(payload["trips"][0]["import_status"], "uploaded")
 
+    def test_plan_trip_marked_pending_not_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            temp_dir = Path(tmp) / "host"
+            temp_dir.mkdir()
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            (front / "NO20260814-100000-000001F.MP4").write_bytes(b"x" * 10)
+            (front / "NO20260814-100100-000002F.MP4").write_bytes(b"x" * 10)
+
+            without_plan = build_sd_card_payload(root, ["Normal"], ttl_sec=0)
+            self.assertEqual(without_plan["trips"][0]["import_status"], "none")
+
+            plan = {
+                "chunks": [
+                    {
+                        "record_type": "Normal",
+                        "index": 1,
+                        "trips": [
+                            {
+                                "index": 1,
+                                "start": "2026-08-14T10:00:00",
+                                "end": "2026-08-14T10:02:00",
+                                "clip_count": 2,
+                                "duration_sec": 120.0,
+                            }
+                        ],
+                    }
+                ]
+            }
+            (temp_dir / "autopilot_plan.json").write_text(
+                json.dumps(plan), encoding="utf-8"
+            )
+            with_plan = build_sd_card_payload(
+                root, ["Normal"], temp_dir=temp_dir, ttl_sec=0
+            )
+            self.assertEqual(with_plan["trips"][0]["import_status"], "pending")
+            self.assertIn("плане", with_plan["trips"][0]["import_label"])
+
 
 if __name__ == "__main__":
     unittest.main()

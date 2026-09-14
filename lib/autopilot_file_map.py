@@ -393,9 +393,11 @@ def _composed_windows(
     except Exception:
         return {}
 
+    # Only after compose finished — active "compose" stays "merged" so the
+    # block map matches the SD table's "imported" while encoding runs.
     windows: dict[str, list[tuple[datetime, datetime]]] = {}
     for row in dash.rows:
-        if row.status not in ("compose", "upload", "stall", "done"):
+        if row.status not in ("upload", "stall", "done"):
             continue
         if row.trip_start is None or row.trip_end is None:
             continue
@@ -414,6 +416,7 @@ def _clip_status_from_sd_trips(
     source: Path,
     types: list[str],
     video_dir: Path | None,
+    temp_dir: Path | None = None,
 ) -> tuple[set[tuple[str, str, str]], set[tuple[str, str, str]]]:
     """Trip-level uploaded/merged using the same rules as the SD sidebar table."""
     from autopilot_sd_table import build_sd_card_payload
@@ -422,7 +425,7 @@ def _clip_status_from_sd_trips(
     merged: set[tuple[str, str, str]] = set()
     try:
         payload = build_sd_card_payload(
-            source, types, video_dir=video_dir, ttl_sec=0
+            source, types, video_dir=video_dir, temp_dir=temp_dir, ttl_sec=0
         )
     except Exception:
         return uploaded, merged
@@ -432,7 +435,8 @@ def _clip_status_from_sd_trips(
             continue
         record_type = str(trip.get("record_type") or "")
         imp = str(trip.get("import_status") or "none")
-        if imp not in ("uploaded", "imported", "partial"):
+        # Ignore partial — only fully imported/uploaded trips paint every clip.
+        if imp not in ("uploaded", "imported"):
             continue
         try:
             start = parse_datetime(str(trip.get("start") or ""))
@@ -529,7 +533,9 @@ def build_file_map_payload(
     uploaded = _uploaded_sources(
         source, types, temp_dir=temp_dir, video_dir=video_dir
     )
-    sd_uploaded, sd_merged = _clip_status_from_sd_trips(source, types, video_dir)
+    sd_uploaded, sd_merged = _clip_status_from_sd_trips(
+        source, types, video_dir, temp_dir
+    )
     uploaded |= sd_uploaded
     merged_sources = _merged_sources(video_dir) | sd_merged
     planned = _planned_windows(temp_dir, types)

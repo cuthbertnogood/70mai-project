@@ -106,7 +106,9 @@ def build_status_payload(
     try:
         from autopilot_sd_table import build_sd_card_payload
 
-        sd_card = build_sd_card_payload(source or sd, types, video_dir=video_dir)
+        sd_card = build_sd_card_payload(
+            source or sd, types, video_dir=video_dir, temp_dir=temp_dir
+        )
     except Exception:
         pass
 
@@ -217,14 +219,14 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .sd-table th, .sd-table td { padding: .3rem .35rem; }
     .sd-table tr.imp-uploaded td { color: #58d68d; }
     .sd-table tr.imp-imported td { color: #7fd1ff; }
-    .sd-table tr.imp-partial td { color: #f5b041; }
+    .sd-table tr.imp-partial td, .sd-table tr.imp-pending td { color: #f5b041; }
     .sd-table tr.imp-failed td { color: #ec7063; }
-    .sd-table tr.imp-pending td, .sd-table tr.imp-none td { color: #8b9bb4; }
+    .sd-table tr.imp-none td { color: #8b9bb4; }
     .dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; margin-right: .35rem; background: currentColor; }
     .sd-legend { font-size: .72rem; color: #8b9bb4; margin-top: .5rem; display: flex; flex-wrap: wrap; gap: .5rem; }
     .sd-legend span.imp-uploaded { color: #58d68d; }
     .sd-legend span.imp-imported { color: #7fd1ff; }
-    .sd-legend span.imp-partial { color: #f5b041; }
+    .sd-legend span.imp-partial, .sd-legend span.imp-pending { color: #f5b041; }
     .sd-legend span.imp-none { color: #8b9bb4; }
     .blockmap-panel { margin-top: 1.25rem; background: #1a2332; border-radius: 8px; padding: .75rem 1rem; }
     .blockmap-legend { font-size: .78rem; color: #8b9bb4; margin-bottom: .6rem; display: flex; flex-wrap: wrap; gap: .65rem; }
@@ -301,6 +303,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="sd-legend" id="sd-legend" hidden>
         <span class="imp-uploaded"><i class="dot"></i>загружено</span>
         <span class="imp-imported"><i class="dot"></i>импортировано</span>
+        <span class="imp-pending"><i class="dot"></i>в плане</span>
         <span class="imp-partial"><i class="dot"></i>частично</span>
         <span class="imp-none"><i class="dot"></i>не импортировано</span>
       </div>

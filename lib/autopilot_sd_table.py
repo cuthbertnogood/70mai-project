@@ -17,7 +17,7 @@ from import_70mai import (
     split_sessions,
 )
 from import_state import sd_import_dir, sd_inventory_path
-from plan_estimate import SINGLE_VIDEO_TYPES
+from plan_estimate import SINGLE_VIDEO_TYPES, load_autopilot_plan
 
 DEFAULT_CLIP_SEC = 60.0
 _CACHE_TTL_SEC = 45.0
@@ -31,7 +31,7 @@ _IMPORT_LABELS = {
     "imported": "импортировано",
     "partial": "импорт не закончен",
     "failed": "ошибка импорта",
-    "pending": "в плане импорта",
+    "pending": "в плане (ещё не импортировано)",
     "none": "не импортировано",
 }
 
@@ -242,13 +242,41 @@ def _import_status(
     return "none", _IMPORT_LABELS["none"]
 
 
+def _planned_windows(
+    temp_dir: Path | None, types: list[str]
+) -> dict[str, list[tuple[datetime, datetime]]]:
+    if temp_dir is None:
+        return {}
+    chunks = load_autopilot_plan(temp_dir)
+    if not chunks:
+        return {}
+    windows: dict[str, list[tuple[datetime, datetime]]] = {}
+    for chunk in chunks:
+        if chunk.record_type not in types:
+            continue
+        for trip in chunk.trips:
+            windows.setdefault(chunk.record_type, []).append((trip.start, trip.end))
+    return windows
+
+
+def _overlaps(
+    start: datetime, end: datetime, windows: list[tuple[datetime, datetime]]
+) -> bool:
+    for w_start, w_end in windows:
+        if w_start < end and w_end > start:
+            return True
+    return False
+
+
 def _annotate_import_status(
     rows: list[dict[str, Any]],
     *,
     entries: list[dict[str, Any]],
     ssd: dict[str, list[tuple[datetime, datetime]]],
     single: bool,
+    planned: list[tuple[datetime, datetime]] | None = None,
 ) -> None:
+    plan_windows = planned or []
     for row in rows:
         if row.get("youtube_url"):
             row["import_status"] = "uploaded"
@@ -269,6 +297,11 @@ def _annotate_import_status(
             duration_sec=float(row.get("duration_sec") or 0.0),
             single=single,
         )
+        # Align with left panel + file map: in-plan but not imported → pending.
+        if status == "none" and (
+            (single and plan_windows) or _overlaps(start, end, plan_windows)
+        ):
+            status, label = "pending", _IMPORT_LABELS["pending"]
         row["import_status"] = status
         row["import_label"] = label
 
@@ -404,6 +437,7 @@ def build_sd_card_payload(
     *,
     session_gap: float = 120.0,
     video_dir: Path | None = None,
+    temp_dir: Path | None = None,
     ttl_sec: float = _CACHE_TTL_SEC,
 ) -> dict[str, Any]:
     """Trips on SD with duration and on-card file size (cached)."""
@@ -418,13 +452,14 @@ def build_sd_card_payload(
     if source is None or not source.is_dir():
         return empty
 
-    key = f"{source.resolve()}:{','.join(types)}:{video_dir or ''}"
+    key = f"{source.resolve()}:{','.join(types)}:{video_dir or ''}:{temp_dir or ''}"
     now = time.monotonic()
     cached = _cache.get(key)
     if cached and now - cached[0] < ttl_sec:
         return cached[1]
 
     ledger = _merge_ledger(source)
+    planned = _planned_windows(temp_dir, types)
     trips: list[dict[str, Any]] = []
     for record_type in types:
         rows = _trip_rows_from_inventory(
@@ -439,6 +474,7 @@ def build_sd_card_payload(
             entries=ledger.get(record_type, []),
             ssd=_ssd_merge_windows(video_dir, record_type),
             single=record_type in SINGLE_VIDEO_TYPES,
+            planned=planned.get(record_type, []),
         )
         trips.extend(rows)
 
