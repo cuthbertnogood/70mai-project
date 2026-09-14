@@ -51,6 +51,45 @@ class ImportStateFreshnessTests(unittest.TestCase):
             self.assertIn("new", store._data.get("files", {}))
             self.assertNotIn("old", store._data.get("files", {}))
 
+    def test_drop_orphaned_mega_merges_keeps_current_window(self) -> None:
+        from import_state import drop_orphaned_mega_merges, sd_import_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "sd"
+            front = source / "Event" / "Front"
+            front.mkdir(parents=True)
+            (front / "EV20260308-213106-000001F.MP4").write_bytes(b"x")
+            state_dir = sd_import_dir(source)
+            state_dir.mkdir(parents=True)
+            (state_dir / "import_Event.state.json").write_text(
+                json.dumps(
+                    {
+                        "files": {
+                            "Event/Front/EV_20260226-082909_111733_F.mp4": {
+                                "status": "merged",
+                                "clip_count": 160,
+                            },
+                            "Event/Front/EV_20260308-213106_213206_F.mp4": {
+                                "status": "merged",
+                                "clip_count": 10,
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            n = drop_orphaned_mega_merges(source)
+            self.assertEqual(n, 1)
+            data = json.loads(
+                (state_dir / "import_Event.state.json").read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                "Event/Front/EV_20260308-213106_213206_F.mp4", data["files"]
+            )
+            self.assertNotIn(
+                "Event/Front/EV_20260226-082909_111733_F.mp4", data["files"]
+            )
+
     def test_skipped_merge_is_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

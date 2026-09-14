@@ -169,7 +169,7 @@ class AutopilotFileMapTests(unittest.TestCase):
             self.assertEqual(payload["groups"][0]["blocks"][0]["st"], "uploaded")
             self.assertEqual(payload["counts"]["uploaded"], 1)
 
-    def test_merged_from_sd_table_event_mega_merge(self) -> None:
+    def test_stale_event_mega_merge_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             front = root / "Event" / "Front"
@@ -197,9 +197,9 @@ class AutopilotFileMapTests(unittest.TestCase):
             )
             payload = build_file_map_payload(root, ["Event"], ttl_sec=0)
             self.assertEqual(
-                payload["groups"][0]["blocks"][0]["st"], "merged"
+                payload["groups"][0]["blocks"][0]["st"], "oncard"
             )
-            self.assertEqual(payload["counts"]["merged"], 2)
+            self.assertNotIn("merged", payload.get("counts") or {})
 
     def test_uploaded_from_video_id_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -205,6 +205,39 @@ class AutopilotSdTableTests(unittest.TestCase):
             self.assertEqual(with_plan["trips"][0]["import_status"], "pending")
             self.assertIn("плане", with_plan["trips"][0]["import_label"])
 
+    def test_stale_event_mega_merge_is_not_imported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Event" / "Front"
+            back = root / "Event" / "Back"
+            front.mkdir(parents=True)
+            back.mkdir(parents=True)
+            (front / "EV20260308-213106-000001F.MP4").write_bytes(b"x")
+            (back / "EV20260308-213106-000001B.MP4").write_bytes(b"x")
+            state_dir = sd_import_dir(root)
+            state_dir.mkdir(parents=True)
+            state = {
+                "files": {
+                    "Event/Front/EV_20260226-082909_111733_F.mp4": {
+                        "status": "merged",
+                        "clip_count": 160,
+                    },
+                    "Event/Back/EV_20260226-082909_111733_B.mp4": {
+                        "status": "skipped",
+                        "clip_count": 237,
+                    },
+                }
+            }
+            (state_dir / "import_Event.state.json").write_text(
+                json.dumps(state), encoding="utf-8"
+            )
+            payload = build_sd_card_payload(root, ["Event"], ttl_sec=0)
+            self.assertEqual(payload["trips"][0]["import_status"], "none")
+            leftover = json.loads(
+                (state_dir / "import_Event.state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(leftover.get("files"), {})
+
 
 if __name__ == "__main__":
     unittest.main()

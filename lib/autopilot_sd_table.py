@@ -195,24 +195,32 @@ def _import_status(
 ) -> tuple[str, str]:
     """Import state of one trip: merge ledger first, SSD files as fallback."""
     if single:
-        # Event/Parking merge into one mega-file per camera; the ledger also keeps
-        # stale single-clip rows, so judge by the multi-clip merge only.
-        cameras = {e["camera"] for e in entries}
-        if not cameras:
-            return "none", _IMPORT_LABELS["none"]
+        # Event/Parking: one mega-file per camera. Ignore leftover mega-merges
+        # whose filename window does not overlap this card's clips / trip.
+        overlapping = [
+            e
+            for e in entries
+            if e.get("start")
+            and e.get("end")
+            and e["end"] > start
+            and e["start"] < end
+        ]
         done_cams = {
             e["camera"]
-            for e in entries
+            for e in overlapping
             if e["status"] in DONE_MERGE_STATUSES and int(e["clip_count"] or 0) > 1
         }
-        suffix = f" ({len(done_cams)}/{len(cameras)} камер)"
-        if done_cams >= cameras:
+        ssd_cams = {cam for cam, wins in ssd.items() if wins}
+        done_cams |= ssd_cams
+        expected = {"Front", "Back"}
+        suffix = f" ({len(done_cams)}/{len(expected)} камер)"
+        if expected <= done_cams:
             return "imported", _IMPORT_LABELS["imported"] + suffix
         if done_cams:
             return "partial", _IMPORT_LABELS["partial"] + suffix
-        if any(e["status"] == "failed" for e in entries):
+        if any(e["status"] == "failed" for e in overlapping):
             return "failed", _IMPORT_LABELS["failed"]
-        return "pending", _IMPORT_LABELS["pending"]
+        return "none", _IMPORT_LABELS["none"]
 
     relevant = [
         e
@@ -458,6 +466,12 @@ def build_sd_card_payload(
     if cached and now - cached[0] < ttl_sec:
         return cached[1]
 
+    try:
+        from import_state import drop_orphaned_mega_merges
+
+        drop_orphaned_mega_merges(source)
+    except Exception:
+        pass
     ledger = _merge_ledger(source)
     planned = _planned_windows(temp_dir, types)
     trips: list[dict[str, Any]] = []

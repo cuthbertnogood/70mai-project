@@ -72,6 +72,105 @@ def _merge_key(record_type: str, camera: str, filename: str) -> str:
     return f"{record_type}/{camera}/{filename}"
 
 
+def _merge_window_for_name(
+    record_type: str, filename: str
+) -> tuple[datetime, datetime] | None:
+    from compose_70mai import parse_event_export_file, parse_merged_file
+
+    parse = parse_event_export_file if record_type == "Event" else parse_merged_file
+    try:
+        clip = parse(Path(filename))
+    except ValueError:
+        return None
+    if clip is None:
+        return None
+    from datetime import timedelta
+
+    return clip.start, clip.end + timedelta(seconds=60.0)
+
+
+def drop_orphaned_mega_merges(source: Path) -> int:
+    """Remove Event/Parking/Normal mega-merge rows that don't cover clips on the card.
+
+    Leftover import_*.state.json from an older recording set made the dashboard
+    treat Event/Parking as imported when the files were never on this host.
+    """
+    if not source.is_dir():
+        return 0
+    from import_70mai import scan_clips
+
+    spans: dict[str, tuple[datetime, datetime]] = {}
+    removed = 0
+    try:
+        state_files = sorted(sd_import_dir(source).glob("import_*.state.json"))
+    except OSError:
+        return 0
+
+    def span_for(record_type: str) -> tuple[datetime, datetime] | None:
+        if record_type in spans:
+            return spans[record_type]
+        clips = scan_clips(source, [record_type], ["Front", "Back"], warn=False)
+        if not clips:
+            return None
+        lo = min(c.timestamp for c in clips)
+        hi = max(c.timestamp for c in clips)
+        spans[record_type] = (lo, hi)
+        return spans[record_type]
+
+    for path in state_files:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        files = data.get("files")
+        if not isinstance(files, dict) or not files:
+            continue
+        drop: list[str] = []
+        for key, entry in files.items():
+            parts = str(key).split("/")
+            if len(parts) != 3 or not isinstance(entry, dict):
+                continue
+            status = str(entry.get("status") or "")
+            if status not in ("merged", "skipped", "failed"):
+                continue
+            if int(entry.get("clip_count") or 0) <= 1:
+                continue
+            record_type = parts[0]
+            window = _merge_window_for_name(record_type, parts[2])
+            if window is None:
+                continue
+            span = span_for(record_type)
+            if span is None:
+                drop.append(key)
+                continue
+            if window[1] <= span[0] or window[0] > span[1]:
+                drop.append(key)
+        if not drop:
+            continue
+        for key in drop:
+            del files[key]
+        removed += len(drop)
+        stats = {"merged": 0, "skipped": 0, "failed": 0, "planned": 0, "pending": 0}
+        for entry in files.values():
+            if not isinstance(entry, dict):
+                continue
+            st = entry.get("status", "pending")
+            if st in stats:
+                stats[st] += 1
+            else:
+                stats["pending"] += 1
+        data["files"] = files
+        data["merge_stats"] = stats
+        data["updated_at"] = _utc_now()
+        try:
+            path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError:
+            continue
+    return removed
+
+
 def render_card_summary(data: dict) -> str:
     lines = [
         "70mai SD card inventory",
@@ -340,6 +439,11 @@ class ImportStateStore:
                 "merge_outputs": {},
             }
 
+        dropped = drop_orphaned_mega_merges(self.source)
+        if dropped:
+            log(f"Dropped {dropped} stale mega-merge row(s) not on this card")
+            self._data = self._load()
+        inventory["merge_stats"] = self._recompute_merge_stats()
         self._write_inventory(inventory)
         log(f"Card inventory: {self.inventory_path}")
         log(f"Card summary:   {self.summary_path}")
