@@ -143,6 +143,8 @@ def _ps_ax_lines() -> list[str]:
             ["ps", "ax", "-o", "pid=,command="],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
     except (OSError, subprocess.CalledProcessError):

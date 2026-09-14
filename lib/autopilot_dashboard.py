@@ -2196,6 +2196,8 @@ def list_pipeline_processes(*, temp_dir: Path | None = None) -> list[PipelinePro
         out = subprocess.check_output(
             ["ps", "ax", "-o", "pid=,etime=,command="],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.CalledProcessError):

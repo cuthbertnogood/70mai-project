@@ -27,6 +27,8 @@ def _process_tree(root_pid: int) -> tuple[list[int], float, int]:
             ["ps", "-axo", "pid=,ppid=,%cpu=,rss="],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
     except (OSError, subprocess.CalledProcessError):

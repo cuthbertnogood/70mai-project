@@ -56,5 +56,19 @@ class AutopilotTakeoverTests(unittest.TestCase):
         clear_lock.assert_called_once_with()
 
 
+class PsAxLinesTests(unittest.TestCase):
+    def test_ps_ax_lines_tolerates_non_utf8(self) -> None:
+        completed = mock.Mock()
+        completed.stdout = "111 python lib/autopilot.py\n222 cmd with \ufffd bad bytes\n"
+        with mock.patch.object(pa.subprocess, "run", return_value=completed) as run:
+            lines = pa._ps_ax_lines()
+        run.assert_called_once()
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs.get("encoding"), "utf-8")
+        self.assertEqual(kwargs.get("errors"), "replace")
+        self.assertEqual(len(lines), 2)
+        self.assertIn("bad bytes", lines[1])
+
+
 if __name__ == "__main__":
     unittest.main()
