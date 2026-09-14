@@ -169,6 +169,38 @@ class AutopilotFileMapTests(unittest.TestCase):
             self.assertEqual(payload["groups"][0]["blocks"][0]["st"], "uploaded")
             self.assertEqual(payload["counts"]["uploaded"], 1)
 
+    def test_merged_from_sd_table_event_mega_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Event" / "Front"
+            back = root / "Event" / "Back"
+            front.mkdir(parents=True)
+            back.mkdir(parents=True)
+            (front / "EV20260308-213106-000001F.MP4").write_bytes(b"x")
+            (back / "EV20260308-213106-000001B.MP4").write_bytes(b"x")
+            state_dir = sd_import_dir(root)
+            state_dir.mkdir(parents=True)
+            state = {
+                "files": {
+                    "Event/Front/EV_20260226-082909_111833_F.mp4": {
+                        "status": "merged",
+                        "clip_count": 100,
+                    },
+                    "Event/Back/EV_20260226-082909_111833_B.mp4": {
+                        "status": "merged",
+                        "clip_count": 100,
+                    },
+                }
+            }
+            (state_dir / "import_card.state.json").write_text(
+                json.dumps(state), encoding="utf-8"
+            )
+            payload = build_file_map_payload(root, ["Event"], ttl_sec=0)
+            self.assertEqual(
+                payload["groups"][0]["blocks"][0]["st"], "merged"
+            )
+            self.assertEqual(payload["counts"]["merged"], 2)
+
     def test_uploaded_from_video_id_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
