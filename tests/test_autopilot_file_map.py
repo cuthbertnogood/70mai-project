@@ -138,6 +138,63 @@ class AutopilotFileMapTests(unittest.TestCase):
             self.assertEqual(payload["groups"][0]["blocks"][0]["st"], "error")
             self.assertEqual(payload["counts"]["error"], 1)
 
+    def test_uploaded_from_inventory_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            clip_name = "NO20260814-100000-000001F.MP4"
+            (front / clip_name).write_bytes(b"x" * 10)
+            inv_dir = sd_import_dir(root)
+            inv_dir.mkdir(parents=True)
+            inv = {
+                "record_types": {
+                    "Normal": {
+                        "trips": [
+                            {
+                                "index": 1,
+                                "start": "2026-08-14 10:00:00",
+                                "end": "2026-08-14 10:01:00",
+                                "youtube_url": "https://youtu.be/abc",
+                            }
+                        ],
+                        "clip_youtube": {},
+                    }
+                }
+            }
+            (inv_dir / "card_inventory.json").write_text(
+                json.dumps(inv), encoding="utf-8"
+            )
+            payload = build_file_map_payload(root, ["Normal"], ttl_sec=0)
+            self.assertEqual(payload["groups"][0]["blocks"][0]["st"], "uploaded")
+            self.assertEqual(payload["counts"]["uploaded"], 1)
+
+    def test_uploaded_from_video_id_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            clip_name = "NO20260814-100000-000001F.MP4"
+            (front / clip_name).write_bytes(b"x" * 10)
+            inv_dir = sd_import_dir(root)
+            inv_dir.mkdir(parents=True)
+            inv = {
+                "record_types": {
+                    "Normal": {
+                        "clip_youtube": {
+                            "Front": {
+                                clip_name: {"video_id": "abc123XYZ"},
+                            }
+                        }
+                    }
+                }
+            }
+            (inv_dir / "card_inventory.json").write_text(
+                json.dumps(inv), encoding="utf-8"
+            )
+            payload = build_file_map_payload(root, ["Normal"], ttl_sec=0)
+            self.assertEqual(payload["groups"][0]["blocks"][0]["st"], "uploaded")
+
     def test_counts_match_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

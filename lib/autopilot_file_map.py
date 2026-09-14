@@ -12,11 +12,12 @@ from typing import Any
 from import_70mai import (
     bad_clips_log_path,
     format_file_size,
+    parse_datetime,
     scan_clips,
     sd_bad_clips_log_path,
 )
 from import_state import sd_import_dir, sd_inventory_path
-from plan_estimate import load_autopilot_plan
+from plan_estimate import DEFAULT_SESSION_GAP, SINGLE_VIDEO_TYPES, load_autopilot_plan
 
 DEFAULT_CLIP_SEC = 60.0
 _CACHE_TTL_SEC = 45.0
@@ -79,8 +80,11 @@ def _bad_clip_names(source: Path | None, temp_dir: Path | None) -> set[str]:
     return names
 
 
-def _uploaded_sources(source: Path) -> set[tuple[str, str, str]]:
-    inv = _load_inventory(source) or {}
+def _is_uploaded_meta(info: dict[str, Any]) -> bool:
+    return bool(info.get("youtube_url") or info.get("video_id"))
+
+
+def _uploaded_from_clip_youtube(inv: dict[str, Any]) -> set[tuple[str, str, str]]:
     uploaded: set[tuple[str, str, str]] = set()
     for record_type, block in (inv.get("record_types") or {}).items():
         if not isinstance(block, dict):
@@ -89,8 +93,154 @@ def _uploaded_sources(source: Path) -> set[tuple[str, str, str]]:
             if not isinstance(clips, dict):
                 continue
             for name, info in clips.items():
-                if isinstance(info, dict) and info.get("youtube_url"):
+                if isinstance(info, dict) and _is_uploaded_meta(info):
                     uploaded.add((str(record_type), str(camera), str(name)))
+    return uploaded
+
+
+def _uploaded_from_inventory_trips(
+    source: Path,
+    types: list[str],
+    inv: dict[str, Any],
+) -> set[tuple[str, str, str]]:
+    uploaded: set[tuple[str, str, str]] = set()
+    for record_type in types:
+        block = (inv.get("record_types") or {}).get(record_type)
+        if not isinstance(block, dict):
+            continue
+        trips = block.get("trips") or []
+        if not isinstance(trips, list):
+            continue
+        uploaded_trips = [
+            t for t in trips if isinstance(t, dict) and _is_uploaded_meta(t)
+        ]
+        if not uploaded_trips:
+            continue
+        clips = scan_clips(source, [record_type], ["Front", "Back"], warn=False)
+        if record_type in SINGLE_VIDEO_TYPES:
+            for clip in clips:
+                uploaded.add((record_type, clip.camera, clip.path.name))
+            continue
+        for trip in uploaded_trips:
+            try:
+                start = parse_datetime(str(trip.get("start") or ""))
+                end = parse_datetime(str(trip.get("end") or ""))
+            except ValueError:
+                continue
+            for clip in clips:
+                if start <= clip.timestamp <= end:
+                    uploaded.add((record_type, clip.camera, clip.path.name))
+    return uploaded
+
+
+def _uploaded_from_publish_state(
+    source: Path,
+    types: list[str],
+    temp_dir: Path | None,
+) -> set[tuple[str, str, str]]:
+    if temp_dir is None:
+        return set()
+    chunks = load_autopilot_plan(temp_dir)
+    if not chunks:
+        return set()
+    try:
+        from publish_state import (
+            build_clip_youtube_catalog,
+            load_state_file,
+            merge_publish_state,
+            sd_state_path,
+        )
+    except Exception:
+        return set()
+
+    uploaded: set[tuple[str, str, str]] = set()
+    for record_type in types:
+        rt_chunks = [c for c in chunks if c.record_type == record_type]
+        if not rt_chunks:
+            continue
+        try:
+            merged = merge_publish_state(
+                load_state_file(sd_state_path(source, record_type)),
+                load_state_file(temp_dir / f"publish_{record_type}.state.json"),
+            )
+            catalog = build_clip_youtube_catalog(
+                source,
+                [record_type],
+                session_gap=DEFAULT_SESSION_GAP,
+                publish_state=merged,
+                chunks=rt_chunks,
+            )
+        except Exception:
+            continue
+        for camera, clips in (catalog.get(record_type) or {}).items():
+            if not isinstance(clips, dict):
+                continue
+            for name, info in clips.items():
+                if isinstance(info, dict) and _is_uploaded_meta(info):
+                    uploaded.add((record_type, str(camera), str(name)))
+    return uploaded
+
+
+def _uploaded_from_dashboard_rows(
+    temp_dir: Path | None,
+    video_dir: Path | None,
+    source: Path,
+    types: list[str],
+) -> set[tuple[str, str, str]]:
+    if temp_dir is None:
+        return set()
+    try:
+        from autopilot_dashboard import Dashboard
+    except Exception:
+        return set()
+    try:
+        dash = Dashboard(
+            temp_dir=temp_dir,
+            video_dir=video_dir or Path("video/Output"),
+            check_disk=Path("."),
+            min_free_gb=20.0,
+            source=source,
+            types=types,
+            enabled=False,
+        )
+        dash.reload_plan_if_changed()
+        try:
+            dash._refresh_from_publish_state()
+            dash._refresh_from_status()
+        except Exception:
+            pass
+    except Exception:
+        return set()
+
+    uploaded: set[tuple[str, str, str]] = set()
+    for row in dash.rows:
+        if row.status != "done" or not row.youtube_url:
+            continue
+        if row.trip_start is None or row.trip_end is None:
+            continue
+        clips = scan_clips(source, [row.record_type], ["Front", "Back"], warn=False)
+        if row.record_type in SINGLE_VIDEO_TYPES:
+            for clip in clips:
+                uploaded.add((row.record_type, clip.camera, clip.path.name))
+            continue
+        for clip in clips:
+            if row.trip_start <= clip.timestamp <= row.trip_end:
+                uploaded.add((row.record_type, clip.camera, clip.path.name))
+    return uploaded
+
+
+def _uploaded_sources(
+    source: Path,
+    types: list[str],
+    *,
+    temp_dir: Path | None = None,
+    video_dir: Path | None = None,
+) -> set[tuple[str, str, str]]:
+    inv = _load_inventory(source) or {}
+    uploaded = _uploaded_from_clip_youtube(inv)
+    uploaded |= _uploaded_from_inventory_trips(source, types, inv)
+    uploaded |= _uploaded_from_publish_state(source, types, temp_dir)
+    uploaded |= _uploaded_from_dashboard_rows(temp_dir, video_dir, source, types)
     return uploaded
 
 
@@ -333,7 +483,9 @@ def build_file_map_payload(
         return cached[1]
 
     bad_names = _bad_clip_names(source, temp_dir)
-    uploaded = _uploaded_sources(source)
+    uploaded = _uploaded_sources(
+        source, types, temp_dir=temp_dir, video_dir=video_dir
+    )
     merged_sources = _merged_sources(video_dir)
     planned = _planned_windows(temp_dir, types)
     composed = _composed_windows(temp_dir, video_dir, source, types)
