@@ -28,6 +28,9 @@ cd /Users/cuthbert/work/cursor/70mai_project
 # Обновить веб-UI без остановки encode/upload (второй порт):
 ./scripts/autopilot.sh --dashboard-only --no-browser --port 8788
 
+# Не убивать процессы прошлого прогона при старте (по умолчанию убиваем)
+./scripts/autopilot.sh --no-takeover
+
 # Только терминал, без веба (ждать SD: --wait)
 ./scripts/publish_all_70mai.sh --wait
 
@@ -129,6 +132,7 @@ python3 scripts/analyze_host_perf.py -o анализ/host_perf_report.md
 
 Подробные команды — в **Запуск** в начале README.
 
+- **Takeover при старте** — новый запуск всегда побеждает: перед стартом autopilot гасит прежние `autopilot.py`, `publish_all_70mai.py` и их воркеры (`import_70mai.py`, `publish_70mai.py`, ffmpeg по `video/Output`) и снимает `autopilot.lock`. Это лечит случай, когда супервизор убит из консоли, а осиротевший конвейер держит лок — иначе новый запуск бесконечно крутил бы «сбой exit 1, рестарт через 60s». Конвейер запускается с `--force-restart`, поэтому каждый авторестарт тоже забирает остатки прошлого. Отключить: `--no-takeover`; `--dashboard-only` не трогает процессы никогда. CLI (`./scripts/publish_all_70mai.sh`) поведение не менял — там по-прежнему вопрос в терминале или явный `--force-restart`.
 - **Цвет строк SD** — состояние импорта поездки. Источник: merge-леджер карты (`.70mai/import/import_*.state.json` + `merge_outputs` в `card_inventory.json`), поэтому статус переживает prune merged с SSD. Normal: поездка «импортирована», если все merge-файлы, попадающие в её окно, в статусе `merged`/`skipped`. Event/Parking: по мега-merge (>1 клипа) на каждую камеру — одиночные stale-записи не учитываются. Если леджера нет, используется покрытие merged-файлов в `video/Output/` (≥98%). YouTube-ссылка в инвентаре перекрывает статус на «загружено».
 - **Карта файлов (внизу страницы)** — пофайловая матрица исходных клипов на SD. Каждый блок = один `*.MP4` на карте; сетки отдельно по типу записи и камере (Front/Back), слева направо по времени. Цвета (приоритет сверху вниз): красный — `bad_clips.jsonl` или failed merge; **зелёный — залит на YouTube** (`clip_youtube` / trips в `card_inventory.json`, `publish_*.state.json` + план, или `Dashboard.rows` со статусом done); оранжевый — trip уже в compose/upload/done; голубой — клип в `*.timeline.json` или merge `merged`/`skipped`; жёлтый — клип в окне трипа из `autopilot_plan.json`; серый — только на карте. API: `GET /api/filemap` (кэш 45 с на сервере, опрос в браузере 15 с). Код: `lib/autopilot_file_map.py`, рендер — `lib/autopilot_web.py`.
 - **Профилировать хост** — безопасный локальный compose-тест и hardware-метрики; upload, SD и publish state не затрагиваются.

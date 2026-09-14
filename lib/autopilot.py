@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import re
 import subprocess
 import sys
 import threading
@@ -28,6 +29,8 @@ DEFAULT_TEMP_DIR = Path("video/Output/.publish_tmp")
 DEFAULT_VIDEO_DIR = Path("video/Output")
 DEFAULT_TYPES = ["Normal", "Event", "Parking"]
 RESTART_SEC = 60
+_AUTOPILOT_CMD_RE = re.compile(r"(^|/)autopilot\.py(\s|$)")
+_PUBLISH_ALL_CMD_RE = re.compile(r"(^|/)publish_all_70mai\.py(\s|$)")
 
 
 def _root() -> Path:
@@ -39,6 +42,55 @@ def _open_browser(url: str) -> None:
         webbrowser.open(url, new=1, autoraise=True)
     except OSError:
         pass
+
+
+def _pids_matching(pattern: re.Pattern[str]) -> list[int]:
+    """Live python pids whose command matches (never this process)."""
+    from publish_all_70mai import _ps_ax_lines
+
+    me = os.getpid()
+    pids: list[int] = []
+    for line in _ps_ax_lines():
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid_s, cmd = parts
+        if "python" not in cmd.lower() or not pattern.search(cmd):
+            continue
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        if pid != me:
+            pids.append(pid)
+    return pids
+
+
+def takeover_previous_run() -> None:
+    """Kill leftovers of an earlier run so a new launch always wins the lock.
+
+    A supervisor killed from the console leaves an orphan conveyor holding
+    ``autopilot.lock``; without takeover the new supervisor then loops on
+    ``exit 1`` forever. Order matters: supervisors first (they respawn the
+    conveyor), then the conveyor, then its workers.
+    """
+    from publish_all_70mai import (
+        _clear_lock_path,
+        _kill_pids,
+        force_takeover_pipeline,
+        log,
+    )
+
+    supervisors = _pids_matching(_AUTOPILOT_CMD_RE)
+    if supervisors:
+        log(f"Takeover: останавливаю прежний autopilot {supervisors}")
+        _kill_pids(supervisors, label="autopilot.py")
+    conveyors = _pids_matching(_PUBLISH_ALL_CMD_RE)
+    if conveyors:
+        log(f"Takeover: останавливаю прежний конвейер {conveyors}")
+        _kill_pids(conveyors, label="publish_all_70mai.py")
+    force_takeover_pipeline()
+    _clear_lock_path()
 
 
 def _terminate_pipeline(*, child_pid: int | None = None) -> None:
@@ -172,6 +224,9 @@ class AutopilotSupervisor:
             "--wait",
             "--no-dashboard",
             "--control",
+            # Each (re)start owns the pipeline: take over leftovers from a
+            # crashed conveyor instead of exiting 1 on a stale lock.
+            "--force-restart",
             "--temp-dir",
             str(self.temp_dir),
             "--video-dir",
@@ -412,6 +467,11 @@ def main() -> int:
         help="Только веб-Dashboard (не запускать publish_all; для обновления UI при работающем прогоне)",
     )
     parser.add_argument(
+        "--no-takeover",
+        action="store_true",
+        help="Не убивать процессы прошлого прогона при старте (по умолчанию убиваем)",
+    )
+    parser.add_argument(
         "publish_args",
         nargs=argparse.REMAINDER,
         help="Extra args passed to publish_all_70mai.py (after --)",
@@ -428,6 +488,9 @@ def main() -> int:
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print("ERROR: Dashboard must bind to loopback only", file=sys.stderr)
         return 1
+
+    if not args.dashboard_only and not args.no_takeover:
+        takeover_previous_run()
 
     sup = AutopilotSupervisor(
         temp_dir=args.temp_dir,
