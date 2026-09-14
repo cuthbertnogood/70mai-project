@@ -146,14 +146,37 @@ def _dashboard_html_bytes() -> bytes:
     return _DASHBOARD_HTML.encode("utf-8")
 
 
+def build_file_map_payload(
+    source: Path | None,
+    types: list[str],
+    *,
+    video_dir: Path,
+    temp_dir: Path,
+) -> dict[str, Any]:
+    try:
+        from autopilot_file_map import build_file_map_payload as _build_file_map
+
+        return _build_file_map(
+            source,
+            types,
+            video_dir=video_dir,
+            temp_dir=temp_dir,
+        )
+    except Exception:
+        return {"present": False, "total": 0, "counts": {}, "groups": []}
+
+
 def _reload_dashboard_module():
     """Pick up HTML/API changes without restarting the Autopilot process."""
     import importlib
 
+    import autopilot_file_map as file_map
     import autopilot_sd_table as sd_table
 
     importlib.reload(sd_table)
     sd_table.clear_sd_table_cache()
+    importlib.reload(file_map)
+    file_map.clear_file_map_cache()
     return importlib.reload(sys.modules[__name__])
 
 
@@ -195,6 +218,26 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .sd-legend span.imp-imported { color: #7fd1ff; }
     .sd-legend span.imp-partial { color: #f5b041; }
     .sd-legend span.imp-none { color: #8b9bb4; }
+    .blockmap-panel { margin-top: 1.25rem; background: #1a2332; border-radius: 8px; padding: .75rem 1rem; }
+    .blockmap-legend { font-size: .78rem; color: #8b9bb4; margin-bottom: .6rem; display: flex; flex-wrap: wrap; gap: .65rem; }
+    .blockmap-legend span { display: inline-flex; align-items: center; gap: .25rem; }
+    .bm-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 1px; background: #4a5768; }
+    .blockmap-legend .st-oncard .bm-swatch { background: #4a5768; }
+    .blockmap-legend .st-planned .bm-swatch { background: #f5b041; }
+    .blockmap-legend .st-merged .bm-swatch { background: #7fd1ff; }
+    .blockmap-legend .st-composed .bm-swatch { background: #e59866; }
+    .blockmap-legend .st-uploaded .bm-swatch { background: #58d68d; }
+    .blockmap-legend .st-error .bm-swatch { background: #ec7063; }
+    .bm-group { margin-bottom: .75rem; }
+    .bm-head { font-size: .78rem; color: #8b9bb4; margin-bottom: .25rem; }
+    .bm-grid { display: flex; flex-wrap: wrap; gap: 1px; margin: .3rem 0 .2rem; }
+    .bm-grid i { display: block; width: 9px; height: 9px; background: #4a5768; border-radius: 1px; cursor: default; }
+    .bm-grid i.st-planned { background: #f5b041; }
+    .bm-grid i.st-merged { background: #7fd1ff; }
+    .bm-grid i.st-composed { background: #e59866; }
+    .bm-grid i.st-uploaded { background: #58d68d; }
+    .bm-grid i.st-error { background: #ec7063; }
+    .bm-empty { font-size: .82rem; color: #8b9bb4; }
     .bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
     button { border: 0; border-radius: 6px; padding: .45rem .9rem; cursor: pointer; font-weight: 600; }
     button.stop { background: #c0392b; color: #fff; }
@@ -255,6 +298,11 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </aside>
   </div>
+  <section class="blockmap-panel">
+    <h2>Карта файлов на флешке</h2>
+    <div class="blockmap-legend" id="bm-legend"></div>
+    <div id="bm-groups"></div>
+  </section>
   <script>
     const msg = document.getElementById('msg');
     const phaseLabels = {
@@ -282,6 +330,35 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     document.getElementById('btn-profile').onclick = () => send('profile');
     document.getElementById('btn-quit').onclick = () => send('quit');
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    const bmStatusLabels = {
+      oncard: 'на карте',
+      planned: 'в плане',
+      merged: 'смержен',
+      composed: 'сжат',
+      uploaded: 'залит',
+      error: 'ошибка',
+    };
+    const bmStatusOrder = ['uploaded', 'composed', 'merged', 'planned', 'oncard', 'error'];
+    function renderFileMap(fm) {
+      const legend = document.getElementById('bm-legend');
+      const groups = document.getElementById('bm-groups');
+      if (!fm || !fm.present) {
+        legend.innerHTML = '';
+        groups.innerHTML = '<div class="bm-empty">Карта не подключена</div>';
+        return;
+      }
+      const counts = fm.counts || {};
+      legend.innerHTML = bmStatusOrder.filter(k => counts[k]).map(k =>
+        `<span class="st-${esc(k)}"><i class="bm-swatch"></i>${esc(bmStatusLabels[k] || k)} ${counts[k]}</span>`
+      ).join('');
+      groups.innerHTML = (fm.groups || []).map(g => {
+        const blocks = (g.blocks || []).map(b =>
+          `<i class="st-${esc(b.st)}" title="${esc(b.n)} · ${esc(b.t)} · ${esc(b.s)} · ${esc(bmStatusLabels[b.st] || b.st)}"></i>`
+        ).join('');
+        const noun = g.count === 1 ? 'файл' : 'файлов';
+        return `<div class="bm-group"><div class="bm-head">${esc(g.record_type)} · ${esc(g.camera)} — ${g.count} ${noun}</div><div class="bm-grid">${blocks}</div></div>`;
+      }).join('') || '<div class="bm-empty">нет файлов</div>';
+    }
     function render(data) {
       const run = data.run || {};
       const phase = run.phase || 'running';
@@ -368,8 +445,19 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('subtitle').textContent = 'Нет связи с Autopilot';
       }
     }
+    async function tickFileMap() {
+      try {
+        const r = await fetch('/api/filemap', {cache: 'no-store'});
+        renderFileMap(await r.json());
+      } catch (e) {
+        document.getElementById('bm-groups').innerHTML =
+          '<div class="bm-empty">Нет данных карты файлов</div>';
+      }
+    }
     setInterval(tick, 1000);
+    setInterval(tickFileMap, 15000);
     tick();
+    tickFileMap();
   </script>
 </body>
 </html>
@@ -446,6 +534,15 @@ class AutopilotWebServer:
                         types=outer._types,
                         source=outer._source,
                         min_free_gb=outer._min_free_gb,
+                    )
+                    self._json(200, payload)
+                    return
+                if path == "/api/filemap":
+                    payload = aw.build_file_map_payload(
+                        outer._source,
+                        outer._types,
+                        video_dir=outer._video_dir,
+                        temp_dir=outer._temp_dir,
                     )
                     self._json(200, payload)
                     return

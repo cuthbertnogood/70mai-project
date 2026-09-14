@@ -40,6 +40,34 @@ class AutopilotWebTests(unittest.TestCase):
         self.assertIn("diagnostics", payload)
         self.assertIn("sd_card", payload)
 
+    def test_filemap_endpoint(self) -> None:
+        quit_event = threading.Event()
+        port = self._free_port()
+        server = AutopilotWebServer(
+            host="127.0.0.1",
+            port=port,
+            temp_dir=self.temp_dir,
+            video_dir=self.video_dir,
+            types=["Normal"],
+            min_free_gb=20.0,
+            on_control=lambda action, data: "ok",
+            quit_event=quit_event,
+        )
+        server.start()
+        try:
+            import urllib.request
+
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/filemap",
+                timeout=5,
+            ) as resp:
+                parsed = json.loads(resp.read().decode("utf-8"))
+            self.assertIn("groups", parsed)
+            self.assertIn("counts", parsed)
+            self.assertIn("total", parsed)
+        finally:
+            server.stop()
+
     def test_server_binds_loopback_only(self) -> None:
         quit_event = threading.Event()
         port = self._free_port()
