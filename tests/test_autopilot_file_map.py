@@ -23,6 +23,61 @@ class AutopilotFileMapTests(unittest.TestCase):
         self.assertFalse(payload["present"])
         self.assertEqual(payload["groups"], [])
         self.assertEqual(payload["total"], 0)
+        self.assertIn("host", payload)
+        self.assertFalse(payload["host"]["present"])
+
+    def test_host_counts_copied_merged_youtube(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = Path(tmp) / "video"
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            clip_a = "NO20260814-100000-000001F.MP4"
+            clip_b = "NO20260814-100100-000002F.MP4"
+            (front / clip_a).write_bytes(b"x" * 10)
+            (front / clip_b).write_bytes(b"x" * 20)
+
+            merge_dir = video / "Normal" / "Front"
+            merge_dir.mkdir(parents=True)
+            merge = merge_dir / "NO_20260814-100000_100100_F.mp4"
+            merge.write_bytes(b"y" * 100)
+            manifest = {
+                "version": MANIFEST_VERSION,
+                "record_type": "Normal",
+                "camera": "Front",
+                "merge": merge.name,
+                "clips": [
+                    {
+                        "key": "k1",
+                        "wall": "2026-08-14T10:00:00",
+                        "dur": 60.0,
+                        "offset": 0.0,
+                        "src": clip_a,
+                    },
+                    {
+                        "key": "k2",
+                        "wall": "2026-08-14T10:01:00",
+                        "dur": 60.0,
+                        "offset": 60.0,
+                        "src": clip_b,
+                    },
+                ],
+            }
+            merge.with_name(merge.name + ".timeline.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+
+            payload = build_file_map_payload(
+                root, ["Normal"], video_dir=video, ttl_sec=0
+            )
+            host = payload["host"]
+            self.assertTrue(host["present"])
+            self.assertEqual(host["copied"]["done"], 2)
+            self.assertEqual(host["copied"]["total"], 2)
+            self.assertEqual(host["merged"]["files"], 1)
+            self.assertEqual(host["merged"]["clips"], 2)
+            self.assertEqual(host["groups"][0]["blocks"][0]["st"], "merged")
+            self.assertEqual(host["youtube"]["done"], 0)
 
     def test_groups_front_and_back_sorted_by_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

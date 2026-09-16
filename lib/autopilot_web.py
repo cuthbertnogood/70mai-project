@@ -720,6 +720,11 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .bm-grid i.st-uploaded { background: #58d68d; }
     .bm-grid i.st-error { background: #ec7063; }
     .bm-empty { font-size: .82rem; color: #8b9bb4; }
+    .host-stats { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: .75rem; }
+    .host-stat { background: #243044; border-radius: 6px; padding: .45rem .7rem; min-width: 9rem; }
+    .host-stat .k { font-size: .72rem; color: #8b9bb4; margin-bottom: .15rem; }
+    .host-stat .v { font-size: 1rem; font-weight: 650; }
+    .host-stat .v .dim { color: #8b9bb4; font-weight: 500; font-size: .85rem; }
     .bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
     button { border: 0; border-radius: 6px; padding: .45rem .9rem; cursor: pointer; font-weight: 600; }
     button.stop { background: #c0392b; color: #fff; }
@@ -793,6 +798,12 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <h2>Карта файлов на флешке</h2>
     <div class="blockmap-legend" id="bm-legend"></div>
     <div id="bm-groups"></div>
+  </section>
+  <section class="blockmap-panel">
+    <h2>Файлы на хосте (HDD)</h2>
+    <div class="host-stats" id="bm-host-stats"></div>
+    <div class="blockmap-legend" id="bm-host-legend"></div>
+    <div id="bm-host-groups"></div>
   </section>
   <script>
     const msg = document.getElementById('msg');
@@ -891,25 +902,56 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         'summary',
       );
     }
-    function renderFileMap(fm) {
-      const legend = document.getElementById('bm-legend');
-      const groups = document.getElementById('bm-groups');
-      if (!fm || !fm.present) {
-        legend.innerHTML = '';
-        groups.innerHTML = '<div class="bm-empty">Карта не подключена</div>';
-        return;
-      }
-      const counts = fm.counts || {};
-      legend.innerHTML = bmStatusOrder.filter(k => counts[k]).map(k =>
-        `<span class="st-${esc(k)}"><i class="bm-swatch"></i>${esc(bmStatusLabels[k] || k)} ${counts[k]}</span>`
-      ).join('');
-      groups.innerHTML = (fm.groups || []).map(g => {
+    function renderBlockGroups(el, groups) {
+      el.innerHTML = (groups || []).map(g => {
         const blocks = (g.blocks || []).map(b =>
           `<i class="st-${esc(b.st)}" title="${esc(b.n)} · ${esc(b.t)} · ${esc(b.s)} · ${esc(bmStatusLabels[b.st] || b.st)}"></i>`
         ).join('');
         const noun = g.count === 1 ? 'файл' : 'файлов';
         return `<div class="bm-group"><div class="bm-head">${esc(g.record_type)} · ${esc(g.camera)} — ${g.count} ${noun}</div><div class="bm-grid">${blocks}</div></div>`;
       }).join('') || '<div class="bm-empty">нет файлов</div>';
+    }
+    function renderFileMap(fm) {
+      const legend = document.getElementById('bm-legend');
+      const groups = document.getElementById('bm-groups');
+      const hostStats = document.getElementById('bm-host-stats');
+      const hostLegend = document.getElementById('bm-host-legend');
+      const hostGroups = document.getElementById('bm-host-groups');
+      if (!fm || !fm.present) {
+        if (legend) legend.innerHTML = '';
+        if (groups) groups.innerHTML = '<div class="bm-empty">Карта не подключена</div>';
+      } else {
+        const counts = fm.counts || {};
+        if (legend) legend.innerHTML = bmStatusOrder.filter(k => counts[k]).map(k =>
+          `<span class="st-${esc(k)}"><i class="bm-swatch"></i>${esc(bmStatusLabels[k] || k)} ${counts[k]}</span>`
+        ).join('');
+        if (groups) renderBlockGroups(groups, fm.groups);
+      }
+      if (!hostStats || !hostLegend || !hostGroups) return;
+      const host = (fm && fm.host) || {};
+      const copied = host.copied || {};
+      const merged = host.merged || {};
+      const youtube = host.youtube || {};
+      const hasHost = !!(host.present || merged.files || youtube.total || copied.total);
+      if (!hasHost) {
+        hostStats.innerHTML = '';
+        hostLegend.innerHTML = '';
+        hostGroups.innerHTML = '<div class="bm-empty">Нет данных на хосте</div>';
+        return;
+      }
+      hostStats.innerHTML = [
+        `<div class="host-stat"><div class="k">Скопировано с флешки</div><div class="v">${esc(String(copied.done || 0))}<span class="dim"> / ${esc(String(copied.total || 0))} клип.</span></div></div>`,
+        `<div class="host-stat"><div class="k">Смержено на диске</div><div class="v">${esc(String(merged.files || 0))}<span class="dim"> файл. · ${esc(String(merged.clips || 0))} клип.</span></div></div>`,
+        `<div class="host-stat"><div class="k">YouTube</div><div class="v">${esc(String(youtube.done || 0))}<span class="dim"> / ${esc(String(youtube.total || 0))} рол.</span></div></div>`,
+      ].join('');
+      const hostCounts = {};
+      (host.groups || []).forEach(g => (g.blocks || []).forEach(b => {
+        hostCounts[b.st] = (hostCounts[b.st] || 0) + 1;
+      }));
+      hostLegend.innerHTML = bmStatusOrder.filter(k => hostCounts[k]).map(k =>
+        `<span class="st-${esc(k)}"><i class="bm-swatch"></i>${esc(bmStatusLabels[k] || k)} ${hostCounts[k]}</span>`
+      ).join('');
+      renderBlockGroups(hostGroups, host.groups);
     }
     function render(data) {
       const run = data.run || {};
@@ -1003,8 +1045,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         const r = await fetch('/api/filemap', {cache: 'no-store'});
         renderFileMap(await r.json());
       } catch (e) {
-        document.getElementById('bm-groups').innerHTML =
-          '<div class="bm-empty">Нет данных карты файлов</div>';
+        const g = document.getElementById('bm-groups');
+        if (g) g.innerHTML = '<div class="bm-empty">Нет данных карты файлов</div>';
+        const hg = document.getElementById('bm-host-groups');
+        if (hg) hg.innerHTML = '<div class="bm-empty">Нет данных карты файлов</div>';
       }
     }
     setInterval(tick, 1000);
