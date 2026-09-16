@@ -364,14 +364,14 @@ def _planned_windows(temp_dir: Path | None, types: list[str]) -> dict[str, list[
     return windows
 
 
-def _composed_windows(
+def _load_dashboard_rows(
     temp_dir: Path | None,
     video_dir: Path | None,
     source: Path | None,
     types: list[str],
-) -> dict[str, list[tuple[datetime, datetime]]]:
+) -> list[Any]:
     if temp_dir is None:
-        return {}
+        return []
     try:
         from autopilot_dashboard import Dashboard
 
@@ -390,19 +390,159 @@ def _composed_windows(
             dash._refresh_from_status()
         except Exception:
             pass
+        return list(dash.rows or [])
     except Exception:
-        return {}
+        return []
 
+
+def _composed_windows(
+    temp_dir: Path | None,
+    video_dir: Path | None,
+    source: Path | None,
+    types: list[str],
+    *,
+    rows: list[Any] | None = None,
+) -> dict[str, list[tuple[datetime, datetime]]]:
+    if rows is None:
+        rows = _load_dashboard_rows(temp_dir, video_dir, source, types)
     # Only after compose finished — active "compose" stays "merged" so the
     # block map matches the SD table's "imported" while encoding runs.
     windows: dict[str, list[tuple[datetime, datetime]]] = {}
-    for row in dash.rows:
-        if row.status not in ("upload", "stall", "done"):
+    for row in rows:
+        if getattr(row, "status", "") not in ("upload", "stall", "done"):
             continue
-        if row.trip_start is None or row.trip_end is None:
+        start = getattr(row, "trip_start", None)
+        end = getattr(row, "trip_end", None)
+        if start is None or end is None:
             continue
-        windows.setdefault(row.record_type, []).append((row.trip_start, row.trip_end))
+        windows.setdefault(str(row.record_type), []).append((start, end))
     return windows
+
+
+def _uploaded_windows(rows: list[Any]) -> dict[str, list[tuple[datetime, datetime]]]:
+    windows: dict[str, list[tuple[datetime, datetime]]] = {}
+    for row in rows:
+        if getattr(row, "status", "") != "done":
+            continue
+        start = getattr(row, "trip_start", None)
+        end = getattr(row, "trip_end", None)
+        if start is None or end is None:
+            continue
+        windows.setdefault(str(row.record_type), []).append((start, end))
+    return windows
+
+
+def _youtube_chunk_progress(rows: list[Any]) -> tuple[int, int]:
+    if not rows:
+        return 0, 0
+    try:
+        from autopilot_dashboard import chunk_summary_counts
+
+        done, total, _ = chunk_summary_counts(rows)
+        return int(done), int(total)
+    except Exception:
+        return 0, 0
+
+
+def _host_merged_groups(
+    video_dir: Path | None,
+    types: list[str],
+    *,
+    composed: dict[str, list[tuple[datetime, datetime]]],
+    uploaded: dict[str, list[tuple[datetime, datetime]]],
+) -> tuple[int, list[dict[str, Any]]]:
+    """Block map of merge MP4s currently on the host video_dir."""
+    if video_dir is None or not video_dir.is_dir():
+        return 0, []
+
+    from compose_70mai import parse_event_export_file, parse_merged_file
+
+    groups: list[dict[str, Any]] = []
+    total_files = 0
+    for record_type in types:
+        parse = parse_event_export_file if record_type == "Event" else parse_merged_file
+        pattern = {
+            "Event": "EV_*.mp4",
+            "Parking": "PA_*.mp4",
+        }.get(record_type, "NO_*.mp4")
+        for camera in ("Front", "Back"):
+            folder = video_dir / record_type / camera
+            if not folder.is_dir():
+                continue
+            try:
+                paths = sorted(folder.glob(pattern))
+            except OSError:
+                continue
+            blocks: list[dict[str, Any]] = []
+            for path in paths:
+                try:
+                    clip = parse(path)
+                except ValueError:
+                    clip = None
+                if clip is None:
+                    continue
+                mid = clip.start + (clip.end - clip.start) / 2
+                if _in_window(mid, uploaded.get(record_type, [])):
+                    status = "uploaded"
+                elif _in_window(mid, composed.get(record_type, [])):
+                    status = "composed"
+                else:
+                    status = "merged"
+                total_files += 1
+                blocks.append(
+                    {
+                        "n": path.name,
+                        "t": clip.start.strftime("%m-%d %H:%M"),
+                        "s": format_file_size(_clip_bytes(path)),
+                        "st": status,
+                    }
+                )
+            if blocks:
+                groups.append(
+                    {
+                        "record_type": record_type,
+                        "camera": camera,
+                        "count": len(blocks),
+                        "blocks": blocks,
+                    }
+                )
+    return total_files, groups
+
+
+def _build_host_payload(
+    *,
+    counts: dict[str, int],
+    total: int,
+    video_dir: Path | None,
+    types: list[str],
+    composed: dict[str, list[tuple[datetime, datetime]]],
+    uploaded_windows: dict[str, list[tuple[datetime, datetime]]],
+    youtube_done: int,
+    youtube_total: int,
+) -> dict[str, Any]:
+    copied_done = sum(
+        int(counts.get(status) or 0) for status in ("merged", "composed", "uploaded")
+    )
+    merged_clips = sum(
+        int(counts.get(status) or 0) for status in ("merged", "composed", "uploaded")
+    )
+    merged_files, groups = _host_merged_groups(
+        video_dir, types, composed=composed, uploaded=uploaded_windows
+    )
+    # Prefer plan/chunk progress; fall back to source-clip uploaded/total.
+    yt_done = youtube_done
+    yt_total = youtube_total
+    if yt_total <= 0:
+        yt_done = int(counts.get("uploaded") or 0)
+        yt_total = max(total - int(counts.get("error") or 0), yt_done)
+    return {
+        "present": True,
+        "copied": {"done": copied_done, "total": total},
+        "merged": {"files": merged_files, "clips": merged_clips},
+        "youtube": {"done": yt_done, "total": yt_total},
+        "groups": groups,
+        "total": merged_files,
+    }
 
 
 def _in_window(ts: datetime, windows: list[tuple[datetime, datetime]]) -> bool:
@@ -514,13 +654,40 @@ def build_file_map_payload(
     ttl_sec: float = _CACHE_TTL_SEC,
 ) -> dict[str, Any]:
     """One block per source MP4 on the card, grouped by record type and camera."""
+    empty_host: dict[str, Any] = {
+        "present": False,
+        "copied": {"done": 0, "total": 0},
+        "merged": {"files": 0, "clips": 0},
+        "youtube": {"done": 0, "total": 0},
+        "groups": [],
+        "total": 0,
+    }
     empty: dict[str, Any] = {
         "present": False,
         "total": 0,
         "counts": {},
         "groups": [],
+        "host": empty_host,
     }
     if source is None or not source.is_dir():
+        # Host merge map can still show files already on SSD.
+        dash_rows = _load_dashboard_rows(temp_dir, video_dir, source, types)
+        composed = _composed_windows(
+            temp_dir, video_dir, source, types, rows=dash_rows
+        )
+        yt_done, yt_total = _youtube_chunk_progress(dash_rows)
+        host = _build_host_payload(
+            counts={},
+            total=0,
+            video_dir=video_dir,
+            types=types,
+            composed=composed,
+            uploaded_windows=_uploaded_windows(dash_rows),
+            youtube_done=yt_done,
+            youtube_total=yt_total,
+        )
+        if host["merged"]["files"] or yt_total:
+            empty = {**empty, "host": host}
         return empty
 
     key = f"{source.resolve()}:{','.join(types)}:{video_dir or ''}:{temp_dir or ''}"
@@ -539,7 +706,12 @@ def build_file_map_payload(
     uploaded |= sd_uploaded
     merged_sources = _merged_sources(video_dir) | sd_merged
     planned = _planned_windows(temp_dir, types)
-    composed = _composed_windows(temp_dir, video_dir, source, types)
+    dash_rows = _load_dashboard_rows(temp_dir, video_dir, source, types)
+    composed = _composed_windows(
+        temp_dir, video_dir, source, types, rows=dash_rows
+    )
+    uploaded_windows = _uploaded_windows(dash_rows)
+    yt_done, yt_total = _youtube_chunk_progress(dash_rows)
     ledger = _merge_ledger(source)
 
     groups: list[dict[str, Any]] = []
@@ -582,11 +754,22 @@ def build_file_map_payload(
                 }
             )
 
+    host = _build_host_payload(
+        counts=counts,
+        total=total,
+        video_dir=video_dir,
+        types=types,
+        composed=composed,
+        uploaded_windows=uploaded_windows,
+        youtube_done=yt_done,
+        youtube_total=yt_total,
+    )
     payload: dict[str, Any] = {
         "present": True,
         "total": total,
         "counts": {k: v for k, v in counts.items() if v},
         "groups": groups,
+        "host": host,
     }
     _cache[key] = (now, payload)
     return payload

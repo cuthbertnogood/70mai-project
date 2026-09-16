@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 from dataclasses import asdict
@@ -37,36 +38,6 @@ def _row_field(row: Any, key: str, default: Any = None) -> Any:
     return getattr(row, key, default)
 
 
-def _sum_sd_trips(
-    trips: list[dict[str, Any]],
-    *,
-    statuses: set[str] | None = None,
-) -> dict[str, float | int]:
-    total_sec = 0.0
-    total_bytes = 0
-    total_clips = 0
-    for trip in trips:
-        status = str(trip.get("import_status") or "none")
-        if statuses is not None and status not in statuses:
-            continue
-        total_sec += float(trip.get("duration_sec") or 0.0)
-        total_bytes += int(trip.get("size_bytes") or 0)
-        total_clips += int(trip.get("clip_count") or 0)
-    return {
-        "hours_sec": total_sec,
-        "bytes": total_bytes,
-        "clips": total_clips,
-    }
-
-
-def _volume_from_sum(totals: dict[str, float | int]) -> dict[str, Any]:
-    return _volume_block(
-        hours_sec=float(totals.get("hours_sec") or 0.0),
-        bytes_total=int(totals.get("bytes") or 0),
-        clips=int(totals.get("clips") or 0),
-    )
-
-
 def _volume_block(
     *,
     hours_sec: float = 0.0,
@@ -90,27 +61,361 @@ def _volume_block(
     return out
 
 
-def _node_state(
-    node_id: str,
-    *,
-    active_ids: set[str],
-    passed: dict[str, Any],
-) -> str:
-    if node_id in active_ids:
-        return "active"
-    has_passed = (
-        float(passed.get("hours_sec") or 0) > 0
-        or int(passed.get("bytes") or 0) > 0
-        or int(passed.get("clips") or 0) > 0
-        or int(passed.get("chunks") or 0) > 0
+_CLIP_SEC = 60.0
+_SIZE_LABEL_RE = re.compile(r"([\d.]+)\s*(GB|MB|KB|B)\b", re.I)
+
+
+def _parse_size_label(text: str) -> int:
+    m = _SIZE_LABEL_RE.match(str(text or "").strip())
+    if not m:
+        return 0
+    amount = float(m.group(1))
+    mult = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+    return int(amount * mult.get(m.group(2).upper(), 1))
+
+
+def _aggregate_filemap(filemap: dict[str, Any]) -> dict[str, dict[str, int | float]]:
+    totals: dict[str, dict[str, int | float]] = {}
+    for group in filemap.get("groups") or []:
+        for block in group.get("blocks") or []:
+            status = str(block.get("st") or "oncard")
+            bucket = totals.setdefault(status, {"clips": 0, "bytes": 0})
+            bucket["clips"] = int(bucket["clips"]) + 1
+            bucket["bytes"] = int(bucket["bytes"]) + _parse_size_label(
+                str(block.get("s") or "")
+            )
+    return totals
+
+
+def _vol_from_clips_bytes(clips: int, bytes_total: int) -> dict[str, Any]:
+    return _volume_block(
+        hours_sec=clips * _CLIP_SEC,
+        bytes_total=bytes_total,
+        clips=clips,
     )
-    if node_id == "sd":
-        return "done" if has_passed else "wait"
-    return "done" if has_passed else "wait"
+
+
+def _summary_node_state(passed_clips: int, remaining_clips: int) -> str:
+    if passed_clips > 0 and remaining_clips <= 0:
+        return "done"
+    return "wait"
+
+
+def _pipeline_node(
+    node_id: str,
+    label: str,
+    purpose: str,
+    flow: str,
+    *,
+    state: str,
+    passed: dict[str, Any],
+    remaining: dict[str, Any] | None = None,
+    on_disk: dict[str, Any] | None = None,
+    arrow_after: str = "",
+    detail: str = "",
+) -> dict[str, Any]:
+    node: dict[str, Any] = {
+        "id": node_id,
+        "label": label,
+        "purpose": purpose,
+        "flow": flow,
+        "state": state,
+        "passed": passed,
+    }
+    if remaining is not None:
+        node["remaining"] = remaining
+    if on_disk is not None:
+        node["on_disk"] = on_disk
+    if arrow_after:
+        node["arrow_after"] = arrow_after
+    if detail:
+        node["detail"] = detail
+    return node
+
+
+def build_pipeline_summary(
+    *,
+    filemap: dict[str, Any],
+    usage: dict[str, int],
+) -> dict[str, Any]:
+    """Whole-card pipeline: passed / remaining per stage (filemap clip statuses)."""
+    by_status = _aggregate_filemap(filemap)
+    counts = filemap.get("counts") if isinstance(filemap.get("counts"), dict) else {}
+    total_clips = int(filemap.get("total") or 0)
+    total_bytes = sum(int(v.get("bytes") or 0) for v in by_status.values())
+
+    def _clips_bytes(statuses: tuple[str, ...]) -> tuple[int, int]:
+        clips = sum(int(by_status.get(s, {}).get("clips") or 0) for s in statuses)
+        bytes_total = sum(int(by_status.get(s, {}).get("bytes") or 0) for s in statuses)
+        return clips, bytes_total
+
+    sd_passed = _vol_from_clips_bytes(total_clips, total_bytes)
+    merge_passed_c, merge_passed_b = _clips_bytes(("merged", "composed", "uploaded"))
+    merge_remain_c, merge_remain_b = _clips_bytes(("oncard", "planned"))
+    compose_passed_c, compose_passed_b = _clips_bytes(("composed", "uploaded"))
+    compose_remain_c, compose_remain_b = _clips_bytes(("merged",))
+    upload_passed_c, upload_passed_b = _clips_bytes(("uploaded",))
+    upload_remain_c, upload_remain_b = _clips_bytes(("composed",))
+
+    merged_bytes = int(usage.get("merged") or 0)
+    composed_bytes = int(usage.get("composed") or 0)
+
+    nodes = [
+        _pipeline_node(
+            "sd",
+            "SD карта",
+            "Исходники: минутные клипы Front/Back",
+            "флешка 70mai",
+            state="done" if total_clips > 0 else "wait",
+            passed=sd_passed,
+            on_disk=_volume_block(bytes_total=total_bytes),
+            arrow_after="не трогаем оригинал",
+        ),
+        _pipeline_node(
+            "copy",
+            "copy",
+            "Снять клипы с флешки на SSD",
+            "SD → SSD staging",
+            state=_summary_node_state(merge_passed_c, merge_remain_c),
+            passed=_vol_from_clips_bytes(merge_passed_c, merge_passed_b),
+            remaining=_vol_from_clips_bytes(merge_remain_c, merge_remain_b),
+            arrow_after="staging, потом удаляется",
+        ),
+        _pipeline_node(
+            "merge",
+            "merge",
+            "Склейка ~10 мин Front/Back MP4",
+            "клипы → merged",
+            state=_summary_node_state(merge_passed_c, merge_remain_c),
+            passed=_vol_from_clips_bytes(merge_passed_c, merge_passed_b),
+            remaining=_vol_from_clips_bytes(merge_remain_c, merge_remain_b),
+            on_disk=_volume_block(bytes_total=merged_bytes),
+            arrow_after="синхрон Front+Back",
+        ),
+        _pipeline_node(
+            "compose",
+            "compose",
+            "Вертикальный 2-cam ролик ~2h",
+            "merged → trip MP4",
+            state=_summary_node_state(compose_passed_c, compose_remain_c),
+            passed=_vol_from_clips_bytes(compose_passed_c, compose_passed_b),
+            remaining=_vol_from_clips_bytes(compose_remain_c, compose_remain_b),
+            on_disk=_volume_block(bytes_total=composed_bytes),
+            arrow_after="resumable PUT",
+        ),
+        _pipeline_node(
+            "upload",
+            "upload",
+            "Публикация на YouTube",
+            "Mac → YouTube",
+            state=_summary_node_state(upload_passed_c, upload_remain_c),
+            passed=_vol_from_clips_bytes(upload_passed_c, upload_passed_b),
+            remaining=_vol_from_clips_bytes(upload_remain_c, upload_remain_b),
+        ),
+    ]
+    return {"title": "Вся карта", "nodes": nodes, "counts": counts}
+
+
+def _resolve_current_phase(live: dict[str, Any], chunk_rows: list[Any]) -> str:
+    phase = str(live.get("phase") or "")
+    if phase in ("import", "compose", "upload"):
+        return phase
+    if phase in ("stall", "oauth"):
+        for row in chunk_rows:
+            st = str(_row_field(row, "status") or "")
+            if st in ("upload", "oauth"):
+                return "upload"
+            if st in ("compose", "stall"):
+                return "compose"
+    if phase == "done":
+        return "done"
+    return ""
+
+
+def _current_chunk_context(
+    rows: list[Any], live: dict[str, Any] | None
+) -> tuple[list[Any], dict[str, Any] | None]:
+    if not live:
+        return [], None
+    phase = str(live.get("phase") or "")
+    if phase not in ("import", "compose", "upload", "stall", "oauth", "done"):
+        return [], None
+    record_type = str(live.get("record_type") or "")
+    chunk_index = int(live.get("chunk_index") or 0)
+    if not record_type or not chunk_index:
+        for row in rows:
+            st = str(_row_field(row, "status") or "")
+            if st in ("import", "compose", "upload", "stall", "oauth"):
+                record_type = str(_row_field(row, "record_type") or "")
+                chunk_index = int(_row_field(row, "chunk_index") or 0)
+                break
+    if not record_type or not chunk_index:
+        return [], None
+    chunk_rows = [
+        r
+        for r in rows
+        if str(_row_field(r, "record_type") or "") == record_type
+        and int(_row_field(r, "chunk_index") or 0) == chunk_index
+    ]
+    if not chunk_rows:
+        return [], None
+    return chunk_rows, {
+        "record_type": record_type,
+        "chunk_index": chunk_index,
+        "phase": _resolve_current_phase(live, chunk_rows),
+        "trip_index": int(live.get("trip_index") or 0),
+    }
+
+
+def _chunk_volume(chunk_rows: list[Any]) -> dict[str, Any]:
+    total_sec = sum(float(_row_field(r, "duration_sec") or 0.0) for r in chunk_rows)
+    total_clips = sum(int(_row_field(r, "clip_count") or 0) for r in chunk_rows)
+    return _volume_block(hours_sec=total_sec, clips=total_clips)
+
+
+def _live_stage_detail(live: dict[str, Any], stage: str) -> str:
+    conveyors = live.get("conveyors")
+    if not isinstance(conveyors, dict):
+        conveyors = {}
+    if stage in ("copy", "merge"):
+        lane = conveyors.get(stage)
+        if not isinstance(lane, dict):
+            return ""
+        parts: list[str] = []
+        chunk = str(lane.get("chunk") or "").strip()
+        file_name = str(lane.get("file") or "").strip()
+        if chunk:
+            parts.append(chunk)
+        if file_name:
+            parts.append(file_name[:32])
+        bd = lane.get("bytes_done")
+        bt = lane.get("bytes_total")
+        if isinstance(bd, (int, float)) and isinstance(bt, (int, float)) and bt > 0:
+            parts.append(f"{100.0 * float(bd) / float(bt):.0f}%")
+        return " · ".join(parts)
+    pct = live.get("percent")
+    detail = str(live.get("detail") or "").strip()
+    bits: list[str] = []
+    if isinstance(pct, (int, float)):
+        bits.append(f"{float(pct):.0f}%")
+    if detail:
+        bits.append(detail[:48])
+    return " · ".join(bits)
+
+
+def _current_node_state(
+    node_id: str, phase: str, active: set[str], done: set[str]
+) -> str:
+    if node_id in active:
+        return "active"
+    if node_id in done:
+        return "done"
+    return "wait"
+
+
+def build_pipeline_current(
+    *,
+    rows: list[Any],
+    live: dict[str, Any] | None,
+    processes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Active roll only — no cumulative ✓ from other chunks."""
+    chunk_rows, ctx = _current_chunk_context(rows, live)
+    if not ctx:
+        return {"title": "Сейчас", "nodes": [], "idle": True}
+
+    phase = str(ctx.get("phase") or "")
+    proc_roles = {str(p.get("role") or "") for p in processes}
+    if phase == "import" or (not phase and proc_roles & {"import", "prefetch"}):
+        phase = "import"
+
+    active: set[str] = set()
+    done: set[str] = set()
+    if phase == "import":
+        active = {"copy", "merge"}
+    elif phase == "compose":
+        done = {"copy", "merge"}
+        active = {"compose"}
+    elif phase == "upload":
+        done = {"copy", "merge", "compose"}
+        active = {"upload"}
+    elif phase == "done":
+        done = {"copy", "merge", "compose", "upload"}
+
+    chunk_vol = _chunk_volume(chunk_rows)
+    first = chunk_rows[0]
+    disp = int(_row_field(first, "chunk_display_index") or 0)
+    total = int(_row_field(first, "chunk_total") or 0)
+    record_type = str(ctx.get("record_type") or "")
+    roll = f"р{disp}/{total}" if disp and total else f"chunk {ctx['chunk_index']}"
+    title = f"{roll} {record_type}"
+
+    live_dict = live if isinstance(live, dict) else {}
+    nodes = [
+        _pipeline_node(
+            "sd",
+            "SD карта",
+            "Исходники этого ролика",
+            "флешка 70mai",
+            state="done",
+            passed=chunk_vol,
+            arrow_after="не трогаем оригинал",
+        ),
+        _pipeline_node(
+            "copy",
+            "copy",
+            "Снять клипы с флешки на SSD",
+            "SD → SSD staging",
+            state=_current_node_state("copy", phase, active, done),
+            passed=chunk_vol if "copy" in done else _volume_block(),
+            detail=_live_stage_detail(live_dict, "copy") if "copy" in active else "",
+            arrow_after="staging, потом удаляется",
+        ),
+        _pipeline_node(
+            "merge",
+            "merge",
+            "Склейка ~10 мин Front/Back MP4",
+            "клипы → merged",
+            state=_current_node_state("merge", phase, active, done),
+            passed=chunk_vol if "merge" in done else _volume_block(),
+            detail=_live_stage_detail(live_dict, "merge") if "merge" in active else "",
+            arrow_after="синхрон Front+Back",
+        ),
+        _pipeline_node(
+            "compose",
+            "compose",
+            "Вертикальный 2-cam ролик ~2h",
+            "merged → trip MP4",
+            state=_current_node_state("compose", phase, active, done),
+            passed=chunk_vol if "compose" in done else _volume_block(),
+            detail=_live_stage_detail(live_dict, "compose")
+            if "compose" in active
+            else "",
+            arrow_after="resumable PUT",
+        ),
+        _pipeline_node(
+            "upload",
+            "upload",
+            "Публикация на YouTube",
+            "Mac → YouTube",
+            state=_current_node_state("upload", phase, active, done),
+            passed=chunk_vol if "upload" in done else _volume_block(),
+            detail=_live_stage_detail(live_dict, "upload")
+            if "upload" in active
+            else "",
+        ),
+    ]
+    return {
+        "title": title,
+        "nodes": nodes,
+        "idle": not active and phase != "done",
+        "phase": phase,
+    }
 
 
 def build_pipeline_payload(
     *,
+    filemap: dict[str, Any],
     sd_card: dict[str, Any],
     rows: list[Any],
     usage: dict[str, int],
@@ -118,139 +423,13 @@ def build_pipeline_payload(
     processes: list[dict[str, Any]],
     temp_dir: Path,
 ) -> dict[str, Any]:
-    """Pipeline diagram data: SD → copy → merge → compose → upload."""
-    trips = sd_card.get("trips") if isinstance(sd_card.get("trips"), list) else []
-    sd_all = _sum_sd_trips(trips)
-    imported = _sum_sd_trips(trips, statuses={"imported", "uploaded"})
-
-    compose_rows = [
-        r
-        for r in rows
-        if str(_row_field(r, "status") or "") in ("upload", "done")
-    ]
-    compose_sec = sum(float(_row_field(r, "duration_sec") or 0.0) for r in compose_rows)
-    compose_chunks = len(
-        {
-            (str(_row_field(r, "record_type")), int(_row_field(r, "chunk_index") or 0))
-            for r in compose_rows
-        }
-    )
-
-    upload_stats: dict[str, Any] | None = None
-    try:
-        from autopilot_dashboard import summarize_youtube_upload_stats
-
-        upload_stats = summarize_youtube_upload_stats(rows, temp_dir)
-    except Exception:
-        upload_stats = None
-
-    phase = str((live or {}).get("phase") or "")
-    proc_roles = {str(p.get("role") or "") for p in processes}
-    import_active = phase == "import" or bool(
-        proc_roles & {"import", "prefetch"}
-    )
-    active_ids: set[str] = set()
-    if import_active:
-        active_ids.update({"copy", "merge"})
-    if phase == "compose":
-        active_ids.add("compose")
-    if phase == "upload":
-        active_ids.add("upload")
-
-    merged_bytes = int(usage.get("merged") or 0)
-    composed_bytes = int(usage.get("composed") or 0)
-
-    upload_passed = _volume_block()
-    if upload_stats:
-        upload_passed = _volume_block(
-            hours_sec=float(upload_stats.get("footage_sec") or 0.0),
-            bytes_total=int(upload_stats.get("upload_bytes") or 0),
-            chunks=int(upload_stats.get("n_videos") or 0),
-        )
-
-    partial = _sum_sd_trips(trips, statuses={"partial"})
-    partial_note = ""
-    if int(partial.get("clips") or 0) > 0 and import_active:
-        from import_70mai import format_duration
-
-        partial_note = (
-            f"частично {format_duration(float(partial['hours_sec']))} "
-            f"({int(partial['clips'])} клипов)"
-        )
-
-    nodes: list[dict[str, Any]] = [
-        {
-            "id": "sd",
-            "label": "SD карта",
-            "purpose": "Исходники: минутные клипы Front/Back",
-            "flow": "флешка 70mai",
-            "state": _node_state(
-                "sd", active_ids=active_ids, passed=_volume_from_sum(sd_all)
-            ),
-            "passed": _volume_from_sum(sd_all),
-            "on_disk": _volume_block(bytes_total=int(sd_all["bytes"])),
-            "arrow_after": "не трогаем оригинал",
-        },
-        {
-            "id": "copy",
-            "label": "copy",
-            "purpose": "Снять клипы с флешки на SSD",
-            "flow": "SD → SSD staging",
-            "state": _node_state(
-                "copy", active_ids=active_ids, passed=_volume_from_sum(imported)
-            ),
-            "passed": _volume_from_sum(imported),
-            "on_disk": _volume_block(),
-            "arrow_after": "staging, потом удаляется",
-            "detail": partial_note,
-        },
-        {
-            "id": "merge",
-            "label": "merge",
-            "purpose": "Склейка ~10 мин Front/Back MP4",
-            "flow": "клипы → merged",
-            "state": _node_state(
-                "merge", active_ids=active_ids, passed=_volume_from_sum(imported)
-            ),
-            "passed": _volume_from_sum(imported),
-            "on_disk": _volume_block(bytes_total=merged_bytes),
-            "arrow_after": "синхрон Front+Back",
-            "detail": partial_note,
-        },
-        {
-            "id": "compose",
-            "label": "compose",
-            "purpose": "Вертикальный 2-cam ролик ~2h",
-            "flow": "merged → trip MP4",
-            "state": _node_state(
-                "compose",
-                active_ids=active_ids,
-                passed=_volume_block(
-                    hours_sec=compose_sec, chunks=compose_chunks
-                ),
-            ),
-            "passed": _volume_block(
-                hours_sec=compose_sec, chunks=compose_chunks
-            ),
-            "on_disk": _volume_block(bytes_total=composed_bytes),
-            "arrow_after": "resumable PUT",
-        },
-        {
-            "id": "upload",
-            "label": "upload",
-            "purpose": "Публикация на YouTube",
-            "flow": "Mac → YouTube",
-            "state": _node_state(
-                "upload", active_ids=active_ids, passed=upload_passed
-            ),
-            "passed": upload_passed,
-            "on_disk": _volume_block(),
-        },
-    ]
-
+    """Summary (whole card) + current (active roll) pipeline diagrams."""
+    del sd_card, temp_dir  # kept for caller symmetry / future use
     return {
-        "nodes": nodes,
-        "active_ids": sorted(active_ids),
+        "summary": build_pipeline_summary(filemap=filemap, usage=usage),
+        "current": build_pipeline_current(
+            rows=rows, live=live, processes=processes
+        ),
     }
 
 
@@ -348,7 +527,14 @@ def build_status_payload(
         }
         for p in procs
     ]
+    filemap = build_file_map_payload(
+        source or sd,
+        types,
+        video_dir=video_dir,
+        temp_dir=temp_dir,
+    )
     pipeline = build_pipeline_payload(
+        filemap=filemap,
         sd_card=sd_card,
         rows=rows,
         usage=usage,
@@ -413,7 +599,20 @@ def build_file_map_payload(
             temp_dir=temp_dir,
         )
     except Exception:
-        return {"present": False, "total": 0, "counts": {}, "groups": []}
+        return {
+            "present": False,
+            "total": 0,
+            "counts": {},
+            "groups": [],
+            "host": {
+                "present": False,
+                "copied": {"done": 0, "total": 0},
+                "merged": {"files": 0, "clips": 0},
+                "youtube": {"done": 0, "total": 0},
+                "groups": [],
+                "total": 0,
+            },
+        }
 
 
 def _reload_dashboard_module():
@@ -452,7 +651,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     h2 { margin: 0 0 .5rem; font-size: 1rem; color: #8b9bb4; font-weight: 600; }
     .sub { color: #8b9bb4; margin-bottom: .75rem; }
     .pipeline-panel { background: #1a2332; border-radius: 8px; padding: .75rem 1rem; margin-bottom: 1rem; }
+    .pipeline-panel.current { border: 1px solid #3d5166; }
     .pipeline-panel h2 { margin: 0 0 .6rem; }
+    .pipeline-panel.idle { opacity: .75; }
     .pipeline-flow { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding-bottom: .25rem; }
     .pl-node { flex: 1 1 0; min-width: 9.5rem; background: #243044; border-radius: 6px; padding: .55rem .65rem; border: 2px solid transparent; }
     .pl-node.st-sd { border-color: #4a5768; }
@@ -547,9 +748,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <body>
   <h1>Autopilot</h1>
   <div class="sub" id="subtitle">Загрузка…</div>
-  <section class="pipeline-panel" id="pipeline-panel">
-    <h2>Конвейер</h2>
-    <div class="pipeline-flow" id="pipeline"></div>
+  <section class="pipeline-panel current" id="pipeline-current-panel">
+    <h2 id="pipeline-current-title">Сейчас</h2>
+    <div class="pipeline-flow" id="pipeline-current"></div>
+  </section>
+  <section class="pipeline-panel" id="pipeline-summary-panel">
+    <h2>Вся карта</h2>
+    <div class="pipeline-flow" id="pipeline-summary"></div>
   </section>
   <div id="msg"></div>
   <div class="bar">
@@ -635,32 +840,56 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       if (!parts.length) return '';
       return `<div class="pl-vol"><span>${esc(label)}:</span> ${esc(parts.join(' · '))}</div>`;
     }
-    function renderPipeline(pipeline) {
-      const el = document.getElementById('pipeline');
-      const panel = document.getElementById('pipeline-panel');
-      if (!pipeline || !pipeline.nodes || !pipeline.nodes.length) {
-        if (panel) panel.hidden = true;
-        el.innerHTML = '';
+    function renderPipelineBlock(el, panel, block, mode) {
+      if (!el) return;
+      if (!block || !block.nodes || !block.nodes.length) {
+        if (panel) panel.hidden = mode !== 'summary';
+        el.innerHTML = mode === 'current'
+          ? '<div class="bm-empty">ожидание — нет активного ролика</div>'
+          : '';
+        if (panel && mode === 'current') panel.classList.add('idle');
         return;
       }
-      if (panel) panel.hidden = false;
-      el.innerHTML = pipeline.nodes.map((node, idx) => {
+      if (panel) {
+        panel.hidden = false;
+        panel.classList.toggle('idle', !!block.idle);
+      }
+      const titleEl = mode === 'current' ? document.getElementById('pipeline-current-title') : null;
+      if (titleEl && block.title) titleEl.textContent = 'Сейчас — ' + block.title;
+      el.innerHTML = block.nodes.map((node, idx) => {
         const st = node.state || 'wait';
         const passed = plVolLine('прошло', node.passed);
-        const onDisk = plVolLine('сейчас', node.on_disk);
+        const remaining = mode === 'summary' && node.remaining
+          ? plVolLine('осталось', node.remaining) : '';
+        const onDisk = plVolLine('на диске', node.on_disk);
         const detail = node.detail ? `<div class="pl-detail">${esc(node.detail)}</div>` : '';
         const card = `<div class="pl-node st-${esc(node.id)} ${esc(st)}">
           <div class="pl-title">${esc(node.label)}</div>
           <div class="pl-purpose">${esc(node.purpose || '')}</div>
           <div class="pl-flow">${esc(node.flow || '')}</div>
-          ${passed}${onDisk}${detail}
+          ${passed}${remaining}${onDisk}${detail}
         </div>`;
-        if (idx >= pipeline.nodes.length - 1) return card;
+        if (idx >= block.nodes.length - 1) return card;
         const arrow = node.arrow_after
           ? `<div class="pl-arrow"><span class="pl-arrow-label">${esc(node.arrow_after)}</span>→</div>`
           : '<div class="pl-arrow">→</div>';
         return card + arrow;
       }).join('');
+    }
+    function renderPipeline(pipeline) {
+      const p = pipeline || {};
+      renderPipelineBlock(
+        document.getElementById('pipeline-current'),
+        document.getElementById('pipeline-current-panel'),
+        p.current,
+        'current',
+      );
+      renderPipelineBlock(
+        document.getElementById('pipeline-summary'),
+        document.getElementById('pipeline-summary-panel'),
+        p.summary,
+        'summary',
+      );
     }
     function renderFileMap(fm) {
       const legend = document.getElementById('bm-legend');
