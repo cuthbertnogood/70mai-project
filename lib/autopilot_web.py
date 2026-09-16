@@ -31,6 +31,229 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     return data
 
 
+def _row_field(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def _sum_sd_trips(
+    trips: list[dict[str, Any]],
+    *,
+    statuses: set[str] | None = None,
+) -> dict[str, float | int]:
+    total_sec = 0.0
+    total_bytes = 0
+    total_clips = 0
+    for trip in trips:
+        status = str(trip.get("import_status") or "none")
+        if statuses is not None and status not in statuses:
+            continue
+        total_sec += float(trip.get("duration_sec") or 0.0)
+        total_bytes += int(trip.get("size_bytes") or 0)
+        total_clips += int(trip.get("clip_count") or 0)
+    return {
+        "hours_sec": total_sec,
+        "bytes": total_bytes,
+        "clips": total_clips,
+    }
+
+
+def _volume_from_sum(totals: dict[str, float | int]) -> dict[str, Any]:
+    return _volume_block(
+        hours_sec=float(totals.get("hours_sec") or 0.0),
+        bytes_total=int(totals.get("bytes") or 0),
+        clips=int(totals.get("clips") or 0),
+    )
+
+
+def _volume_block(
+    *,
+    hours_sec: float = 0.0,
+    bytes_total: int = 0,
+    clips: int = 0,
+    chunks: int = 0,
+) -> dict[str, Any]:
+    from import_70mai import format_duration
+    from publish_all_70mai import format_gb
+
+    out: dict[str, Any] = {
+        "hours_sec": round(hours_sec, 1),
+        "hours": format_duration(hours_sec) if hours_sec > 0 else "—",
+        "bytes": bytes_total,
+        "size": format_gb(bytes_total) if bytes_total > 0 else "—",
+    }
+    if clips > 0:
+        out["clips"] = clips
+    if chunks > 0:
+        out["chunks"] = chunks
+    return out
+
+
+def _node_state(
+    node_id: str,
+    *,
+    active_ids: set[str],
+    passed: dict[str, Any],
+) -> str:
+    if node_id in active_ids:
+        return "active"
+    has_passed = (
+        float(passed.get("hours_sec") or 0) > 0
+        or int(passed.get("bytes") or 0) > 0
+        or int(passed.get("clips") or 0) > 0
+        or int(passed.get("chunks") or 0) > 0
+    )
+    if node_id == "sd":
+        return "done" if has_passed else "wait"
+    return "done" if has_passed else "wait"
+
+
+def build_pipeline_payload(
+    *,
+    sd_card: dict[str, Any],
+    rows: list[Any],
+    usage: dict[str, int],
+    live: dict[str, Any] | None,
+    processes: list[dict[str, Any]],
+    temp_dir: Path,
+) -> dict[str, Any]:
+    """Pipeline diagram data: SD → copy → merge → compose → upload."""
+    trips = sd_card.get("trips") if isinstance(sd_card.get("trips"), list) else []
+    sd_all = _sum_sd_trips(trips)
+    imported = _sum_sd_trips(trips, statuses={"imported", "uploaded"})
+
+    compose_rows = [
+        r
+        for r in rows
+        if str(_row_field(r, "status") or "") in ("upload", "done")
+    ]
+    compose_sec = sum(float(_row_field(r, "duration_sec") or 0.0) for r in compose_rows)
+    compose_chunks = len(
+        {
+            (str(_row_field(r, "record_type")), int(_row_field(r, "chunk_index") or 0))
+            for r in compose_rows
+        }
+    )
+
+    upload_stats: dict[str, Any] | None = None
+    try:
+        from autopilot_dashboard import summarize_youtube_upload_stats
+
+        upload_stats = summarize_youtube_upload_stats(rows, temp_dir)
+    except Exception:
+        upload_stats = None
+
+    phase = str((live or {}).get("phase") or "")
+    proc_roles = {str(p.get("role") or "") for p in processes}
+    import_active = phase == "import" or bool(
+        proc_roles & {"import", "prefetch"}
+    )
+    active_ids: set[str] = set()
+    if import_active:
+        active_ids.update({"copy", "merge"})
+    if phase == "compose":
+        active_ids.add("compose")
+    if phase == "upload":
+        active_ids.add("upload")
+
+    merged_bytes = int(usage.get("merged") or 0)
+    composed_bytes = int(usage.get("composed") or 0)
+
+    upload_passed = _volume_block()
+    if upload_stats:
+        upload_passed = _volume_block(
+            hours_sec=float(upload_stats.get("footage_sec") or 0.0),
+            bytes_total=int(upload_stats.get("upload_bytes") or 0),
+            chunks=int(upload_stats.get("n_videos") or 0),
+        )
+
+    partial = _sum_sd_trips(trips, statuses={"partial"})
+    partial_note = ""
+    if int(partial.get("clips") or 0) > 0 and import_active:
+        from import_70mai import format_duration
+
+        partial_note = (
+            f"частично {format_duration(float(partial['hours_sec']))} "
+            f"({int(partial['clips'])} клипов)"
+        )
+
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "sd",
+            "label": "SD карта",
+            "purpose": "Исходники: минутные клипы Front/Back",
+            "flow": "флешка 70mai",
+            "state": _node_state(
+                "sd", active_ids=active_ids, passed=_volume_from_sum(sd_all)
+            ),
+            "passed": _volume_from_sum(sd_all),
+            "on_disk": _volume_block(bytes_total=int(sd_all["bytes"])),
+            "arrow_after": "не трогаем оригинал",
+        },
+        {
+            "id": "copy",
+            "label": "copy",
+            "purpose": "Снять клипы с флешки на SSD",
+            "flow": "SD → SSD staging",
+            "state": _node_state(
+                "copy", active_ids=active_ids, passed=_volume_from_sum(imported)
+            ),
+            "passed": _volume_from_sum(imported),
+            "on_disk": _volume_block(),
+            "arrow_after": "staging, потом удаляется",
+            "detail": partial_note,
+        },
+        {
+            "id": "merge",
+            "label": "merge",
+            "purpose": "Склейка ~10 мин Front/Back MP4",
+            "flow": "клипы → merged",
+            "state": _node_state(
+                "merge", active_ids=active_ids, passed=_volume_from_sum(imported)
+            ),
+            "passed": _volume_from_sum(imported),
+            "on_disk": _volume_block(bytes_total=merged_bytes),
+            "arrow_after": "синхрон Front+Back",
+            "detail": partial_note,
+        },
+        {
+            "id": "compose",
+            "label": "compose",
+            "purpose": "Вертикальный 2-cam ролик ~2h",
+            "flow": "merged → trip MP4",
+            "state": _node_state(
+                "compose",
+                active_ids=active_ids,
+                passed=_volume_block(
+                    hours_sec=compose_sec, chunks=compose_chunks
+                ),
+            ),
+            "passed": _volume_block(
+                hours_sec=compose_sec, chunks=compose_chunks
+            ),
+            "on_disk": _volume_block(bytes_total=composed_bytes),
+            "arrow_after": "resumable PUT",
+        },
+        {
+            "id": "upload",
+            "label": "upload",
+            "purpose": "Публикация на YouTube",
+            "flow": "Mac → YouTube",
+            "state": _node_state(
+                "upload", active_ids=active_ids, passed=upload_passed
+            ),
+            "passed": upload_passed,
+            "on_disk": _volume_block(),
+        },
+    ]
+
+    return {
+        "nodes": nodes,
+        "active_ids": sorted(active_ids),
+    }
+
+
 def build_status_payload(
     *,
     temp_dir: Path,
@@ -48,7 +271,8 @@ def build_status_payload(
 
     run_state = read_run_state(temp_dir)
     sd = None
-    usage_total = 0
+    usage_total = usage_merged = usage_composed = 0
+    usage: dict[str, int] = {"merged": 0, "composed": 0, "total": 0}
 
     def _format_gb(n: float) -> str:
         return f"{n / 1e9:.1f} GB"
@@ -59,7 +283,9 @@ def build_status_payload(
         sd = find_sd_card()
         _format_gb = format_gb
         usage = autopilot_disk_usage(video_dir, temp_dir, types=types)
-        usage_total = float(usage.get("total", 0))
+        usage_merged = int(usage.get("merged", 0))
+        usage_composed = int(usage.get("composed", 0))
+        usage_total = int(usage.get("total", 0))
     except Exception:
         pass
 
@@ -112,6 +338,25 @@ def build_status_payload(
     except Exception:
         pass
 
+    procs = list_pipeline_processes(temp_dir=temp_dir)
+    proc_payload = [
+        {
+            "pid": p.pid,
+            "role": p.role,
+            "uptime_sec": p.etime_sec,
+            "tip": p.tip,
+        }
+        for p in procs
+    ]
+    pipeline = build_pipeline_payload(
+        sd_card=sd_card,
+        rows=rows,
+        usage=usage,
+        live=live,
+        processes=proc_payload,
+        temp_dir=temp_dir,
+    )
+
     return {
         "run": run_state,
         "diagnostics": _read_diagnostics(temp_dir),
@@ -119,6 +364,7 @@ def build_status_payload(
         "sd_path": str(sd) if sd else None,
         "sd_card": sd_card,
         "live": live,
+        "pipeline": pipeline,
         "summary": {
             "chunks_done": chunks_done,
             "chunk_total": chunk_total,
@@ -128,18 +374,12 @@ def build_status_payload(
         "disk": {
             "free_gb": round(free_disk_gb(Path(".")), 1),
             "video_total_gb": _format_gb(usage_total),
+            "merged_gb": _format_gb(usage_merged),
+            "composed_gb": _format_gb(usage_composed),
         },
         "rows": [_row_to_dict(r) for r in rows],
         "failures": failures,
-        "processes": [
-            {
-                "pid": p.pid,
-                "role": p.role,
-                "uptime_sec": p.etime_sec,
-                "tip": p.tip,
-            }
-            for p in list_pipeline_processes(temp_dir=temp_dir)
-        ],
+        "processes": proc_payload,
         "pending_control": peek_control(temp_dir),
     }
 
@@ -210,7 +450,38 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     body { margin: 0; padding: 1rem 1.25rem 2rem; max-width: 1680px; }
     h1 { margin: 0 0 .25rem; font-size: 1.4rem; }
     h2 { margin: 0 0 .5rem; font-size: 1rem; color: #8b9bb4; font-weight: 600; }
-    .sub { color: #8b9bb4; margin-bottom: 1rem; }
+    .sub { color: #8b9bb4; margin-bottom: .75rem; }
+    .pipeline-panel { background: #1a2332; border-radius: 8px; padding: .75rem 1rem; margin-bottom: 1rem; }
+    .pipeline-panel h2 { margin: 0 0 .6rem; }
+    .pipeline-flow { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding-bottom: .25rem; }
+    .pl-node { flex: 1 1 0; min-width: 9.5rem; background: #243044; border-radius: 6px; padding: .55rem .65rem; border: 2px solid transparent; }
+    .pl-node.st-sd { border-color: #4a5768; }
+    .pl-node.st-copy { border-color: #f5b041; }
+    .pl-node.st-merge { border-color: #7fd1ff; }
+    .pl-node.st-compose { border-color: #e59866; }
+    .pl-node.st-upload { border-color: #58d68d; }
+    .pl-node.active { box-shadow: 0 0 0 1px currentColor; }
+    .pl-node.st-sd.active { border-color: #8b9bb4; color: #e7ecf3; }
+    .pl-node.st-copy.active { border-color: #f5b041; color: #f5b041; }
+    .pl-node.st-merge.active { border-color: #7fd1ff; color: #7fd1ff; }
+    .pl-node.st-compose.active { border-color: #e59866; color: #e59866; }
+    .pl-node.st-upload.active { border-color: #58d68d; color: #58d68d; }
+    .pl-node.done .pl-title::before { content: '✓ '; color: #58d68d; }
+    .pl-node.active .pl-title::before { content: '► '; }
+    .pl-node.wait .pl-title::before { content: '· '; color: #8b9bb4; }
+    .pl-title { font-weight: 700; font-size: .88rem; margin-bottom: .2rem; }
+    .pl-purpose { font-size: .72rem; color: #8b9bb4; line-height: 1.35; margin-bottom: .35rem; min-height: 2.2em; }
+    .pl-flow { font-size: .7rem; color: #5dade2; margin-bottom: .3rem; }
+    .pl-vol { font-size: .72rem; line-height: 1.4; }
+    .pl-vol span { color: #8b9bb4; }
+    .pl-detail { font-size: .68rem; color: #f5b041; margin-top: .25rem; }
+    .pl-arrow { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 .15rem; color: #566573; font-size: 1.1rem; min-width: 2.5rem; }
+    .pl-arrow-label { font-size: .62rem; color: #8b9bb4; text-align: center; line-height: 1.2; max-width: 4.5rem; margin-bottom: .15rem; }
+    @media (max-width: 900px) {
+      .pipeline-flow { flex-direction: column; align-items: stretch; }
+      .pl-arrow { flex-direction: row; justify-content: flex-start; padding: .15rem 0; min-width: 0; }
+      .pl-arrow-label { max-width: none; margin: 0 .35rem 0 0; text-align: left; }
+    }
     .layout { display: grid; grid-template-columns: 1fr minmax(320px, 420px); gap: 1.25rem; align-items: start; }
     @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
     .sd-panel { background: #1a2332; border-radius: 8px; padding: .75rem 1rem; position: sticky; top: .5rem; max-height: calc(100vh - 2rem); overflow: auto; }
@@ -276,6 +547,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <body>
   <h1>Autopilot</h1>
   <div class="sub" id="subtitle">Загрузка…</div>
+  <section class="pipeline-panel" id="pipeline-panel">
+    <h2>Конвейер</h2>
+    <div class="pipeline-flow" id="pipeline"></div>
+  </section>
   <div id="msg"></div>
   <div class="bar">
     <button class="stop" id="btn-stop">Stop</button>
@@ -350,6 +625,43 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       error: 'ошибка',
     };
     const bmStatusOrder = ['uploaded', 'composed', 'merged', 'planned', 'oncard', 'error'];
+    function plVolLine(label, vol) {
+      if (!vol) return '';
+      const parts = [];
+      if (vol.hours && vol.hours !== '—') parts.push(vol.hours);
+      if (vol.size && vol.size !== '—') parts.push(vol.size);
+      if (vol.clips) parts.push(vol.clips + ' клип.');
+      if (vol.chunks) parts.push(vol.chunks + ' рол.');
+      if (!parts.length) return '';
+      return `<div class="pl-vol"><span>${esc(label)}:</span> ${esc(parts.join(' · '))}</div>`;
+    }
+    function renderPipeline(pipeline) {
+      const el = document.getElementById('pipeline');
+      const panel = document.getElementById('pipeline-panel');
+      if (!pipeline || !pipeline.nodes || !pipeline.nodes.length) {
+        if (panel) panel.hidden = true;
+        el.innerHTML = '';
+        return;
+      }
+      if (panel) panel.hidden = false;
+      el.innerHTML = pipeline.nodes.map((node, idx) => {
+        const st = node.state || 'wait';
+        const passed = plVolLine('прошло', node.passed);
+        const onDisk = plVolLine('сейчас', node.on_disk);
+        const detail = node.detail ? `<div class="pl-detail">${esc(node.detail)}</div>` : '';
+        const card = `<div class="pl-node st-${esc(node.id)} ${esc(st)}">
+          <div class="pl-title">${esc(node.label)}</div>
+          <div class="pl-purpose">${esc(node.purpose || '')}</div>
+          <div class="pl-flow">${esc(node.flow || '')}</div>
+          ${passed}${onDisk}${detail}
+        </div>`;
+        if (idx >= pipeline.nodes.length - 1) return card;
+        const arrow = node.arrow_after
+          ? `<div class="pl-arrow"><span class="pl-arrow-label">${esc(node.arrow_after)}</span>→</div>`
+          : '<div class="pl-arrow">→</div>';
+        return card + arrow;
+      }).join('');
+    }
     function renderFileMap(fm) {
       const legend = document.getElementById('bm-legend');
       const groups = document.getElementById('bm-groups');
@@ -375,6 +687,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       const phase = run.phase || 'running';
       document.getElementById('subtitle').textContent =
         (phaseLabels[phase] || phase) + (run.message ? ' — ' + run.message : '');
+      renderPipeline(data.pipeline);
       const canQuit = ['waiting_card','done','stopped','error'].includes(phase);
       const canControl = ['running','restarting','waiting_card'].includes(phase);
       document.getElementById('btn-quit').disabled = !canQuit;
