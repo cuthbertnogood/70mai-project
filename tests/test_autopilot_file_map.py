@@ -458,6 +458,35 @@ class AutopilotFileMapTests(unittest.TestCase):
             self.assertEqual(host_blocks[0]["proc"], "copy/merge")
             self.assertEqual(payload["host"]["processing"]["count"], 1)
 
+    def test_host_compose_and_upload_files_on_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "video"
+            publish_tmp = root / ".publish_tmp"
+            trip_dir = publish_tmp / "Normal" / "chunk_01"
+            trip_dir.mkdir(parents=True)
+            trip = trip_dir / "trip_01.mp4"
+            trip.write_bytes(b"z" * 200)
+
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            (front / "NO20260814-100000-000001F.MP4").write_bytes(b"x" * 10)
+
+            # No live status → still listed as composed (upload-ready) file.
+            payload = build_file_map_payload(
+                root,
+                ["Normal"],
+                video_dir=video,
+                temp_dir=publish_tmp,
+                ttl_sec=0,
+            )
+            host = payload["host"]
+            self.assertEqual(host["compose"]["files"], 1)
+            self.assertEqual(len(host["compose_groups"]), 1)
+            block = host["compose_groups"][0]["blocks"][0]
+            self.assertEqual(block["n"], "trip_01.mp4")
+            self.assertEqual(block["st"], "composed")
+
 
 if __name__ == "__main__":
     unittest.main()

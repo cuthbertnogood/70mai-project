@@ -1013,6 +1013,15 @@ def processing_snapshot(
             uploaded=_uploaded_windows(rows),
         )
     host_info = _processing_host_info(live, rows, host_groups)
+    # Also include compose trip files from a fresh scan when temp_dir is known.
+    compose_groups: list[dict[str, Any]] = []
+    if temp_dir is not None:
+        _, _, compose_groups = _host_compose_groups(
+            temp_dir, types, rows=rows, live=live
+        )
+        host_info = _processing_host_info(
+            live, rows, host_groups, compose_groups=compose_groups
+        )
     return {
         "clips": [list(key) for key in sorted(clip_keys)],
         "host": host_info["files"],
