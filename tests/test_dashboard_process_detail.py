@@ -17,6 +17,8 @@ if str(LIB) not in sys.path:
 from autopilot_dashboard import (  # noqa: E402
     PipelineProc,
     PrefetchImportState,
+    collect_live_log_lines,
+    format_live_log_block,
     format_process_detail_block,
     log_last_activity,
     resolve_watchdog_snapshot,
@@ -112,6 +114,29 @@ class DashboardProcessDetailTests(unittest.TestCase):
             text = "\n".join(lines)
             self.assertIn("✗ watchdog", text)
             self.assertIn("автопилот остановлен", text)
+
+    def test_collect_live_log_lines_prefers_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            now = datetime.now()
+            (temp / "publish_all.log").write_text(
+                f"{now - timedelta(seconds=30):%Y-%m-%d %H:%M:%S} ERROR: boom\n"
+                f"{now - timedelta(seconds=10):%Y-%m-%d %H:%M:%S} "
+                "[merge] concat batch 3/12 (8 clips)\n"
+                f"{now:%Y-%m-%d %H:%M:%S} "
+                "Encode: [trip] 42.0%  1:23 elapsed  ETA 2:10  1.20x\n",
+                encoding="utf-8",
+            )
+            lines = collect_live_log_lines(temp, limit=4)
+            joined = "\n".join(lines)
+            self.assertIn("concat batch 3/12", joined)
+            self.assertIn("Encode:", joined)
+            self.assertNotIn("ERROR: boom", joined)
+            block = "\n".join(
+                format_live_log_block(temp, term_cols=100, compact=False)
+            )
+            self.assertIn("Сейчас (лог)", block)
+            self.assertIn("→", block)
 
 
 if __name__ == "__main__":

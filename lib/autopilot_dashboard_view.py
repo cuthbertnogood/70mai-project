@@ -310,6 +310,13 @@ def render(dash: Any) -> None:
         )
     )
     lines.extend(
+        d.format_live_log_block(
+            dash.temp_dir,
+            term_cols=term_cols,
+            compact=compact,
+        )
+    )
+    lines.extend(
         d.format_failures_block(
             dash.temp_dir,
             term_cols=term_cols,

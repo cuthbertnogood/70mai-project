@@ -1632,6 +1632,90 @@ def collect_failure_lines(
     return uniq[-limit:]
 
 
+_LIVE_LOG_RE = re.compile(
+    r"(?:\[copy\]|\[merge\]|Encode:|encoding\b|Upload\b|\[prefetch|"
+    r"Merging\s+|concat batch|ok in \d+s|\d+(?:\.\d+)?\s*MB/s|"
+    r"speed=\d|Autopilot |Conveyor |Importing |copy∥|merge∥|"
+    r"part \d+/\d+|clip \d+/\d+)",
+    re.I,
+)
+
+
+def collect_live_log_lines(temp_dir: Path, *, limit: int = 4) -> list[str]:
+    """Recent progress lines from raw logs — proves the pipeline is not hung."""
+    ranked: list[tuple[datetime, str]] = []
+    seen: set[str] = set()
+    for path in _compose_log_paths(temp_dir)[:8]:
+        text = _tail_text(path, max_bytes=64_000)
+        if not text:
+            continue
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if _FAIL_LOG_RE.search(line):
+                continue
+            if not _LIVE_LOG_RE.search(line):
+                continue
+            ts_s, body = _split_log_ts(line)
+            body = body.strip()
+            if not body:
+                continue
+            text_out = f"{ts_s} {body}" if ts_s else body
+            text_out = text_out[:140]
+            if text_out in seen:
+                continue
+            seen.add(text_out)
+            try:
+                dt = (
+                    datetime.strptime(ts_s, "%Y-%m-%d %H:%M:%S")
+                    if ts_s
+                    else datetime.fromtimestamp(path.stat().st_mtime)
+                )
+            except (ValueError, OSError):
+                dt = datetime.now()
+            ranked.append((dt, text_out))
+    ranked.sort(key=lambda item: item[0])
+    lines = [text for _, text in ranked[-limit:]]
+    if lines:
+        return lines
+    # Fallback: last log snippet even if it didn't match progress patterns.
+    age, snip = log_last_activity(temp_dir)
+    if snip:
+        prefix = f"{_human_etime_seconds(age)} назад · " if age is not None else ""
+        return [f"{prefix}{snip}"[:140]]
+    return []
+
+
+def format_live_log_block(
+    temp_dir: Path,
+    *,
+    term_cols: int,
+    limit: int = 4,
+    compact: bool = False,
+) -> list[str]:
+    """Lines above «Сбои»: current work from raw logs."""
+    if compact:
+        limit = min(limit, 2)
+    lines = collect_live_log_lines(temp_dir, limit=limit)
+    age, _snip = log_last_activity(temp_dir)
+    if compact and not lines:
+        return []
+    header = "── Сейчас (лог) ──"
+    if age is not None:
+        header += f"  {_human_etime_seconds(age)} назад"
+        if age >= 300:
+            header += "  (возможно зависло)"
+    out: list[str] = []
+    out.extend(_wrap_line(header, term_cols))
+    if not lines:
+        out.extend(_wrap_line("лог молчит — нет свежего прогресса", term_cols))
+        return out
+    for line in lines:
+        out.extend(_wrap_line(f"→ {line}", term_cols))
+    return out
+
+
 _UPLOADED_DONE_RE = re.compile(
     r"Uploaded:\s+https?://(?:www\.)?youtu\.be/(?P<vid>[\w-]+)\s+"
     r"\((?P<size>[^,]+),\s*(?P<elapsed>[^)]+)\)"

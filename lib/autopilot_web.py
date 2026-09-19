@@ -614,6 +614,8 @@ def build_status_payload(
     chunks_done = chunk_total = trips_done = 0
     live = resolve_live_status(temp_dir, rows=rows)
     failures: list[str] = []
+    live_log: list[str] = []
+    live_log_age_sec: int | None = None
 
     try:
         from autopilot_dashboard import Dashboard
@@ -638,11 +640,15 @@ def build_status_payload(
             live = resolve_live_status(temp_dir, rows=rows)
             chunks_done, chunk_total, trips_done = chunk_summary_counts(rows)
         try:
-            from autopilot_dashboard import collect_failure_lines
+            from autopilot_dashboard import collect_failure_lines, collect_live_log_lines, log_last_activity
 
             failures = collect_failure_lines(temp_dir, source=source or sd)
+            live_log = collect_live_log_lines(temp_dir)
+            live_log_age_sec, _ = log_last_activity(temp_dir)
         except Exception:
             failures = []
+            live_log = []
+            live_log_age_sec = None
     except Exception:
         pass
 
@@ -719,6 +725,8 @@ def build_status_payload(
             "composed_gb": _format_gb(usage_composed),
         },
         "rows": [_row_to_dict(r) for r in rows],
+        "live_log": live_log,
+        "live_log_age_sec": live_log_age_sec,
         "failures": failures,
         "processes": proc_payload,
         "pending_control": peek_control(temp_dir),
@@ -905,7 +913,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .phase-import { color: #f5b041; }
     .phase-done { color: #58d68d; }
     .phase-stopped, .phase-error { color: #ec7063; }
-    .failures { margin-top: 1rem; background: #1a2332; border-radius: 8px; padding: .75rem 1rem; font-size: .82rem; color: #f5b7b1; }
+    .failures { margin-top: .5rem; background: #1a2332; border-radius: 8px; padding: .75rem 1rem; font-size: .82rem; color: #f5b7b1; }
+    .live-log { margin-top: 1rem; background: #1a2332; border-radius: 8px; padding: .75rem 1rem; font-size: .82rem; color: #a8d5a2; }
     a { color: #5dade2; }
     #msg { min-height: 1.2rem; color: #f8c471; margin-bottom: .5rem; }
   </style>
@@ -952,6 +961,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <thead><tr><th>Ролик</th><th>Тип</th><th>Trip</th><th>Статус</th><th>Прогресс</th><th>YouTube</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
+  <div class="live-log" id="live-log" hidden></div>
   <div class="failures" id="failures" hidden></div>
     </div>
     <aside class="sd-panel">
@@ -1262,6 +1272,18 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           <td>${yt}</td>
         </tr>`;
       }).join('');
+      const liveLogEl = document.getElementById('live-log');
+      const liveLines = data.live_log || [];
+      if (liveLines.length) {
+        liveLogEl.hidden = false;
+        const ageSec = data.live_log_age_sec;
+        const ageTxt = (ageSec != null) ? ` · ${ageSec}s назад` : '';
+        const stuck = (ageSec != null && ageSec >= 300) ? ' · возможно зависло' : '';
+        liveLogEl.innerHTML = '<strong>Сейчас (лог)' + ageTxt + stuck + '</strong><br>' +
+          liveLines.map(esc).join('<br>');
+      } else {
+        liveLogEl.hidden = true;
+      }
       const fail = document.getElementById('failures');
       if (data.failures && data.failures.length) {
         fail.hidden = false;
