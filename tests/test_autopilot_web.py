@@ -48,6 +48,7 @@ class AutopilotWebTests(unittest.TestCase):
         self.assertIn("pipeline", payload)
         self.assertIn("summary", payload["pipeline"])
         self.assertIn("current", payload["pipeline"])
+        self.assertIn("processing", payload)
 
     def test_build_pipeline_summary_from_filemap(self) -> None:
         filemap = {

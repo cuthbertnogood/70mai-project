@@ -543,6 +543,21 @@ def build_status_payload(
         temp_dir=temp_dir,
     )
 
+    processing: dict[str, Any] = {"clips": [], "host": []}
+    try:
+        from autopilot_file_map import processing_snapshot
+
+        processing = processing_snapshot(
+            source or sd,
+            types,
+            temp_dir=temp_dir,
+            video_dir=video_dir,
+            live=live if isinstance(live, dict) else None,
+            rows=rows,
+        )
+    except Exception:
+        pass
+
     return {
         "run": run_state,
         "diagnostics": _read_diagnostics(temp_dir),
@@ -551,6 +566,7 @@ def build_status_payload(
         "sd_card": sd_card,
         "live": live,
         "pipeline": pipeline,
+        "processing": processing,
         "summary": {
             "chunks_done": chunks_done,
             "chunk_total": chunk_total,
@@ -700,7 +716,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .sd-legend span.imp-imported { color: #7fd1ff; }
     .sd-legend span.imp-partial, .sd-legend span.imp-pending { color: #f5b041; }
     .sd-legend span.imp-none { color: #8b9bb4; }
-    .blockmap-panel { margin-top: 1.25rem; background: #1a2332; border-radius: 8px; padding: .75rem 1rem; }
+    .blockmap-panel { margin-top: 1rem; background: #1a2332; border-radius: 8px; padding: .75rem 1rem; }
     .blockmap-legend { font-size: .78rem; color: #8b9bb4; margin-bottom: .6rem; display: flex; flex-wrap: wrap; gap: .65rem; }
     .blockmap-legend span { display: inline-flex; align-items: center; gap: .25rem; }
     .bm-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 1px; background: #4a5768; }
@@ -719,13 +735,15 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .bm-grid i.st-composed { background: #e59866; }
     .bm-grid i.st-uploaded { background: #58d68d; }
     .bm-grid i.st-error { background: #ec7063; }
+    .bm-grid i.processing { box-shadow: 0 0 0 1px #0f1419, 0 0 0 2px #f8c471; position: relative; z-index: 1; }
+    .blockmap-legend .st-processing .bm-swatch { box-shadow: 0 0 0 1px #0f1419, 0 0 0 2px #f8c471; background: #4a5768; }
     .bm-empty { font-size: .82rem; color: #8b9bb4; }
     .host-stats { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: .75rem; }
     .host-stat { background: #243044; border-radius: 6px; padding: .45rem .7rem; min-width: 9rem; }
     .host-stat .k { font-size: .72rem; color: #8b9bb4; margin-bottom: .15rem; }
     .host-stat .v { font-size: 1rem; font-weight: 650; }
     .host-stat .v .dim { color: #8b9bb4; font-weight: 500; font-size: .85rem; }
-    .bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+    .bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
     button { border: 0; border-radius: 6px; padding: .45rem .9rem; cursor: pointer; font-weight: 600; }
     button.stop { background: #c0392b; color: #fff; }
     button.skip { background: #d68910; color: #111; }
@@ -753,6 +771,14 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <body>
   <h1>Autopilot</h1>
   <div class="sub" id="subtitle">Загрузка…</div>
+  <div class="bar">
+    <button class="stop" id="btn-stop">Stop</button>
+    <button class="skip" id="btn-skip">Skip chunk</button>
+    <button class="repair" id="btn-repair">Repair</button>
+    <button class="profile" id="btn-profile">Профилировать хост</button>
+    <button class="quit" id="btn-quit">Quit</button>
+  </div>
+  <div id="msg"></div>
   <section class="pipeline-panel current" id="pipeline-current-panel">
     <h2 id="pipeline-current-title">Сейчас</h2>
     <div class="pipeline-flow" id="pipeline-current"></div>
@@ -761,14 +787,17 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <h2>Вся карта</h2>
     <div class="pipeline-flow" id="pipeline-summary"></div>
   </section>
-  <div id="msg"></div>
-  <div class="bar">
-    <button class="stop" id="btn-stop">Stop</button>
-    <button class="skip" id="btn-skip">Skip chunk</button>
-    <button class="repair" id="btn-repair">Repair</button>
-    <button class="profile" id="btn-profile">Профилировать хост</button>
-    <button class="quit" id="btn-quit">Quit</button>
-  </div>
+  <section class="blockmap-panel">
+    <h2>Карта файлов на флешке</h2>
+    <div class="blockmap-legend" id="bm-legend"></div>
+    <div id="bm-groups"></div>
+  </section>
+  <section class="blockmap-panel">
+    <h2>Файлы на хосте (HDD)</h2>
+    <div class="host-stats" id="bm-host-stats"></div>
+    <div class="blockmap-legend" id="bm-host-legend"></div>
+    <div id="bm-host-groups"></div>
+  </section>
   <div class="cards" id="cards"></div>
   <div class="layout">
     <div class="main-col">
@@ -794,17 +823,6 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </aside>
   </div>
-  <section class="blockmap-panel">
-    <h2>Карта файлов на флешке</h2>
-    <div class="blockmap-legend" id="bm-legend"></div>
-    <div id="bm-groups"></div>
-  </section>
-  <section class="blockmap-panel">
-    <h2>Файлы на хосте (HDD)</h2>
-    <div class="host-stats" id="bm-host-stats"></div>
-    <div class="blockmap-legend" id="bm-host-legend"></div>
-    <div id="bm-host-groups"></div>
-  </section>
   <script>
     const msg = document.getElementById('msg');
     const phaseLabels = {
@@ -904,12 +922,25 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     }
     function renderBlockGroups(el, groups) {
       el.innerHTML = (groups || []).map(g => {
-        const blocks = (g.blocks || []).map(b =>
-          `<i class="st-${esc(b.st)}" title="${esc(b.n)} · ${esc(b.t)} · ${esc(b.s)} · ${esc(bmStatusLabels[b.st] || b.st)}"></i>`
-        ).join('');
+        const blocks = (g.blocks || []).map(b => {
+          const proc = b.active ? ' · сейчас в работе' : '';
+          const cls = `st-${esc(b.st)}${b.active ? ' processing' : ''}`;
+          return `<i class="${cls}" data-n="${esc(b.n)}" data-rt="${esc(g.record_type)}" data-cam="${esc(g.camera)}" title="${esc(b.n)} · ${esc(b.t)} · ${esc(b.s)} · ${esc(bmStatusLabels[b.st] || b.st)}${proc}"></i>`;
+        }).join('');
         const noun = g.count === 1 ? 'файл' : 'файлов';
         return `<div class="bm-group"><div class="bm-head">${esc(g.record_type)} · ${esc(g.camera)} — ${g.count} ${noun}</div><div class="bm-grid">${blocks}</div></div>`;
       }).join('') || '<div class="bm-empty">нет файлов</div>';
+    }
+    function applyProcessingHighlights(processing) {
+      const clipSet = new Set((processing?.clips || []).map(c => `${c[0]}/${c[1]}/${c[2]}`));
+      const hostSet = new Set(processing?.host || []);
+      document.querySelectorAll('#bm-groups .bm-grid i[data-n]').forEach(el => {
+        const key = `${el.dataset.rt}/${el.dataset.cam}/${el.dataset.n}`;
+        el.classList.toggle('processing', clipSet.has(key));
+      });
+      document.querySelectorAll('#bm-host-groups .bm-grid i[data-n]').forEach(el => {
+        el.classList.toggle('processing', hostSet.has(el.dataset.n));
+      });
     }
     function renderFileMap(fm) {
       const legend = document.getElementById('bm-legend');
@@ -922,9 +953,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         if (groups) groups.innerHTML = '<div class="bm-empty">Карта не подключена</div>';
       } else {
         const counts = fm.counts || {};
-        if (legend) legend.innerHTML = bmStatusOrder.filter(k => counts[k]).map(k =>
-          `<span class="st-${esc(k)}"><i class="bm-swatch"></i>${esc(bmStatusLabels[k] || k)} ${counts[k]}</span>`
-        ).join('');
+        if (legend) {
+          const items = bmStatusOrder.filter(k => counts[k]).map(k =>
+            `<span class="st-${esc(k)}"><i class="bm-swatch"></i>${esc(bmStatusLabels[k] || k)} ${counts[k]}</span>`
+          );
+          items.push('<span class="st-processing"><i class="bm-swatch"></i>в работе</span>');
+          legend.innerHTML = items.join('');
+        }
         if (groups) renderBlockGroups(groups, fm.groups);
       }
       if (!hostStats || !hostLegend || !hostGroups) return;
@@ -948,9 +983,11 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       (host.groups || []).forEach(g => (g.blocks || []).forEach(b => {
         hostCounts[b.st] = (hostCounts[b.st] || 0) + 1;
       }));
-      hostLegend.innerHTML = bmStatusOrder.filter(k => hostCounts[k]).map(k =>
+      const hostLegendItems = bmStatusOrder.filter(k => hostCounts[k]).map(k =>
         `<span class="st-${esc(k)}"><i class="bm-swatch"></i>${esc(bmStatusLabels[k] || k)} ${hostCounts[k]}</span>`
-      ).join('');
+      );
+      hostLegendItems.push('<span class="st-processing"><i class="bm-swatch"></i>в работе</span>');
+      hostLegend.innerHTML = hostLegendItems.join('');
       renderBlockGroups(hostGroups, host.groups);
     }
     function render(data) {
@@ -959,6 +996,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('subtitle').textContent =
         (phaseLabels[phase] || phase) + (run.message ? ' — ' + run.message : '');
       renderPipeline(data.pipeline);
+      applyProcessingHighlights(data.processing);
       const canQuit = ['waiting_card','done','stopped','error'].includes(phase);
       const canControl = ['running','restarting','waiting_card'].includes(phase);
       document.getElementById('btn-quit').disabled = !canQuit;

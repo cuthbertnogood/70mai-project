@@ -613,6 +613,186 @@ def _merge_status_for_clip(
     return None
 
 
+def _clip_key_from_name(
+    name: str, record_type: str | None = None
+) -> tuple[str, str, str] | None:
+    file_name = Path(name).name
+    if not file_name.lower().endswith(".mp4"):
+        return None
+    rt_map = {"NO": "Normal", "EV": "Event", "PA": "Parking"}
+    rt = record_type or rt_map.get(file_name[:2], "Normal")
+    upper = file_name.upper()
+    if upper.endswith("F.MP4"):
+        camera = "Front"
+    elif upper.endswith("B.MP4"):
+        camera = "Back"
+    else:
+        return None
+    return (rt, camera, file_name)
+
+
+def _processing_clip_keys(
+    source: Path,
+    types: list[str],
+    *,
+    live: dict[str, Any] | None,
+    rows: list[Any],
+) -> set[tuple[str, str, str]]:
+    """SD clips currently in copy / merge / compose / upload for the active roll."""
+    keys: set[tuple[str, str, str]] = set()
+    if not live:
+        return keys
+    phase = str(live.get("phase") or "")
+    record_type = str(live.get("record_type") or "")
+    conveyors = live.get("conveyors") if isinstance(live.get("conveyors"), dict) else {}
+    copy = conveyors.get("copy") if isinstance(conveyors.get("copy"), dict) else {}
+    merge = conveyors.get("merge") if isinstance(conveyors.get("merge"), dict) else {}
+
+    if copy.get("active"):
+        detail = str(copy.get("detail") or "")
+        if "SD→SSD " in detail:
+            clip_name = detail.split("SD→SSD ", 1)[1].strip().split()[0]
+            key = _clip_key_from_name(clip_name, record_type or None)
+            if key:
+                keys.add(key)
+
+    if merge.get("active"):
+        merge_file = Path(str(merge.get("file") or "")).name
+        if merge_file:
+            rt = record_type or "Normal"
+            window = _merge_window(rt, merge_file)
+            if window:
+                start, end = window
+                for camera in ("Front", "Back"):
+                    for clip in scan_clips(source, [rt], [camera], warn=False):
+                        if start <= clip.timestamp <= end:
+                            keys.add((rt, camera, clip.path.name))
+
+    chunk_index = int(live.get("chunk_index") or 0)
+    if phase in ("import", "compose", "upload", "stall", "oauth") and record_type and chunk_index:
+        chunk_rows = [
+            row
+            for row in rows
+            if str(getattr(row, "record_type", "")) == record_type
+            and int(getattr(row, "chunk_index", 0) or 0) == chunk_index
+        ]
+        for row in chunk_rows:
+            row_status = str(getattr(row, "status", "") or "")
+            if phase in ("upload", "stall", "oauth") and row_status not in (
+                "upload",
+                "oauth",
+                "stall",
+            ):
+                continue
+            if phase == "compose" and row_status not in ("compose", "import", "stall"):
+                continue
+            start = getattr(row, "trip_start", None)
+            end = getattr(row, "trip_end", None)
+            if start is None or end is None:
+                continue
+            if record_type in SINGLE_VIDEO_TYPES:
+                for camera in ("Front", "Back"):
+                    for clip in scan_clips(source, [record_type], [camera], warn=False):
+                        keys.add((record_type, camera, clip.path.name))
+            else:
+                for camera in ("Front", "Back"):
+                    for clip in scan_clips(source, [record_type], [camera], warn=False):
+                        if start <= clip.timestamp <= end:
+                            keys.add((record_type, camera, clip.path.name))
+    return keys
+
+
+def _processing_host_files(live: dict[str, Any] | None) -> set[str]:
+    names: set[str] = set()
+    if not live:
+        return names
+    conveyors = live.get("conveyors") if isinstance(live.get("conveyors"), dict) else {}
+    for lane in ("copy", "merge"):
+        info = conveyors.get(lane)
+        if not isinstance(info, dict) or not info.get("active"):
+            continue
+        file_name = Path(str(info.get("file") or "")).name
+        if file_name:
+            names.add(file_name)
+    return names
+
+
+def processing_snapshot(
+    source: Path | None,
+    types: list[str],
+    *,
+    temp_dir: Path | None,
+    video_dir: Path | None,
+    live: dict[str, Any] | None = None,
+    rows: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Active SD clips + host merge files for live dashboard highlighting."""
+    if rows is None:
+        rows = _load_dashboard_rows(temp_dir, video_dir, source, types)
+    if live is None:
+        try:
+            from autopilot_dashboard import resolve_live_status
+
+            live = resolve_live_status(temp_dir, rows=rows) or {}
+        except Exception:
+            live = {}
+    clip_keys: set[tuple[str, str, str]] = set()
+    if source is not None and source.is_dir():
+        clip_keys = _processing_clip_keys(source, types, live=live, rows=rows)
+    return {
+        "clips": [list(key) for key in sorted(clip_keys)],
+        "host": sorted(_processing_host_files(live)),
+    }
+
+
+def _stamp_processing(
+    payload: dict[str, Any],
+    source: Path | None,
+    types: list[str],
+    *,
+    temp_dir: Path | None,
+    video_dir: Path | None,
+) -> None:
+    """Mark blocks currently being processed (always fresh, even on cache hit)."""
+    live: dict[str, Any] = {}
+    rows: list[Any] = []
+    try:
+        from autopilot_dashboard import resolve_live_status
+
+        rows = _load_dashboard_rows(temp_dir, video_dir, source, types)
+        live = resolve_live_status(temp_dir, rows=rows) or {}
+    except Exception:
+        pass
+
+    clip_keys: set[tuple[str, str, str]] = set()
+    if source is not None and source.is_dir():
+        clip_keys = _processing_clip_keys(
+            source, types, live=live, rows=rows
+        )
+    host_files = _processing_host_files(live)
+
+    for group in payload.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        record_type = str(group.get("record_type") or "")
+        camera = str(group.get("camera") or "")
+        for block in group.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            key = (record_type, camera, str(block.get("n") or ""))
+            block["active"] = key in clip_keys
+
+    host = payload.get("host")
+    if isinstance(host, dict):
+        for group in host.get("groups") or []:
+            if not isinstance(group, dict):
+                continue
+            for block in group.get("blocks") or []:
+                if not isinstance(block, dict):
+                    continue
+                block["active"] = str(block.get("n") or "") in host_files
+
+
 def _resolve_status(
     clip,
     *,
@@ -688,13 +868,18 @@ def build_file_map_payload(
         )
         if host["merged"]["files"] or yt_total:
             empty = {**empty, "host": host}
+        _stamp_processing(empty, source, types, temp_dir=temp_dir, video_dir=video_dir)
         return empty
 
     key = f"{source.resolve()}:{','.join(types)}:{video_dir or ''}:{temp_dir or ''}"
     now = time.monotonic()
     cached = _cache.get(key)
     if cached and now - cached[0] < ttl_sec:
-        return cached[1]
+        payload = cached[1]
+        _stamp_processing(
+            payload, source, types, temp_dir=temp_dir, video_dir=video_dir
+        )
+        return payload
 
     bad_names = _bad_clip_names(source, temp_dir)
     uploaded = _uploaded_sources(
@@ -772,4 +957,5 @@ def build_file_map_payload(
         "host": host,
     }
     _cache[key] = (now, payload)
+    _stamp_processing(payload, source, types, temp_dir=temp_dir, video_dir=video_dir)
     return payload

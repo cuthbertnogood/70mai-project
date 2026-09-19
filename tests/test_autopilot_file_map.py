@@ -370,6 +370,50 @@ class AutopilotFileMapTests(unittest.TestCase):
             self.assertEqual(host["merged"]["files"], 1)
             self.assertEqual(host["groups"][0]["blocks"][0]["n"], merge.name)
 
+    def test_processing_highlights_active_copy_clip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            publish_tmp = root / ".publish_tmp"
+            publish_tmp.mkdir()
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            clip_name = "NO20260814-100000-000001F.MP4"
+            (front / clip_name).write_bytes(b"x" * 10)
+
+            from autopilot_dashboard import write_import_status
+
+            write_import_status(
+                publish_tmp,
+                record_type="Normal",
+                detail="SD→SSD " + clip_name,
+                conveyors={
+                    "copy": {
+                        "active": True,
+                        "file": "NO_20260814-100000_100100_F.mp4",
+                        "detail": "SD→SSD " + clip_name,
+                    },
+                    "merge": {"active": False},
+                },
+            )
+
+            payload = build_file_map_payload(
+                root,
+                ["Normal"],
+                temp_dir=publish_tmp,
+                ttl_sec=0,
+            )
+            blocks = payload["groups"][0]["blocks"]
+            self.assertTrue(blocks[0]["active"])
+            from autopilot_file_map import processing_snapshot
+
+            snap = processing_snapshot(
+                root,
+                ["Normal"],
+                temp_dir=publish_tmp,
+                video_dir=None,
+            )
+            self.assertEqual(snap["clips"], [["Normal", "Front", clip_name]])
+
 
 if __name__ == "__main__":
     unittest.main()
