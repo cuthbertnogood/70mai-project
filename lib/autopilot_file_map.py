@@ -540,6 +540,7 @@ def _build_host_payload(
         "copied": {"done": copied_done, "total": total},
         "merged": {"files": merged_files, "clips": merged_clips},
         "youtube": {"done": yt_done, "total": yt_total},
+        "processing": {"count": 0, "phase": "", "label": "", "files": []},
         "groups": groups,
         "total": merged_files,
     }
@@ -702,10 +703,33 @@ def _processing_clip_keys(
     return keys
 
 
-def _processing_host_files(live: dict[str, Any] | None) -> set[str]:
-    names: set[str] = set()
+def _active_phase(live: dict[str, Any] | None) -> str:
     if not live:
-        return names
+        return ""
+    phase = str(live.get("phase") or "")
+    if phase in ("import", "compose", "upload"):
+        return phase
+    if phase in ("stall", "oauth"):
+        return "upload"
+    conveyors = live.get("conveyors") if isinstance(live.get("conveyors"), dict) else {}
+    for lane in ("copy", "merge"):
+        info = conveyors.get(lane)
+        if isinstance(info, dict) and info.get("active"):
+            return "import"
+    return ""
+
+
+def _processing_host_info(
+    live: dict[str, Any] | None,
+    rows: list[Any],
+    host_groups: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Host merge files currently in copy/merge/compose/upload + phase + count."""
+    names: set[str] = set()
+    phase = _active_phase(live)
+    if not live:
+        return {"files": [], "count": 0, "phase": "", "label": ""}
+
     conveyors = live.get("conveyors") if isinstance(live.get("conveyors"), dict) else {}
     for lane in ("copy", "merge"):
         info = conveyors.get(lane)
@@ -714,7 +738,84 @@ def _processing_host_files(live: dict[str, Any] | None) -> set[str]:
         file_name = Path(str(info.get("file") or "")).name
         if file_name:
             names.add(file_name)
-    return names
+        if lane == "copy":
+            phase = phase or "import"
+        elif lane == "merge":
+            phase = phase or "import"
+
+    # During compose/upload: highlight host merges that overlap the active roll.
+    if phase in ("compose", "upload", "stall", "oauth") or (
+        phase == "import" and not names
+    ):
+        record_type = str(live.get("record_type") or "")
+        chunk_index = int(live.get("chunk_index") or 0)
+        windows: list[tuple[datetime, datetime]] = []
+        for row in rows:
+            if record_type and str(getattr(row, "record_type", "")) != record_type:
+                continue
+            if chunk_index and int(getattr(row, "chunk_index", 0) or 0) != chunk_index:
+                continue
+            row_status = str(getattr(row, "status", "") or "")
+            if phase in ("compose",) and row_status not in (
+                "compose",
+                "import",
+                "stall",
+            ):
+                continue
+            if phase in ("upload", "stall", "oauth") and row_status not in (
+                "upload",
+                "oauth",
+                "stall",
+                "compose",
+            ):
+                continue
+            start = getattr(row, "trip_start", None)
+            end = getattr(row, "trip_end", None)
+            if start is not None and end is not None:
+                windows.append((start, end))
+        if not windows and record_type and chunk_index:
+            for row in rows:
+                if (
+                    str(getattr(row, "record_type", "")) == record_type
+                    and int(getattr(row, "chunk_index", 0) or 0) == chunk_index
+                ):
+                    start = getattr(row, "trip_start", None)
+                    end = getattr(row, "trip_end", None)
+                    if start is not None and end is not None:
+                        windows.append((start, end))
+        for group in host_groups or []:
+            if not isinstance(group, dict):
+                continue
+            rt = str(group.get("record_type") or "")
+            if record_type and rt != record_type:
+                continue
+            for block in group.get("blocks") or []:
+                if not isinstance(block, dict):
+                    continue
+                name = str(block.get("n") or "")
+                if not name:
+                    continue
+                window = _merge_window(rt, name)
+                if not window:
+                    continue
+                mid = window[0] + (window[1] - window[0]) / 2
+                if _in_window(mid, windows):
+                    names.add(name)
+
+    phase_labels = {
+        "import": "copy/merge",
+        "compose": "compose",
+        "upload": "upload",
+        "stall": "upload",
+        "oauth": "upload",
+    }
+    label = phase_labels.get(phase, phase)
+    return {
+        "files": sorted(names),
+        "count": len(names),
+        "phase": phase,
+        "label": label,
+    }
 
 
 def processing_snapshot(
@@ -725,6 +826,7 @@ def processing_snapshot(
     video_dir: Path | None,
     live: dict[str, Any] | None = None,
     rows: list[Any] | None = None,
+    host_groups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Active SD clips + host merge files for live dashboard highlighting."""
     if rows is None:
@@ -739,9 +841,23 @@ def processing_snapshot(
     clip_keys: set[tuple[str, str, str]] = set()
     if source is not None and source.is_dir():
         clip_keys = _processing_clip_keys(source, types, live=live, rows=rows)
+    if host_groups is None and video_dir is not None:
+        composed = _composed_windows(
+            temp_dir, video_dir, source, types, rows=rows
+        )
+        _, host_groups = _host_merged_groups(
+            video_dir,
+            types,
+            composed=composed,
+            uploaded=_uploaded_windows(rows),
+        )
+    host_info = _processing_host_info(live, rows, host_groups)
     return {
         "clips": [list(key) for key in sorted(clip_keys)],
-        "host": sorted(_processing_host_files(live)),
+        "host": host_info["files"],
+        "host_count": host_info["count"],
+        "host_phase": host_info["phase"],
+        "host_label": host_info["label"],
     }
 
 
@@ -769,7 +885,6 @@ def _stamp_processing(
         clip_keys = _processing_clip_keys(
             source, types, live=live, rows=rows
         )
-    host_files = _processing_host_files(live)
 
     for group in payload.get("groups") or []:
         if not isinstance(group, dict):
@@ -784,13 +899,28 @@ def _stamp_processing(
 
     host = payload.get("host")
     if isinstance(host, dict):
+        host_info = _processing_host_info(
+            live, rows, host.get("groups") if isinstance(host.get("groups"), list) else []
+        )
+        host_files = set(host_info["files"])
+        host["processing"] = {
+            "count": host_info["count"],
+            "phase": host_info["phase"],
+            "label": host_info["label"],
+            "files": host_info["files"],
+        }
         for group in host.get("groups") or []:
             if not isinstance(group, dict):
                 continue
             for block in group.get("blocks") or []:
                 if not isinstance(block, dict):
                     continue
-                block["active"] = str(block.get("n") or "") in host_files
+                active = str(block.get("n") or "") in host_files
+                block["active"] = active
+                if active and host_info["label"]:
+                    block["proc"] = host_info["label"]
+                else:
+                    block.pop("proc", None)
 
 
 def _resolve_status(
@@ -839,6 +969,7 @@ def build_file_map_payload(
         "copied": {"done": 0, "total": 0},
         "merged": {"files": 0, "clips": 0},
         "youtube": {"done": 0, "total": 0},
+        "processing": {"count": 0, "phase": "", "label": "", "files": []},
         "groups": [],
         "total": 0,
     }

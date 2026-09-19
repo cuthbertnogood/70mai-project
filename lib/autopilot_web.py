@@ -923,9 +923,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     function renderBlockGroups(el, groups) {
       el.innerHTML = (groups || []).map(g => {
         const blocks = (g.blocks || []).map(b => {
-          const proc = b.active ? ' · сейчас в работе' : '';
+          const procLabel = b.proc || (b.active ? 'сейчас в работе' : '');
+          const proc = procLabel ? ` · ${procLabel}` : '';
           const cls = `st-${esc(b.st)}${b.active ? ' processing' : ''}`;
-          return `<i class="${cls}" data-n="${esc(b.n)}" data-rt="${esc(g.record_type)}" data-cam="${esc(g.camera)}" title="${esc(b.n)} · ${esc(b.t)} · ${esc(b.s)} · ${esc(bmStatusLabels[b.st] || b.st)}${proc}"></i>`;
+          return `<i class="${cls}" data-n="${esc(b.n)}" data-rt="${esc(g.record_type)}" data-cam="${esc(g.camera)}" title="${esc(b.n)} · ${esc(b.t)} · ${esc(b.s)} · ${esc(bmStatusLabels[b.st] || b.st)}${esc(proc)}"></i>`;
         }).join('');
         const noun = g.count === 1 ? 'файл' : 'файлов';
         return `<div class="bm-group"><div class="bm-head">${esc(g.record_type)} · ${esc(g.camera)} — ${g.count} ${noun}</div><div class="bm-grid">${blocks}</div></div>`;
@@ -934,13 +935,43 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     function applyProcessingHighlights(processing) {
       const clipSet = new Set((processing?.clips || []).map(c => `${c[0]}/${c[1]}/${c[2]}`));
       const hostSet = new Set(processing?.host || []);
+      const hostLabel = processing?.host_label || 'сейчас в работе';
       document.querySelectorAll('#bm-groups .bm-grid i[data-n]').forEach(el => {
         const key = `${el.dataset.rt}/${el.dataset.cam}/${el.dataset.n}`;
-        el.classList.toggle('processing', clipSet.has(key));
+        const on = clipSet.has(key);
+        el.classList.toggle('processing', on);
       });
       document.querySelectorAll('#bm-host-groups .bm-grid i[data-n]').forEach(el => {
-        el.classList.toggle('processing', hostSet.has(el.dataset.n));
+        const on = hostSet.has(el.dataset.n);
+        el.classList.toggle('processing', on);
+        if (on) {
+          const base = el.title.replace(/ · (сейчас в работе|copy\/merge|compose|upload)$/, '');
+          el.title = base + ' · ' + hostLabel;
+        }
       });
+      const hostProc = document.getElementById('bm-host-processing');
+      if (hostProc) {
+        const n = processing?.host_count || hostSet.size || 0;
+        const label = processing?.host_label || '';
+        if (n > 0) {
+          hostProc.hidden = false;
+          hostProc.innerHTML =
+            `<div class="k">В работе</div><div class="v">${esc(String(n))}` +
+            (label ? `<span class="dim"> · ${esc(label)}</span>` : '') +
+            `</div>`;
+        } else {
+          hostProc.hidden = true;
+          hostProc.innerHTML = '';
+        }
+      }
+      const hostProcLegend = document.getElementById('bm-host-proc-legend');
+      if (hostProcLegend) {
+        const n = processing?.host_count || hostSet.size || 0;
+        const label = processing?.host_label || 'в работе';
+        hostProcLegend.innerHTML = n
+          ? `<span class="st-processing"><i class="bm-swatch"></i>${esc(label)} ${n}</span>`
+          : '<span class="st-processing"><i class="bm-swatch"></i>в работе</span>';
+      }
     }
     function renderFileMap(fm) {
       const legend = document.getElementById('bm-legend');
@@ -967,6 +998,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       const copied = host.copied || {};
       const merged = host.merged || {};
       const youtube = host.youtube || {};
+      const processing = host.processing || {};
       const hasHost = !!(host.present || merged.files || youtube.total || copied.total);
       if (!hasHost) {
         hostStats.innerHTML = '';
@@ -974,10 +1006,19 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         hostGroups.innerHTML = '<div class="bm-empty">Нет данных на хосте</div>';
         return;
       }
+      const procCount = processing.count || 0;
+      const procLabel = processing.label || '';
       hostStats.innerHTML = [
         `<div class="host-stat"><div class="k">Скопировано с флешки</div><div class="v">${esc(String(copied.done || 0))}<span class="dim"> / ${esc(String(copied.total || 0))} клип.</span></div></div>`,
         `<div class="host-stat"><div class="k">Смержено на диске</div><div class="v">${esc(String(merged.files || 0))}<span class="dim"> файл. · ${esc(String(merged.clips || 0))} клип.</span></div></div>`,
         `<div class="host-stat"><div class="k">YouTube</div><div class="v">${esc(String(youtube.done || 0))}<span class="dim"> / ${esc(String(youtube.total || 0))} рол.</span></div></div>`,
+        `<div class="host-stat" id="bm-host-processing"${procCount ? '' : ' hidden'}>` +
+          (procCount
+            ? `<div class="k">В работе</div><div class="v">${esc(String(procCount))}` +
+              (procLabel ? `<span class="dim"> · ${esc(procLabel)}</span>` : '') +
+              `</div>`
+            : '') +
+        `</div>`,
       ].join('');
       const hostCounts = {};
       (host.groups || []).forEach(g => (g.blocks || []).forEach(b => {
@@ -986,7 +1027,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       const hostLegendItems = bmStatusOrder.filter(k => hostCounts[k]).map(k =>
         `<span class="st-${esc(k)}"><i class="bm-swatch"></i>${esc(bmStatusLabels[k] || k)} ${hostCounts[k]}</span>`
       );
-      hostLegendItems.push('<span class="st-processing"><i class="bm-swatch"></i>в работе</span>');
+      const procLegend = procCount
+        ? `<span class="st-processing" id="bm-host-proc-legend"><i class="bm-swatch"></i>${esc(procLabel || 'в работе')} ${procCount}</span>`
+        : `<span class="st-processing" id="bm-host-proc-legend"><i class="bm-swatch"></i>в работе</span>`;
+      hostLegendItems.push(procLegend);
       hostLegend.innerHTML = hostLegendItems.join('');
       renderBlockGroups(hostGroups, host.groups);
     }

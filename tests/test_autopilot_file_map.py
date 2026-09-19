@@ -413,6 +413,50 @@ class AutopilotFileMapTests(unittest.TestCase):
                 video_dir=None,
             )
             self.assertEqual(snap["clips"], [["Normal", "Front", clip_name]])
+            self.assertEqual(snap["host"], ["NO_20260814-100000_100100_F.mp4"])
+            self.assertEqual(snap["host_count"], 1)
+            self.assertEqual(snap["host_label"], "copy/merge")
+            host = payload["host"]
+            self.assertEqual(host["processing"]["count"], 1)
+            self.assertEqual(host["processing"]["label"], "copy/merge")
+
+    def test_host_processing_marks_merge_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "video"
+            publish_tmp = root / ".publish_tmp"
+            publish_tmp.mkdir()
+            front = root / "Normal" / "Front"
+            front.mkdir(parents=True)
+            (front / "NO20260814-100000-000001F.MP4").write_bytes(b"x" * 10)
+
+            merge_dir = video / "Normal" / "Front"
+            merge_dir.mkdir(parents=True)
+            merge_name = "NO_20260814-100000_100100_F.mp4"
+            (merge_dir / merge_name).write_bytes(b"y" * 50)
+
+            from autopilot_dashboard import write_import_status
+
+            write_import_status(
+                publish_tmp,
+                record_type="Normal",
+                detail="merge",
+                conveyors={
+                    "copy": {"active": False},
+                    "merge": {"active": True, "file": merge_name},
+                },
+            )
+            payload = build_file_map_payload(
+                root,
+                ["Normal"],
+                video_dir=video,
+                temp_dir=publish_tmp,
+                ttl_sec=0,
+            )
+            host_blocks = payload["host"]["groups"][0]["blocks"]
+            self.assertTrue(host_blocks[0]["active"])
+            self.assertEqual(host_blocks[0]["proc"], "copy/merge")
+            self.assertEqual(payload["host"]["processing"]["count"], 1)
 
 
 if __name__ == "__main__":
