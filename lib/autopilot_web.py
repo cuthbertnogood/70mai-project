@@ -856,7 +856,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .sd-legend span.imp-imported { color: #7fd1ff; }
     .sd-legend span.imp-partial, .sd-legend span.imp-pending { color: #f5b041; }
     .sd-legend span.imp-none { color: #8b9bb4; }
-    .blockmap-panel { margin-top: 1rem; background: #1a2332; border-radius: 8px; padding: .75rem 1rem; }
+    .blockmap-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; align-items: start; }
+    @media (max-width: 1100px) { .blockmap-layout { grid-template-columns: 1fr; } }
+    .blockmap-panel { background: #1a2332; border-radius: 8px; padding: .75rem 1rem; min-width: 0; }
     .blockmap-legend { font-size: .78rem; color: #8b9bb4; margin-bottom: .6rem; display: flex; flex-wrap: wrap; gap: .65rem; }
     .blockmap-legend span { display: inline-flex; align-items: center; gap: .25rem; }
     .bm-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 1px; background: #4a5768; }
@@ -927,6 +929,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <h2>Вся карта</h2>
     <div class="pipeline-flow" id="pipeline-summary"></div>
   </section>
+  <div class="blockmap-layout">
   <section class="blockmap-panel">
     <h2>Карта файлов на флешке</h2>
     <div class="blockmap-legend" id="bm-legend"></div>
@@ -941,6 +944,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="blockmap-legend" id="bm-compose-legend"></div>
     <div id="bm-compose-groups"></div>
   </section>
+  </div>
   <div class="cards" id="cards"></div>
   <div class="layout">
     <div class="main-col">
