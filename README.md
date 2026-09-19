@@ -15,9 +15,11 @@ cd /Users/cuthbert/work/cursor/70mai_project
 ./scripts/setup-venv.sh
 
 # Рекомендуется: Autopilot + веб-Dashboard (откроется http://127.0.0.1:8787/)
+# По умолчанию держит Mac awake (pmset+caffeinate); крышка только на AC.
 ./scripts/autopilot.sh
 
-# Без открытия браузера (SSH, уже открыта вкладка)
+# Без отключения сна / без открытия браузера
+AUTOPILOT_AWAKE=0 ./scripts/autopilot.sh
 ./scripts/autopilot.sh --no-browser
 
 # Аргументы publish_all после --
@@ -239,6 +241,8 @@ cd /Users/cuthbert/work/cursor/70mai_project
 | `--dry-run` | off | План без работы |
 | `--no-dashboard` | off | Без таблицы в том же терминале (удобно с `autopilot_dashboard.sh`) |
 
+Окружение оболочки: `AUTOPILOT_AWAKE=1` (default) — `pmset disablesleep` + `caffeinate` на время прогона (не для `--dashboard-only`); `AUTOPILOT_AWAKE=0` отключает. Legacy watchdog: `WATCH_AWAKE`.
+
 Пример:
 
 ```bash
@@ -274,7 +278,7 @@ cd /Users/cuthbert/work/cursor/70mai_project
 
 ### Чеклист (операции)
 
-1. Питание + `WATCH_AWAKE=1` (default) / `caffeinate` — крышка только на AC.
+1. Питание + awake по умолчанию: `./scripts/autopilot.sh` (`AUTOPILOT_AWAKE=1`) и legacy watchdog (`WATCH_AWAKE=1`) — `pmset disablesleep` + `caffeinate`; крышка только на AC. Отключить: `AUTOPILOT_AWAKE=0` / `WATCH_AWAKE=0`.
 2. **Не** `--force-restart`, пока в логе `[copy]` / `Upload part_`.
 3. Смотреть: `tail -f video/Output/.publish_tmp/publish_all.log` или `./scripts/autopilot_dashboard.sh`.
 4. После Parking upload — state `uploaded=true` и длина на YouTube ≥98% локального `part_01.mp4`.
