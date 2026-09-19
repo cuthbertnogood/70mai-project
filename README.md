@@ -268,6 +268,7 @@ cd /Users/cuthbert/work/cursor/70mai_project
 | Проблема | Поведение |
 |----------|-----------|
 | **Encode stall (VT @ ~100%)** | Heartbeat: нет роста `%`/файла → STALLED (5 мин). Abort: **2 мин** при ≥99% (mux hang), иначе **8 мин**. Kill process group. После stall — сразу **software encode** (libx264), без повтора VideoToolbox. |
+| **Dashboard «завис»** | `/api/status` больше не делает cold-scan SD на каждый опрос (~1 с) — берёт кэш filemap; полный скан только `/api/filemap`. Orphan-kill ffmpeg смотрит только argv0=`ffmpeg` (не shell с текстом «ffmpeg» в команде). |
 | **Watchdog stall (2 ч)** | Legacy `watch_publish_all_70mai.sh`: прогресс по `trip_*.mp4` / log / `import`/`publish`. В **autopilot.sh** — свой рестарт child при ненулевом exit (кроме Stop). |
 | **Watchdog не убивает live work** | Если log/status свежие и жив import/ffmpeg/upload — cleanup **не** kill; второй watchdog ждёт. Default `WATCH_STOP_ON_SUCCESS=0` (крутить, пока есть pending). Force: `WATCH_FORCE_KILL=1`. Один instance: atomic mkdir lock (и для watchdog, и для `.publish_all.lock/` + `pid`). |
 | **Мало места перед compose** | `guard_free_disk`: ждёт фоновый upload → prune merged + composed для уже залитых trips → retry до 4× (30 с). Prune merged зовёт `scan_merged_clips(probe=True)` (реальная длительность, не end из имени). В **chunk mode** prune только после `chunk_uploaded` (не по trip_parts внутри незалитого чанка). При неудаче chunk помечается failed, автопилот идёт дальше (`--continue-on-error`). |

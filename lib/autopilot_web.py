@@ -672,12 +672,31 @@ def build_status_payload(
         }
         for p in procs
     ]
-    filemap = build_file_map_payload(
-        source or sd,
-        types,
-        video_dir=video_dir,
-        temp_dir=temp_dir,
-    )
+    filemap = {
+        "present": False,
+        "total": 0,
+        "counts": {},
+        "groups": [],
+        "host": {
+            "present": False,
+            "copied": {"done": 0, "total": 0},
+            "merged": {"files": 0, "clips": 0},
+            "youtube": {"done": 0, "total": 0},
+            "groups": [],
+            "total": 0,
+        },
+    }
+    try:
+        from autopilot_file_map import peek_file_map_cache
+
+        # Status polls ~1s — never cold-scan the SD here; /api/filemap does that.
+        cached_map = peek_file_map_cache(
+            source or sd, types, video_dir=video_dir, temp_dir=temp_dir
+        )
+        if cached_map:
+            filemap = cached_map
+    except Exception:
+        pass
     pipeline = build_pipeline_payload(
         filemap=filemap,
         sd_card=sd_card,
@@ -779,16 +798,18 @@ def build_file_map_payload(
 
 
 def _reload_dashboard_module():
-    """Pick up HTML/API changes without restarting the Autopilot process."""
+    """Pick up HTML/API code changes without restarting Autopilot.
+
+    Do **not** clear filemap/SD caches here — that ran on every GET and forced a
+    full SD rescan, hanging `/api/status` while import/compose also touch the card.
+    """
     import importlib
 
     import autopilot_file_map as file_map
     import autopilot_sd_table as sd_table
 
     importlib.reload(sd_table)
-    sd_table.clear_sd_table_cache()
     importlib.reload(file_map)
-    file_map.clear_file_map_cache()
     return importlib.reload(sys.modules[__name__])
 
 
@@ -1417,9 +1438,10 @@ class AutopilotWebServer:
                     pass
 
             def do_GET(self) -> None:
-                aw = _reload_dashboard_module()
                 path = urlparse(self.path).path
+                # Hot-reload only for the HTML shell; API keeps warm caches.
                 if path in ("/", "/index.html"):
+                    aw = _reload_dashboard_module()
                     body = aw._dashboard_html_bytes()
                     try:
                         self.send_response(200)
@@ -1431,6 +1453,7 @@ class AutopilotWebServer:
                     except _client_gone:
                         pass
                     return
+                aw = sys.modules[__name__]
                 if path == "/api/status":
                     payload = aw.build_status_payload(
                         temp_dir=outer._temp_dir,

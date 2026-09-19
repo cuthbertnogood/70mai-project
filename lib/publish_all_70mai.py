@@ -204,8 +204,11 @@ def _orphan_ffmpeg_pids() -> list[int]:
         if len(parts) < 2:
             continue
         pid_s, cmd = parts
-        lower = cmd.lower()
-        if "ffmpeg" not in lower:
+        tokens = cmd.split()
+        if not tokens:
+            continue
+        # argv0 must be ffmpeg — never match shells that only mention ffmpeg in text.
+        if Path(tokens[0]).name != "ffmpeg":
             continue
         if (
             ".publish_tmp" not in cmd

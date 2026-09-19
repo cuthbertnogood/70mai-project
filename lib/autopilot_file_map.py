@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,10 +25,26 @@ _CACHE_TTL_SEC = 45.0
 STATUS_ORDER = ("error", "uploaded", "composed", "merged", "planned", "oncard")
 _DONE_MERGE = frozenset({"merged", "skipped"})
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_build_lock = threading.Lock()
 
 
 def clear_file_map_cache() -> None:
     _cache.clear()
+
+
+def peek_file_map_cache(
+    source: Path | None,
+    types: list[str],
+    *,
+    video_dir: Path | None = None,
+    temp_dir: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return last filemap without rebuilding (for the 1s /api/status poll)."""
+    if source is None:
+        return None
+    key = f"{source.resolve()}:{','.join(types)}:{video_dir or ''}:{temp_dir or ''}"
+    cached = _cache.get(key)
+    return cached[1] if cached else None
 
 
 def _load_inventory(source: Path) -> dict[str, Any] | None:
@@ -1219,84 +1236,94 @@ def build_file_map_payload(
         )
         return payload
 
-    bad_names = _bad_clip_names(source, temp_dir)
-    uploaded = _uploaded_sources(
-        source, types, temp_dir=temp_dir, video_dir=video_dir
-    )
-    sd_uploaded, sd_merged = _clip_status_from_sd_trips(
-        source, types, video_dir, temp_dir
-    )
-    uploaded |= sd_uploaded
-    merged_sources = _merged_sources(video_dir) | sd_merged
-    planned = _planned_windows(temp_dir, types)
-    dash_rows = _load_dashboard_rows(temp_dir, video_dir, source, types)
-    composed = _composed_windows(
-        temp_dir, video_dir, source, types, rows=dash_rows
-    )
-    uploaded_windows = _uploaded_windows(dash_rows)
-    yt_done, yt_total = _youtube_chunk_progress(dash_rows)
-    ledger = _merge_ledger(source)
+    with _build_lock:
+        now = time.monotonic()
+        cached = _cache.get(key)
+        if cached and now - cached[0] < ttl_sec:
+            payload = cached[1]
+            _stamp_processing(
+                payload, source, types, temp_dir=temp_dir, video_dir=video_dir
+            )
+            return payload
 
-    groups: list[dict[str, Any]] = []
-    counts: dict[str, int] = {status: 0 for status in STATUS_ORDER}
-    total = 0
+        bad_names = _bad_clip_names(source, temp_dir)
+        uploaded = _uploaded_sources(
+            source, types, temp_dir=temp_dir, video_dir=video_dir
+        )
+        sd_uploaded, sd_merged = _clip_status_from_sd_trips(
+            source, types, video_dir, temp_dir
+        )
+        uploaded |= sd_uploaded
+        merged_sources = _merged_sources(video_dir) | sd_merged
+        planned = _planned_windows(temp_dir, types)
+        dash_rows = _load_dashboard_rows(temp_dir, video_dir, source, types)
+        composed = _composed_windows(
+            temp_dir, video_dir, source, types, rows=dash_rows
+        )
+        uploaded_windows = _uploaded_windows(dash_rows)
+        yt_done, yt_total = _youtube_chunk_progress(dash_rows)
+        ledger = _merge_ledger(source)
 
-    for record_type in types:
-        for camera in ("Front", "Back"):
-            clips = scan_clips(source, [record_type], [camera], warn=False)
-            if not clips:
-                continue
-            clips = sorted(clips, key=lambda c: (c.timestamp, c.sequence))
-            blocks: list[dict[str, Any]] = []
-            for clip in clips:
-                status = _resolve_status(
-                    clip,
-                    bad_names=bad_names,
-                    uploaded=uploaded,
-                    merged_sources=merged_sources,
-                    planned=planned,
-                    composed=composed,
-                    ledger=ledger,
-                )
-                counts[status] = counts.get(status, 0) + 1
-                total += 1
-                blocks.append(
+        groups: list[dict[str, Any]] = []
+        counts: dict[str, int] = {status: 0 for status in STATUS_ORDER}
+        total = 0
+
+        for record_type in types:
+            for camera in ("Front", "Back"):
+                clips = scan_clips(source, [record_type], [camera], warn=False)
+                if not clips:
+                    continue
+                clips = sorted(clips, key=lambda c: (c.timestamp, c.sequence))
+                blocks: list[dict[str, Any]] = []
+                for clip in clips:
+                    status = _resolve_status(
+                        clip,
+                        bad_names=bad_names,
+                        uploaded=uploaded,
+                        merged_sources=merged_sources,
+                        planned=planned,
+                        composed=composed,
+                        ledger=ledger,
+                    )
+                    counts[status] = counts.get(status, 0) + 1
+                    total += 1
+                    blocks.append(
+                        {
+                            "n": clip.path.name,
+                            "t": clip.timestamp.strftime("%m-%d %H:%M"),
+                            "s": format_file_size(_clip_bytes(clip.path)),
+                            "st": status,
+                        }
+                    )
+                groups.append(
                     {
-                        "n": clip.path.name,
-                        "t": clip.timestamp.strftime("%m-%d %H:%M"),
-                        "s": format_file_size(_clip_bytes(clip.path)),
-                        "st": status,
+                        "record_type": record_type,
+                        "camera": camera,
+                        "count": len(blocks),
+                        "blocks": blocks,
                     }
                 )
-            groups.append(
-                {
-                    "record_type": record_type,
-                    "camera": camera,
-                    "count": len(blocks),
-                    "blocks": blocks,
-                }
-            )
 
-    host = _build_host_payload(
-        counts=counts,
-        total=total,
-        video_dir=video_dir,
-        types=types,
-        composed=composed,
-        uploaded_windows=uploaded_windows,
-        youtube_done=yt_done,
-        youtube_total=yt_total,
-        temp_dir=temp_dir,
-        rows=dash_rows,
-        live=None,
-    )
-    payload: dict[str, Any] = {
-        "present": True,
-        "total": total,
-        "counts": {k: v for k, v in counts.items() if v},
-        "groups": groups,
-        "host": host,
-    }
-    _cache[key] = (now, payload)
-    _stamp_processing(payload, source, types, temp_dir=temp_dir, video_dir=video_dir)
-    return payload
+        host = _build_host_payload(
+            counts=counts,
+            total=total,
+            video_dir=video_dir,
+            types=types,
+            composed=composed,
+            uploaded_windows=uploaded_windows,
+            youtube_done=yt_done,
+            youtube_total=yt_total,
+            temp_dir=temp_dir,
+            rows=dash_rows,
+            live=None,
+        )
+        payload: dict[str, Any] = {
+            "present": True,
+            "total": total,
+            "counts": {k: v for k, v in counts.items() if v},
+            "groups": groups,
+            "host": host,
+        }
+        _cache[key] = (time.monotonic(), payload)
+        _stamp_processing(payload, source, types, temp_dir=temp_dir, video_dir=video_dir)
+        return payload
