@@ -273,7 +273,12 @@ def _chunk_volume(chunk_rows: list[Any]) -> dict[str, Any]:
     return _volume_block(hours_sec=total_sec, clips=total_clips)
 
 
-def _live_stage_detail(live: dict[str, Any], stage: str) -> str:
+def _live_stage_detail(
+    live: dict[str, Any],
+    stage: str,
+    *,
+    temp_dir: Path | None = None,
+) -> str:
     conveyors = live.get("conveyors")
     if not isinstance(conveyors, dict):
         conveyors = {}
@@ -292,15 +297,127 @@ def _live_stage_detail(live: dict[str, Any], stage: str) -> str:
         bt = lane.get("bytes_total")
         if isinstance(bd, (int, float)) and isinstance(bt, (int, float)) and bt > 0:
             parts.append(f"{100.0 * float(bd) / float(bt):.0f}%")
+        # Prefer rich copy/merge detail (speed + ETA) from logs when available.
+        try:
+            from autopilot_dashboard import (
+                format_copy_detail,
+                format_merge_detail,
+                parse_copy_log_detail,
+                parse_merge_log_detail,
+            )
+
+            if stage == "copy" and temp_dir is not None:
+                _short, detail = format_copy_detail(parse_copy_log_detail(temp_dir))
+                if detail:
+                    return detail
+            if stage == "merge" and temp_dir is not None:
+                _short, detail = format_merge_detail(parse_merge_log_detail(temp_dir))
+                if detail:
+                    return detail
+        except Exception:
+            pass
         return " · ".join(parts)
+
+    try:
+        from autopilot_dashboard import (
+            format_compose_detail,
+            format_upload_detail,
+            parse_compose_log_detail,
+            parse_upload_log_detail,
+        )
+
+        if stage == "compose":
+            short, detail = format_compose_detail(
+                live, log_detail=parse_compose_log_detail(temp_dir)
+            )
+            return detail or short or ""
+        if stage == "upload":
+            short, detail = format_upload_detail(
+                live, log_detail=parse_upload_log_detail(temp_dir)
+            )
+            return detail or short or ""
+    except Exception:
+        pass
+
     pct = live.get("percent")
     detail = str(live.get("detail") or "").strip()
     bits: list[str] = []
+    speed = live.get("speed")
+    unit = str(live.get("speed_unit") or "").strip()
+    eta = str(live.get("eta") or "").strip()
     if isinstance(pct, (int, float)):
         bits.append(f"{float(pct):.0f}%")
-    if detail:
+    if isinstance(speed, (int, float)) and speed > 0:
+        if unit == "x" or not unit:
+            bits.append(f"{float(speed):.2f}x")
+        else:
+            bits.append(f"{float(speed):.1f} {unit}")
+    if eta:
+        bits.append(f"ETA {eta}")
+    if detail and not bits:
         bits.append(detail[:48])
+    elif detail and len(bits) < 3:
+        bits.append(detail[:40])
     return " · ".join(bits)
+
+
+def _stage_speed_eta(
+    live: dict[str, Any],
+    stage: str,
+    *,
+    temp_dir: Path | None = None,
+) -> tuple[str, str]:
+    """Return (speed_txt, eta_txt) for the active pipeline node."""
+    speed_txt = ""
+    eta_txt = ""
+    try:
+        from autopilot_dashboard import (
+            format_compose_detail,
+            format_copy_detail,
+            format_merge_detail,
+            format_upload_detail,
+            parse_compose_log_detail,
+            parse_copy_log_detail,
+            parse_merge_log_detail,
+            parse_upload_log_detail,
+        )
+
+        detail = ""
+        if stage == "copy" and temp_dir is not None:
+            _, detail = format_copy_detail(parse_copy_log_detail(temp_dir))
+        elif stage == "merge" and temp_dir is not None:
+            _, detail = format_merge_detail(parse_merge_log_detail(temp_dir))
+        elif stage == "compose":
+            _, detail = format_compose_detail(
+                live, log_detail=parse_compose_log_detail(temp_dir)
+            )
+        elif stage == "upload":
+            _, detail = format_upload_detail(
+                live, log_detail=parse_upload_log_detail(temp_dir)
+            )
+        detail = detail or ""
+        # Extract speed / ETA tokens from the detail line.
+        for part in detail.split("·"):
+            token = part.strip()
+            low = token.lower()
+            if "mb/s" in low or token.endswith("x") and token[:-1].replace(".", "", 1).isdigit():
+                speed_txt = token
+            elif low.startswith("eta "):
+                eta_txt = token[4:].strip() or token
+    except Exception:
+        pass
+
+    if not speed_txt:
+        speed = live.get("speed")
+        unit = str(live.get("speed_unit") or "").strip()
+        if isinstance(speed, (int, float)) and speed > 0:
+            if unit == "x" or (stage == "compose" and not unit):
+                speed_txt = f"{float(speed):.2f}x"
+            else:
+                speed_txt = f"{float(speed):.1f} {unit or 'MB/s'}"
+    if not eta_txt:
+        eta_txt = str(live.get("eta") or "").strip()
+    return speed_txt, eta_txt
 
 
 def _current_node_state(
@@ -318,6 +435,7 @@ def build_pipeline_current(
     rows: list[Any],
     live: dict[str, Any] | None,
     processes: list[dict[str, Any]],
+    temp_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Active roll only — no cumulative ✓ from other chunks."""
     chunk_rows, ctx = _current_chunk_context(rows, live)
@@ -351,6 +469,19 @@ def build_pipeline_current(
     title = f"{roll} {record_type}"
 
     live_dict = live if isinstance(live, dict) else {}
+
+    def _active_fields(stage: str) -> dict[str, str]:
+        if stage not in active:
+            return {"detail": "", "speed": "", "eta": ""}
+        detail = _live_stage_detail(live_dict, stage, temp_dir=temp_dir)
+        speed, eta = _stage_speed_eta(live_dict, stage, temp_dir=temp_dir)
+        return {"detail": detail, "speed": speed, "eta": eta}
+
+    copy_f = _active_fields("copy")
+    merge_f = _active_fields("merge")
+    compose_f = _active_fields("compose")
+    upload_f = _active_fields("upload")
+
     nodes = [
         _pipeline_node(
             "sd",
@@ -368,7 +499,7 @@ def build_pipeline_current(
             "SD → SSD staging",
             state=_current_node_state("copy", phase, active, done),
             passed=chunk_vol if "copy" in done else _volume_block(),
-            detail=_live_stage_detail(live_dict, "copy") if "copy" in active else "",
+            detail=copy_f["detail"],
             arrow_after="staging, потом удаляется",
         ),
         _pipeline_node(
@@ -378,7 +509,7 @@ def build_pipeline_current(
             "клипы → merged",
             state=_current_node_state("merge", phase, active, done),
             passed=chunk_vol if "merge" in done else _volume_block(),
-            detail=_live_stage_detail(live_dict, "merge") if "merge" in active else "",
+            detail=merge_f["detail"],
             arrow_after="синхрон Front+Back",
         ),
         _pipeline_node(
@@ -388,9 +519,7 @@ def build_pipeline_current(
             "merged → trip MP4",
             state=_current_node_state("compose", phase, active, done),
             passed=chunk_vol if "compose" in done else _volume_block(),
-            detail=_live_stage_detail(live_dict, "compose")
-            if "compose" in active
-            else "",
+            detail=compose_f["detail"],
             arrow_after="resumable PUT",
         ),
         _pipeline_node(
@@ -400,11 +529,21 @@ def build_pipeline_current(
             "Mac → YouTube",
             state=_current_node_state("upload", phase, active, done),
             passed=chunk_vol if "upload" in done else _volume_block(),
-            detail=_live_stage_detail(live_dict, "upload")
-            if "upload" in active
-            else "",
+            detail=upload_f["detail"],
         ),
     ]
+    # Attach speed/ETA onto active nodes for prominent UI.
+    for node, fields in (
+        (nodes[1], copy_f),
+        (nodes[2], merge_f),
+        (nodes[3], compose_f),
+        (nodes[4], upload_f),
+    ):
+        if fields["speed"]:
+            node["speed"] = fields["speed"]
+        if fields["eta"]:
+            node["eta"] = fields["eta"]
+
     return {
         "title": title,
         "nodes": nodes,
@@ -424,11 +563,11 @@ def build_pipeline_payload(
     temp_dir: Path,
 ) -> dict[str, Any]:
     """Summary (whole card) + current (active roll) pipeline diagrams."""
-    del sd_card, temp_dir  # kept for caller symmetry / future use
+    del sd_card  # kept for caller symmetry / future use
     return {
         "summary": build_pipeline_summary(filemap=filemap, usage=usage),
         "current": build_pipeline_current(
-            rows=rows, live=live, processes=processes
+            rows=rows, live=live, processes=processes, temp_dir=temp_dir
         ),
     }
 
@@ -692,6 +831,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .pl-vol { font-size: .72rem; line-height: 1.4; }
     .pl-vol span { color: #8b9bb4; }
     .pl-detail { font-size: .68rem; color: #f5b041; margin-top: .25rem; }
+    .pl-rate { font-size: .78rem; font-weight: 650; color: #f8c471; margin-top: .2rem; }
     .pl-arrow { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 .15rem; color: #566573; font-size: 1.1rem; min-width: 2.5rem; }
     .pl-arrow-label { font-size: .62rem; color: #8b9bb4; text-align: center; line-height: 1.2; max-width: 4.5rem; margin-bottom: .15rem; }
     @media (max-width: 900px) {
@@ -797,6 +937,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="host-stats" id="bm-host-stats"></div>
     <div class="blockmap-legend" id="bm-host-legend"></div>
     <div id="bm-host-groups"></div>
+    <h2 style="margin-top:.85rem">Compose / YouTube MP4</h2>
+    <div class="blockmap-legend" id="bm-compose-legend"></div>
+    <div id="bm-compose-groups"></div>
   </section>
   <div class="cards" id="cards"></div>
   <div class="layout">
@@ -892,11 +1035,16 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           ? plVolLine('осталось', node.remaining) : '';
         const onDisk = plVolLine('на диске', node.on_disk);
         const detail = node.detail ? `<div class="pl-detail">${esc(node.detail)}</div>` : '';
+        const rateBits = [];
+        if (node.speed) rateBits.push(node.speed);
+        if (node.eta) rateBits.push('ETA ' + node.eta);
+        const rate = rateBits.length
+          ? `<div class="pl-rate">${esc(rateBits.join(' · '))}</div>` : '';
         const card = `<div class="pl-node st-${esc(node.id)} ${esc(st)}">
           <div class="pl-title">${esc(node.label)}</div>
           <div class="pl-purpose">${esc(node.purpose || '')}</div>
           <div class="pl-flow">${esc(node.flow || '')}</div>
-          ${passed}${remaining}${onDisk}${detail}
+          ${passed}${remaining}${onDisk}${rate}${detail}
         </div>`;
         if (idx >= block.nodes.length - 1) return card;
         const arrow = node.arrow_after
@@ -941,7 +1089,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         const on = clipSet.has(key);
         el.classList.toggle('processing', on);
       });
-      document.querySelectorAll('#bm-host-groups .bm-grid i[data-n]').forEach(el => {
+      document.querySelectorAll('#bm-host-groups .bm-grid i[data-n], #bm-compose-groups .bm-grid i[data-n]').forEach(el => {
         const on = hostSet.has(el.dataset.n);
         el.classList.toggle('processing', on);
         if (on) {
@@ -969,8 +1117,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         const n = processing?.host_count || hostSet.size || 0;
         const label = processing?.host_label || 'в работе';
         hostProcLegend.innerHTML = n
-          ? `<span class="st-processing"><i class="bm-swatch"></i>${esc(label)} ${n}</span>`
-          : '<span class="st-processing"><i class="bm-swatch"></i>в работе</span>';
+          ? `<i class="bm-swatch"></i>${esc(label)} ${n}`
+          : `<i class="bm-swatch"></i>в работе`;
       }
     }
     function renderFileMap(fm) {
@@ -979,6 +1127,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       const hostStats = document.getElementById('bm-host-stats');
       const hostLegend = document.getElementById('bm-host-legend');
       const hostGroups = document.getElementById('bm-host-groups');
+      const composeLegend = document.getElementById('bm-compose-legend');
+      const composeGroups = document.getElementById('bm-compose-groups');
       if (!fm || !fm.present) {
         if (legend) legend.innerHTML = '';
         if (groups) groups.innerHTML = '<div class="bm-empty">Карта не подключена</div>';
@@ -997,13 +1147,16 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       const host = (fm && fm.host) || {};
       const copied = host.copied || {};
       const merged = host.merged || {};
+      const compose = host.compose || {};
       const youtube = host.youtube || {};
       const processing = host.processing || {};
-      const hasHost = !!(host.present || merged.files || youtube.total || copied.total);
+      const hasHost = !!(host.present || merged.files || compose.files || youtube.total || copied.total);
       if (!hasHost) {
         hostStats.innerHTML = '';
         hostLegend.innerHTML = '';
         hostGroups.innerHTML = '<div class="bm-empty">Нет данных на хосте</div>';
+        if (composeLegend) composeLegend.innerHTML = '';
+        if (composeGroups) composeGroups.innerHTML = '<div class="bm-empty">нет compose MP4</div>';
         return;
       }
       const procCount = processing.count || 0;
@@ -1011,6 +1164,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       hostStats.innerHTML = [
         `<div class="host-stat"><div class="k">Скопировано с флешки</div><div class="v">${esc(String(copied.done || 0))}<span class="dim"> / ${esc(String(copied.total || 0))} клип.</span></div></div>`,
         `<div class="host-stat"><div class="k">Смержено на диске</div><div class="v">${esc(String(merged.files || 0))}<span class="dim"> файл. · ${esc(String(merged.clips || 0))} клип.</span></div></div>`,
+        `<div class="host-stat"><div class="k">Compose MP4</div><div class="v">${esc(String(compose.files || 0))}<span class="dim"> · ${esc(compose.size || '—')}</span></div></div>`,
         `<div class="host-stat"><div class="k">YouTube</div><div class="v">${esc(String(youtube.done || 0))}<span class="dim"> / ${esc(String(youtube.total || 0))} рол.</span></div></div>`,
         `<div class="host-stat" id="bm-host-processing"${procCount ? '' : ' hidden'}>` +
           (procCount
@@ -1033,6 +1187,30 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       hostLegendItems.push(procLegend);
       hostLegend.innerHTML = hostLegendItems.join('');
       renderBlockGroups(hostGroups, host.groups);
+
+      const cGroups = host.compose_groups || [];
+      const composeCounts = {};
+      cGroups.forEach(g => (g.blocks || []).forEach(b => {
+        composeCounts[b.st] = (composeCounts[b.st] || 0) + 1;
+      }));
+      if (composeLegend) {
+        const items = bmStatusOrder.filter(k => composeCounts[k]).map(k =>
+          `<span class="st-${esc(k)}"><i class="bm-swatch"></i>${esc(bmStatusLabels[k] || k)} ${composeCounts[k]}</span>`
+        );
+        items.push('<span class="st-processing"><i class="bm-swatch"></i>в работе / upload</span>');
+        composeLegend.innerHTML = items.join('') || '<span class="bm-empty">нет файлов</span>';
+      }
+      if (composeGroups) {
+        if (cGroups.length) {
+          // Relabel camera for display: "compose" → "2cam MP4"
+          renderBlockGroups(composeGroups, cGroups.map(g => ({
+            ...g,
+            camera: '2cam MP4',
+          })));
+        } else {
+          composeGroups.innerHTML = '<div class="bm-empty">нет compose / upload MP4</div>';
+        }
+      }
     }
     function render(data) {
       const run = data.run || {};
@@ -1182,29 +1360,50 @@ class AutopilotWebServer:
     def start(self) -> None:
         outer = self
 
+        _client_gone = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt: str, *args: Any) -> None:
                 return
 
+            def handle(self) -> None:
+                # Browser cancel / tab close mid-response is normal for polling.
+                try:
+                    super().handle()
+                except _client_gone:
+                    pass
+
+            def _write_body(self, body: bytes) -> None:
+                try:
+                    self.wfile.write(body)
+                except _client_gone:
+                    pass
+
             def _json(self, code: int, payload: dict[str, Any]) -> None:
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.send_response(code)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self._write_body(body)
+                except _client_gone:
+                    pass
 
             def do_GET(self) -> None:
                 aw = _reload_dashboard_module()
                 path = urlparse(self.path).path
                 if path in ("/", "/index.html"):
                     body = aw._dashboard_html_bytes()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
+                    try:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/html; charset=utf-8")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self._write_body(body)
+                    except _client_gone:
+                        pass
                     return
                 if path == "/api/status":
                     payload = aw.build_status_payload(
@@ -1225,15 +1424,24 @@ class AutopilotWebServer:
                     )
                     self._json(200, payload)
                     return
-                self.send_error(404)
+                try:
+                    self.send_error(404)
+                except _client_gone:
+                    pass
 
             def do_POST(self) -> None:
                 path = urlparse(self.path).path
                 if path != "/api/control":
-                    self.send_error(404)
+                    try:
+                        self.send_error(404)
+                    except _client_gone:
+                        pass
                     return
                 length = int(self.headers.get("Content-Length", "0") or 0)
-                raw = self.rfile.read(length) if length else b"{}"
+                try:
+                    raw = self.rfile.read(length) if length else b"{}"
+                except _client_gone:
+                    return
                 try:
                     data = json.loads(raw.decode("utf-8"))
                 except ValueError:
@@ -1243,7 +1451,14 @@ class AutopilotWebServer:
                 message = outer._on_control(action, data)
                 self._json(200, {"ok": True, "message": message})
 
-        self._httpd = ThreadingHTTPServer((self._host, self._port), Handler)
+        class _DashboardHTTPServer(ThreadingHTTPServer):
+            def handle_error(self, request: Any, client_address: Any) -> None:
+                exc = sys.exc_info()[1]
+                if isinstance(exc, _client_gone):
+                    return
+                super().handle_error(request, client_address)
+
+        self._httpd = _DashboardHTTPServer((self._host, self._port), Handler)
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
         if self._manage_run_state:

@@ -509,6 +509,129 @@ def _host_merged_groups(
     return total_files, groups
 
 
+def _host_compose_groups(
+    temp_dir: Path | None,
+    types: list[str],
+    *,
+    rows: list[Any],
+    live: dict[str, Any] | None = None,
+) -> tuple[int, int, list[dict[str, Any]]]:
+    """Block map of compose trip_*.mp4 under .publish_tmp."""
+    if temp_dir is None or not temp_dir.is_dir():
+        return 0, 0, []
+
+    from publish_paths import iter_compose_video_roots, parse_compose_output_path
+
+    live = live if isinstance(live, dict) else {}
+    live_phase = str(live.get("phase") or "")
+    live_rt = str(live.get("record_type") or "")
+    live_chunk = int(live.get("chunk_index") or 0)
+    live_trip = int(live.get("trip_index") or 0)
+
+    row_by_key: dict[tuple[str, int, int], Any] = {}
+    for row in rows:
+        rt = str(getattr(row, "record_type", "") or "")
+        ck = int(getattr(row, "chunk_index", 0) or 0)
+        ti = int(getattr(row, "trip_index", 0) or 0)
+        if rt and ck and ti:
+            row_by_key[(rt, ck, ti)] = row
+
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    total_files = 0
+    total_bytes = 0
+    seen: set[Path] = set()
+
+    for root in iter_compose_video_roots(temp_dir):
+        try:
+            paths = sorted(root.rglob("trip_*.mp4"))
+        except OSError:
+            continue
+        for path in paths:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if resolved in seen or not path.is_file():
+                continue
+            # Skip partial leftovers named *.mp4.partial already filtered by glob.
+            if path.name.endswith(".partial"):
+                continue
+            parsed = parse_compose_output_path(path)
+            if parsed is None:
+                continue
+            record_type, chunk_index, trip_index = parsed
+            if record_type is None:
+                record_type = live_rt or (types[0] if types else "Normal")
+            if types and record_type not in types:
+                continue
+            seen.add(resolved)
+            size = _clip_bytes(path)
+            total_files += 1
+            total_bytes += size
+
+            row = row_by_key.get((record_type, chunk_index, trip_index))
+            row_status = str(getattr(row, "status", "") or "") if row else ""
+            if row_status == "done":
+                status = "uploaded"
+            elif row_status in ("upload", "oauth", "stall") or (
+                live_phase in ("upload", "oauth", "stall")
+                and live_rt == record_type
+                and live_chunk == chunk_index
+                and (not live_trip or live_trip == trip_index)
+            ):
+                status = "composed"
+            else:
+                status = "composed"
+
+            active = False
+            proc = ""
+            if live_phase == "compose" and live_rt == record_type and (
+                live_chunk == chunk_index
+            ) and (not live_trip or live_trip == trip_index):
+                active = True
+                proc = "compose"
+            elif live_phase in ("upload", "oauth", "stall") and live_rt == record_type and (
+                live_chunk == chunk_index
+            ) and (not live_trip or live_trip == trip_index):
+                active = True
+                proc = "upload"
+
+            trip_start = getattr(row, "trip_start", None) if row else None
+            t_label = (
+                trip_start.strftime("%m-%d %H:%M")
+                if trip_start is not None
+                else f"р{chunk_index} t{trip_index}"
+            )
+            by_type.setdefault(record_type, []).append(
+                {
+                    "n": path.name,
+                    "t": t_label,
+                    "s": format_file_size(size),
+                    "st": status,
+                    "active": active,
+                    "proc": proc,
+                    "chunk": chunk_index,
+                    "trip": trip_index,
+                }
+            )
+
+    groups: list[dict[str, Any]] = []
+    for record_type in types:
+        blocks = by_type.get(record_type) or []
+        if not blocks:
+            continue
+        blocks.sort(key=lambda b: (int(b.get("chunk") or 0), int(b.get("trip") or 0)))
+        groups.append(
+            {
+                "record_type": record_type,
+                "camera": "compose",
+                "count": len(blocks),
+                "blocks": blocks,
+            }
+        )
+    return total_files, total_bytes, groups
+
+
 def _build_host_payload(
     *,
     counts: dict[str, int],
@@ -519,6 +642,9 @@ def _build_host_payload(
     uploaded_windows: dict[str, list[tuple[datetime, datetime]]],
     youtube_done: int,
     youtube_total: int,
+    temp_dir: Path | None = None,
+    rows: list[Any] | None = None,
+    live: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     copied_done = sum(
         int(counts.get(status) or 0) for status in ("merged", "composed", "uploaded")
@@ -528,6 +654,9 @@ def _build_host_payload(
     )
     merged_files, groups = _host_merged_groups(
         video_dir, types, composed=composed, uploaded=uploaded_windows
+    )
+    compose_files, compose_bytes, compose_groups = _host_compose_groups(
+        temp_dir, types, rows=rows or [], live=live
     )
     # Prefer plan/chunk progress; fall back to source-clip uploaded/total.
     yt_done = youtube_done
@@ -539,10 +668,16 @@ def _build_host_payload(
         "present": True,
         "copied": {"done": copied_done, "total": total},
         "merged": {"files": merged_files, "clips": merged_clips},
+        "compose": {
+            "files": compose_files,
+            "bytes": compose_bytes,
+            "size": format_file_size(compose_bytes) if compose_bytes else "—",
+        },
         "youtube": {"done": yt_done, "total": yt_total},
         "processing": {"count": 0, "phase": "", "label": "", "files": []},
         "groups": groups,
-        "total": merged_files,
+        "compose_groups": compose_groups,
+        "total": merged_files + compose_files,
     }
 
 
@@ -723,8 +858,10 @@ def _processing_host_info(
     live: dict[str, Any] | None,
     rows: list[Any],
     host_groups: list[dict[str, Any]] | None = None,
+    *,
+    compose_groups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Host merge files currently in copy/merge/compose/upload + phase + count."""
+    """Host merge/compose files currently in copy/merge/compose/upload + phase + count."""
     names: set[str] = set()
     phase = _active_phase(live)
     if not live:
@@ -801,6 +938,30 @@ def _processing_host_info(
                 mid = window[0] + (window[1] - window[0]) / 2
                 if _in_window(mid, windows):
                     names.add(name)
+
+    # Compose / upload-ready trip_*.mp4 on host.
+    live_trip = int(live.get("trip_index") or 0) if live else 0
+    live_rt = str(live.get("record_type") or "") if live else ""
+    live_chunk = int(live.get("chunk_index") or 0) if live else 0
+    for group in compose_groups or []:
+        if not isinstance(group, dict):
+            continue
+        rt = str(group.get("record_type") or "")
+        for block in group.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            name = str(block.get("n") or "")
+            if not name:
+                continue
+            if block.get("active"):
+                names.add(name)
+                continue
+            if phase in ("compose", "upload", "stall", "oauth") and live_rt and (
+                rt == live_rt
+                and int(block.get("chunk") or 0) == live_chunk
+                and (not live_trip or int(block.get("trip") or 0) == live_trip)
+            ):
+                names.add(name)
 
     phase_labels = {
         "import": "copy/merge",
@@ -899,8 +1060,23 @@ def _stamp_processing(
 
     host = payload.get("host")
     if isinstance(host, dict):
+        # Refresh compose trip_*.mp4 list every tick — new files appear mid-run.
+        compose_files, compose_bytes, compose_groups = _host_compose_groups(
+            temp_dir, types, rows=rows, live=live
+        )
+        host["compose"] = {
+            "files": compose_files,
+            "bytes": compose_bytes,
+            "size": format_file_size(compose_bytes) if compose_bytes else "—",
+        }
+        host["compose_groups"] = compose_groups
+        host["total"] = int(host.get("merged", {}).get("files") or 0) + compose_files
+
         host_info = _processing_host_info(
-            live, rows, host.get("groups") if isinstance(host.get("groups"), list) else []
+            live,
+            rows,
+            host.get("groups") if isinstance(host.get("groups"), list) else [],
+            compose_groups=compose_groups,
         )
         host_files = set(host_info["files"])
         host["processing"] = {
@@ -921,6 +1097,17 @@ def _stamp_processing(
                     block["proc"] = host_info["label"]
                 else:
                     block.pop("proc", None)
+        for group in host.get("compose_groups") or []:
+            if not isinstance(group, dict):
+                continue
+            for block in group.get("blocks") or []:
+                if not isinstance(block, dict):
+                    continue
+                # Keep status/active from _host_compose_groups; also force-active
+                # if name is in the processing set (upload-ready trip mp4).
+                if str(block.get("n") or "") in host_files and not block.get("active"):
+                    block["active"] = True
+                    block["proc"] = host_info["label"] or block.get("proc") or ""
 
 
 def _resolve_status(
@@ -968,9 +1155,11 @@ def build_file_map_payload(
         "present": False,
         "copied": {"done": 0, "total": 0},
         "merged": {"files": 0, "clips": 0},
+        "compose": {"files": 0, "bytes": 0, "size": "—"},
         "youtube": {"done": 0, "total": 0},
         "processing": {"count": 0, "phase": "", "label": "", "files": []},
         "groups": [],
+        "compose_groups": [],
         "total": 0,
     }
     empty: dict[str, Any] = {
@@ -987,6 +1176,12 @@ def build_file_map_payload(
             temp_dir, video_dir, source, types, rows=dash_rows
         )
         yt_done, yt_total = _youtube_chunk_progress(dash_rows)
+        try:
+            from autopilot_dashboard import resolve_live_status
+
+            live_now = resolve_live_status(temp_dir, rows=dash_rows) or {}
+        except Exception:
+            live_now = {}
         host = _build_host_payload(
             counts={},
             total=0,
@@ -996,8 +1191,11 @@ def build_file_map_payload(
             uploaded_windows=_uploaded_windows(dash_rows),
             youtube_done=yt_done,
             youtube_total=yt_total,
+            temp_dir=temp_dir,
+            rows=dash_rows,
+            live=live_now,
         )
-        if host["merged"]["files"] or yt_total:
+        if host["merged"]["files"] or host["compose"]["files"] or yt_total:
             empty = {**empty, "host": host}
         _stamp_processing(empty, source, types, temp_dir=temp_dir, video_dir=video_dir)
         return empty
@@ -1079,6 +1277,9 @@ def build_file_map_payload(
         uploaded_windows=uploaded_windows,
         youtube_done=yt_done,
         youtube_total=yt_total,
+        temp_dir=temp_dir,
+        rows=dash_rows,
+        live=None,
     )
     payload: dict[str, Any] = {
         "present": True,
