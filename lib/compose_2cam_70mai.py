@@ -13,6 +13,7 @@ from pathlib import Path
 from compose_70mai import (
     DEFAULT_PROFILE,
     PROFILES,
+    EncodeStallError,
     Segment,
     append_hwaccel_args,
     append_video_encode_args,
@@ -526,14 +527,25 @@ def _run_aligned_compose(
     log(f"Audio:         {audio_source}")
 
     if hw and hw_decode:
-        attempts = [(True, "hw decode + CPU scale"), (False, "hw encode only")]
+        # VT encode can hang at ~100% mux — always keep software as last resort.
+        attempts = [
+            (True, True, "hw decode + CPU scale"),
+            (False, True, "hw encode only"),
+            (False, False, "software encode"),
+        ]
     elif hw:
-        attempts = [(False, "hw encode only")]
+        attempts = [
+            (False, True, "hw encode only"),
+            (False, False, "software encode"),
+        ]
     else:
-        attempts = [(False, "software encode")]
+        attempts = [(False, False, "software encode")]
 
     last_error: subprocess.CalledProcessError | None = None
-    for attempt_hw_decode, label in attempts:
+    skip_hw = False
+    for attempt_hw_decode, attempt_hw, label in attempts:
+        if skip_hw and attempt_hw:
+            continue
         cmd = build_compose_2cam_aligned_cmd(
             front_lane,
             back_lane,
@@ -545,7 +557,7 @@ def _run_aligned_compose(
             crf=crf,
             preset=preset,
             fps=fps,
-            hw=hw,
+            hw=attempt_hw,
             hw_quality=hw_quality,
             hw_decode=attempt_hw_decode,
             codec=codec,
@@ -561,16 +573,28 @@ def _run_aligned_compose(
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
             run_ffmpeg_with_progress(cmd, duration_sec=total, output_path=output)
-            if label != attempts[0][1]:
+            if label != attempts[0][2]:
                 log(f"\nNote: fell back to {label}")
             _verify_output_duration(output, total)
             log(f"\nDone: {output}")
             return
+        except EncodeStallError as exc:
+            last_error = exc
+            if output.is_file():
+                output.unlink()
+            if attempt_hw:
+                skip_hw = True
+                log(
+                    f"\n{label} stalled (exit {exc.returncode}), "
+                    "skipping remaining HW → software encode..."
+                )
+                continue
+            raise
         except subprocess.CalledProcessError as exc:
             last_error = exc
             if output.is_file():
                 output.unlink()
-            if label != attempts[-1][1]:
+            if label != attempts[-1][2]:
                 log(f"\n{label} failed (exit {exc.returncode}), trying fallback...")
             else:
                 raise
@@ -721,19 +745,24 @@ def run_compose_2cam(
 
     if hw and hw_decode:
         # Fastest pipeline first, degrade gracefully on failure.
-        attempts: list[tuple[bool, bool, str]] = []
+        attempts: list[tuple[bool, bool, bool, str]] = []
         if use_vt_scale:
-            attempts.append((True, True, "full VT (hw decode + scale_vt)"))
-        attempts.append((True, False, "hw decode + CPU scale"))
-        attempts.append((False, False, "hw encode only"))
+            attempts.append((True, True, True, "full VT (hw decode + scale_vt)"))
+        attempts.append((True, False, True, "hw decode + CPU scale"))
+        attempts.append((False, False, True, "hw encode only"))
+        attempts.append((False, False, False, "software encode"))
     elif hw:
-        attempts = [(False, False, "hw encode only")]
+        attempts = [
+            (False, False, True, "hw encode only"),
+            (False, False, False, "software encode"),
+        ]
     else:
-        attempts = [(False, False, "software encode")]
+        attempts = [(False, False, False, "software encode")]
 
     last_error: subprocess.CalledProcessError | None = None
     telemetry_path: Path | None = None
     telemetry_tmp: tempfile.TemporaryDirectory[str] | None = None
+    skip_hw = False
 
     if telemetry and not dry_run:
         gps_sources = resolve_gps_sources(gps_dir, video_dir, Path("/Volumes/Untitled"))
@@ -756,7 +785,9 @@ def run_compose_2cam(
                 telemetry = False
                 telemetry_path = None
 
-    for attempt_hw_decode, attempt_vt_scale, label in attempts:
+    for attempt_hw_decode, attempt_vt_scale, attempt_hw, label in attempts:
+        if skip_hw and attempt_hw:
+            continue
         cmd = build_compose_2cam_cmd(
             front_segments,
             back_segments,
@@ -765,7 +796,7 @@ def run_compose_2cam(
             crf=crf,
             preset=preset,
             fps=fps,
-            hw=hw,
+            hw=attempt_hw,
             hw_quality=hw_quality,
             hw_decode=attempt_hw_decode,
             use_vt_scale=attempt_vt_scale,
@@ -785,24 +816,35 @@ def run_compose_2cam(
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
             run_ffmpeg_with_progress(cmd, duration_sec=duration, output_path=output)
-            if label != attempts[0][2]:
+            if label != attempts[0][3]:
                 log(f"\nNote: fell back to {label}")
             log(f"\nDone: {output}")
             if telemetry_tmp is not None:
                 telemetry_tmp.cleanup()
             return
+        except EncodeStallError as exc:
+            last_error = exc
+            if output.is_file():
+                output.unlink()
+            if attempt_hw:
+                skip_hw = True
+                log(
+                    f"\n{label} stalled (exit {exc.returncode}), "
+                    "skipping remaining HW → software encode..."
+                )
+                continue
+            raise
         except subprocess.CalledProcessError as exc:
             last_error = exc
             if output.is_file():
                 output.unlink()
-            if label != attempts[-1][2]:
+            if label != attempts[-1][3]:
                 log(f"\n{label} failed (exit {exc.returncode}), trying fallback...")
             else:
                 raise
 
     if telemetry_tmp is not None:
         telemetry_tmp.cleanup()
-
     if last_error is not None:
         raise last_error
 

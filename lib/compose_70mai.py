@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,10 @@ from pathlib import Path
 
 from import_70mai import format_duration, log
 from publish_paths import parse_compose_output_path, publish_temp_dir
+
+
+class EncodeStallError(subprocess.CalledProcessError):
+    """ffmpeg killed after no progress (often VideoToolbox finalize hang at ~100%)."""
 
 SCREEN_RE = re.compile(
     r"^ScreenRecording_(\d{2}-\d{2}-\d{4}) (\d{2}-\d{2}-\d{2})",
@@ -40,9 +46,30 @@ DEFAULT_DURATION = 600.0  # 10 minutes
 BAR_WIDTH = 36
 ENCODE_HEARTBEAT_SEC = 30.0
 ENCODE_STALL_WARN_SEC = 300.0  # 5 min without % or file growth → STALLED log
-ENCODE_STALL_ABORT_SEC = 600.0  # 10 min → kill ffmpeg
+ENCODE_STALL_ABORT_SEC = 480.0  # 8 min idle mid-encode → kill ffmpeg
+# Near done: VT often hangs on mux/flush with CPU 0% — don't wait another 8 min.
+ENCODE_STALL_TAIL_ABORT_SEC = 120.0  # ≥99% + no growth → kill after 2 min
+ENCODE_STALL_TAIL_PCT = 99.0
 FFMPEG_TIME_RE = re.compile(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})")
 FFMPEG_SPEED_RE = re.compile(r"speed=\s*([\d.]+)x")
+
+
+def encode_stall_abort_sec(pct: float) -> float:
+    """Idle seconds before killing ffmpeg; shorter once encode reports ~done."""
+    if pct >= ENCODE_STALL_TAIL_PCT:
+        return ENCODE_STALL_TAIL_ABORT_SEC
+    return ENCODE_STALL_ABORT_SEC
+
+
+def _kill_ffmpeg(proc: subprocess.Popen) -> None:
+    """SIGKILL the ffmpeg process group (VT helpers may outlive the parent)."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
 
 PROFILES: dict[str, dict[str, int | bool | str]] = {
     "balanced": {
@@ -356,18 +383,19 @@ def run_ffmpeg_with_progress(
             _push_encode_status(
                 stalled=stalled, ffmpeg_pid=pid, reason=reason, force=True
             )
-            if stalled and idle >= ENCODE_STALL_ABORT_SEC and proc is not None:
+            abort_after = encode_stall_abort_sec(pct)
+            if stalled and idle >= abort_after and proc is not None:
                 abort_info["reason"] = (
                     f"убит: нет прогресса {format_duration(idle)} @ {pct:.0f}%"
                 )
                 log(
                     f"       … encode abort: no progress for "
-                    f"{format_duration(idle)} — killing ffmpeg"
+                    f"{format_duration(idle)} @ {pct:.0f}% — killing ffmpeg"
                 )
                 _push_encode_status(
                     stalled=True, ffmpeg_pid=pid, reason=abort_info["reason"], force=True
                 )
-                proc.kill()
+                _kill_ffmpeg(proc)
                 return
 
     hb_thread = threading.Thread(target=_heartbeat, daemon=True)
@@ -378,6 +406,7 @@ def run_ffmpeg_with_progress(
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        start_new_session=True,
     )
     proc_holder[0] = proc
     assert proc.stderr is not None
@@ -410,6 +439,11 @@ def run_ffmpeg_with_progress(
         if abort_info["reason"]:
             _push_encode_status(
                 stalled=True, reason=abort_info["reason"], force=True
+            )
+            raise EncodeStallError(
+                proc.returncode,
+                cmd,
+                stderr="".join(stderr_chunks),
             )
         raise subprocess.CalledProcessError(
             proc.returncode,
@@ -1223,19 +1257,27 @@ def run_compose(
 
     if hw and hw_decode:
         # Fastest pipeline first, degrade gracefully on failure.
-        attempts: list[tuple[bool, bool, str]] = []
+        # Always end with software encode — VT can hang at ~100% mux with CPU 0%.
+        attempts: list[tuple[bool, bool, bool, str]] = []
         if use_vt_scale:
-            attempts.append((True, True, "full VT (hw decode + scale_vt)"))
-        attempts.append((True, False, "hw decode + CPU scale"))
-        attempts.append((False, False, "hw encode only"))
+            attempts.append((True, True, True, "full VT (hw decode + scale_vt)"))
+        attempts.append((True, False, True, "hw decode + CPU scale"))
+        attempts.append((False, False, True, "hw encode only"))
+        attempts.append((False, False, False, "software encode"))
     elif hw:
-        attempts = [(False, False, "hw encode only")]
+        attempts = [
+            (False, False, True, "hw encode only"),
+            (False, False, False, "software encode"),
+        ]
     else:
-        attempts = [(False, False, "software encode")]
+        attempts = [(False, False, False, "software encode")]
 
     last_error: subprocess.CalledProcessError | None = None
+    skip_hw = False
 
-    for attempt_hw_decode, attempt_vt_scale, label in attempts:
+    for attempt_hw_decode, attempt_vt_scale, attempt_hw, label in attempts:
+        if skip_hw and attempt_hw:
+            continue
         cmd = build_compose_cmd(
             screen,
             front_segments,
@@ -1245,7 +1287,7 @@ def run_compose(
             use_vt_scale=attempt_vt_scale,
             audio_mode=audio_mode,
             audio_offset_front=audio_offset_front,
-            **common,
+            **{**common, "hw": attempt_hw},
         )
 
         log("")
@@ -1259,15 +1301,27 @@ def run_compose(
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
             run_ffmpeg_with_progress(cmd, duration_sec=duration, output_path=output)
-            if label != attempts[0][2]:
+            if label != attempts[0][3]:
                 log(f"\nNote: fell back to {label}")
             log(f"\nDone: {output}")
             return
+        except EncodeStallError as exc:
+            last_error = exc
+            if output.is_file():
+                output.unlink()
+            if attempt_hw:
+                skip_hw = True
+                log(
+                    f"\n{label} stalled (exit {exc.returncode}), "
+                    "skipping remaining HW → software encode..."
+                )
+                continue
+            raise
         except subprocess.CalledProcessError as exc:
             last_error = exc
             if output.is_file():
                 output.unlink()
-            if label != attempts[-1][2]:
+            if label != attempts[-1][3]:
                 log(f"\n{label} failed (exit {exc.returncode}), trying fallback...")
             else:
                 raise
