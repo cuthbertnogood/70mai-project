@@ -299,6 +299,77 @@ class AutopilotFileMapTests(unittest.TestCase):
             self.assertEqual(payload["total"], counted)
             self.assertEqual(payload["total"], block_total)
 
+    def test_host_map_counts_copied_merged_youtube(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = Path(tmp) / "video"
+            front_sd = root / "Normal" / "Front"
+            front_sd.mkdir(parents=True)
+            clip_a = "NO20260814-100000-000001F.MP4"
+            clip_b = "NO20260814-100100-000002F.MP4"
+            (front_sd / clip_a).write_bytes(b"x" * 10)
+            (front_sd / clip_b).write_bytes(b"x" * 10)
+
+            merge_dir = video / "Normal" / "Front"
+            merge_dir.mkdir(parents=True)
+            merge = merge_dir / "NO_20260814-100000_100200_F.mp4"
+            merge.write_bytes(b"y" * 20)
+            manifest = {
+                "version": MANIFEST_VERSION,
+                "record_type": "Normal",
+                "camera": "Front",
+                "merge": merge.name,
+                "clips": [
+                    {
+                        "key": "a",
+                        "wall": "2026-08-14T10:00:00",
+                        "dur": 60.0,
+                        "offset": 0.0,
+                        "src": clip_a,
+                    },
+                    {
+                        "key": "b",
+                        "wall": "2026-08-14T10:01:00",
+                        "dur": 60.0,
+                        "offset": 60.0,
+                        "src": clip_b,
+                    },
+                ],
+            }
+            merge.with_name(merge.name + ".timeline.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+
+            payload = build_file_map_payload(
+                root, ["Normal"], video_dir=video, ttl_sec=0
+            )
+            host = payload["host"]
+            self.assertTrue(host["present"])
+            self.assertEqual(host["copied"]["done"], 2)
+            self.assertEqual(host["copied"]["total"], 2)
+            self.assertEqual(host["merged"]["files"], 1)
+            self.assertEqual(host["merged"]["clips"], 2)
+            self.assertEqual(host["groups"][0]["blocks"][0]["st"], "merged")
+            self.assertEqual(host["youtube"]["done"], 0)
+            self.assertGreaterEqual(host["youtube"]["total"], 0)
+
+    def test_host_map_without_card_shows_merged_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "video"
+            merge_dir = video / "Normal" / "Front"
+            merge_dir.mkdir(parents=True)
+            merge = merge_dir / "NO_20260814-100000_100100_F.mp4"
+            merge.write_bytes(b"z" * 15)
+
+            payload = build_file_map_payload(
+                None, ["Normal"], video_dir=video, ttl_sec=0
+            )
+            self.assertFalse(payload["present"])
+            host = payload["host"]
+            self.assertTrue(host["present"])
+            self.assertEqual(host["merged"]["files"], 1)
+            self.assertEqual(host["groups"][0]["blocks"][0]["n"], merge.name)
+
 
 if __name__ == "__main__":
     unittest.main()
